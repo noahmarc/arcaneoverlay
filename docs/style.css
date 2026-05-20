@@ -2425,3 +2425,30 @@ canvas { display: block; }
 }
 .mp-itemdrop-name { font-size: 13px; font-weight: 700; color: #EAE8F5; }
 .mp-itemdrop-meta { font-size: 10px; color: rgba(255,255,255,0.55); margin-top: 2px; }
+
+/* ── DM tunnel URL + share link ─────────────────────────────── */
+#mp-tunnel-wrap {
+  display: flex; flex-direction: column; gap: 4px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(255,255,255,0.10);
+}
+#mp-tunnel-url {
+  background: rgba(255,255,255,0.06); color: #EAE8F5;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 6px; padding: 5px 8px;
+  font-size: 11px; font-family: ui-monospace, monospace; outline: none;
+}
+#mp-tunnel-url:focus { border-color: #7C6FF7; }
+#mp-copy-link-btn {
+  background: rgba(124,111,247,0.30); border: 1px solid #7C6FF7;
+  color: #EAE8F5; padding: 5px 10px; border-radius: 6px;
+  font-size: 11px; font-weight: 700; cursor: pointer;
+  font-family: inherit;
+}
+#mp-copy-link-btn:hover { background: #7C6FF7; color: #fff; }
+#mp-link-preview {
+  font-family: ui-monospace, monospace; font-size: 10px;
+  color: rgba(255,255,255,0.45);
+  min-height: 14px;
+}

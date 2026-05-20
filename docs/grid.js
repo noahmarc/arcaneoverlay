@@ -3321,6 +3321,10 @@ requestAnimationFrame(render);
     // Show / hide DM-only Roll-Request tools
     const dmTools = document.getElementById('mp-dm-roll-tools');
     if (dmTools) dmTools.classList.toggle('visible', isDM);
+    // Refresh the DM player-link preview now that the room code exists
+    if (typeof window.__mpRefreshPlayerLink === 'function') {
+      window.__mpRefreshPlayerLink();
+    }
     // Initialise the "Playing as" picker for this session
     refreshActiveSheetPicker();
     addSysMsg('all', isDM
@@ -3566,6 +3570,74 @@ requestAnimationFrame(render);
     navigator.clipboard?.writeText(roomCode).catch(()=>{});
   });
 
+  // ── DM-only: tunnel URL + shareable "Player Link" ────────────
+  const HOSTED_CLIENT_URL = 'https://noahmarc.github.io/arcaneoverlay/';
+  const TUNNEL_KEY = 'arcane_mp_tunnel_url';
+  const tunnelIn   = document.getElementById('mp-tunnel-url');
+  const copyLinkBtn= document.getElementById('mp-copy-link-btn');
+  const linkPreview= document.getElementById('mp-link-preview');
+
+  function normaliseTunnel(s) {
+    s = (s || '').trim().replace(/\/+$/, '');
+    if (s && !/^https?:\/\//i.test(s)) s = 'https://' + s;
+    return s;
+  }
+  function buildPlayerLink() {
+    const t = normaliseTunnel(tunnelIn.value);
+    const u = new URL(HOSTED_CLIENT_URL);
+    if (t) u.searchParams.set('server', t);
+    if (roomCode) u.searchParams.set('room', roomCode);
+    return u.toString();
+  }
+  function updateLinkPreview() {
+    if (!linkPreview) return;
+    const url = buildPlayerLink();
+    linkPreview.textContent = url;
+  }
+
+  // Restore last-used tunnel URL
+  try {
+    const saved = localStorage.getItem(TUNNEL_KEY);
+    if (saved && tunnelIn) tunnelIn.value = saved;
+  } catch (e) {}
+
+  if (tunnelIn) {
+    tunnelIn.addEventListener('input', () => {
+      try { localStorage.setItem(TUNNEL_KEY, tunnelIn.value.trim()); } catch (e) {}
+      updateLinkPreview();
+    });
+    tunnelIn.addEventListener('blur', () => {
+      const n = normaliseTunnel(tunnelIn.value);
+      if (n !== tunnelIn.value) tunnelIn.value = n;
+      try { localStorage.setItem(TUNNEL_KEY, n); } catch (e) {}
+      updateLinkPreview();
+    });
+  }
+
+  if (copyLinkBtn) {
+    copyLinkBtn.addEventListener('click', async () => {
+      const url = buildPlayerLink();
+      try {
+        await navigator.clipboard.writeText(url);
+        const orig = copyLinkBtn.textContent;
+        copyLinkBtn.textContent = '✓ Copied';
+        setTimeout(() => { copyLinkBtn.textContent = orig; }, 1500);
+      } catch (e) {
+        // Fallback: select + execCommand
+        const ta = document.createElement('textarea');
+        ta.value = url; document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); } catch (_) {}
+        document.body.removeChild(ta);
+        copyLinkBtn.textContent = '✓ Copied';
+        setTimeout(() => { copyLinkBtn.textContent = '📋 Copy Player Link'; }, 1500);
+      }
+    });
+  }
+
+  // Refresh the preview whenever a room is entered
+  const _origUpdatePreview = updateLinkPreview;
+  window.__mpRefreshPlayerLink = _origUpdatePreview;
+
   // Create room
   document.getElementById('mp-create-btn').addEventListener('click', () => {
     document.getElementById('mp-dm-modal').classList.add('open');
@@ -3711,6 +3783,24 @@ requestAnimationFrame(render);
   });
   document.getElementById('mp-code-in').addEventListener('keydown', e => { if(e.key==='Enter') document.getElementById('mp-name-in').focus(); });
   document.getElementById('mp-name-in').addEventListener('keydown', e => { if(e.key==='Enter') document.getElementById('mp-join-btn').click(); });
+
+  // Pre-fill the room code from ?room=… in the URL (used by the DM's
+  // shareable player link). Auto-opens the MP panel so the player can
+  // just type a name and press Enter to join.
+  try {
+    const q = new URLSearchParams(window.location.search);
+    const roomFromUrl = (q.get('room') || '').trim().toUpperCase();
+    if (roomFromUrl) {
+      const codeIn = document.getElementById('mp-code-in');
+      const nameIn = document.getElementById('mp-name-in');
+      if (codeIn) codeIn.value = roomFromUrl;
+      // Defer panel-open until the page is ready
+      setTimeout(() => {
+        if (typeof openPanel === 'function') openPanel();
+        if (nameIn) nameIn.focus();
+      }, 200);
+    }
+  } catch (e) {}
 
   // Leave room
   document.getElementById('mp-leave-btn').addEventListener('click', async () => {
