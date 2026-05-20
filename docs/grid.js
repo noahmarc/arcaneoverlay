@@ -3215,7 +3215,26 @@ requestAnimationFrame(render);
   document.getElementById('mp-panel-close').addEventListener('click', closePanel);
 
   // HTTP helpers
-  let SERVER = 'http://localhost:8765';  // DM default; players override with DM's IP
+  // Resolve initial SERVER URL.
+  //   1. ?server=https://… in the page URL wins (used by hosted players to
+  //      point at a DM's Cloudflare/ngrok tunnel)
+  //   2. localStorage 'arcane_mp_server' (remembers your last manual entry)
+  //   3. fallback to localhost (the bundled Mac app default)
+  function _resolveInitialServer() {
+    try {
+      const q = new URLSearchParams(window.location.search);
+      const fromQ = q.get('server');
+      if (fromQ) {
+        const v = fromQ.replace(/\/$/, '');
+        try { localStorage.setItem('arcane_mp_server', v); } catch (e) {}
+        return v;
+      }
+      const fromLS = localStorage.getItem('arcane_mp_server');
+      if (fromLS) return fromLS.replace(/\/$/, '');
+    } catch (e) {}
+    return 'http://localhost:8765';
+  }
+  let SERVER = _resolveInitialServer();
   async function api(path, body) {
     const opts = body
       ? { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) }
