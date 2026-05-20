@@ -3229,6 +3229,8 @@ requestAnimationFrame(render);
   //      point at a DM's Cloudflare/ngrok tunnel)
   //   2. localStorage 'arcane_mp_server' (remembers your last manual entry)
   //   3. fallback to localhost (the bundled Mac app default)
+  // Permanent hosted server on Render — the default for everyone.
+  const HOSTED_SERVER = 'https://arcaneoverlay-server.onrender.com';
   function _resolveInitialServer() {
     try {
       const q = new URLSearchParams(window.location.search);
@@ -3241,7 +3243,7 @@ requestAnimationFrame(render);
       const fromLS = localStorage.getItem('arcane_mp_server');
       if (fromLS) return fromLS.replace(/\/$/, '');
     } catch (e) {}
-    return 'http://localhost:8765';
+    return HOSTED_SERVER;
   }
   let SERVER = _resolveInitialServer();
   async function api(path, body) {
@@ -3805,20 +3807,23 @@ requestAnimationFrame(render);
   }
 
   async function discoverServer(code, onStatus) {
-    // 0. Explicit override — ?server=… in the page URL or a remembered
-    //    value in localStorage takes priority. This is how off-LAN players
-    //    reach the DM through a cloudflared/ngrok tunnel.
+    // 0. Configured server first — the hosted Render URL by default, or
+    //    a ?server=… URL param / saved localStorage value when set.
     if (SERVER && SERVER !== 'http://localhost:8765') {
-      onStatus('Trying configured server…');
+      const isHosted = SERVER === HOSTED_SERVER;
+      onStatus(isHosted
+        ? 'Connecting… (server may take ~30s to wake up)'
+        : 'Trying configured server…');
       try {
+        // Render free tier can sleep for up to a minute before responding.
         const r = await fetchTimeout(
-          `${SERVER}/api/find_room?code=${encodeURIComponent(code)}`, 5000);
+          `${SERVER}/api/find_room?code=${encodeURIComponent(code)}`, 70000);
         const d = await r.json();
         if (d.ok) return SERVER;
       } catch(e) { /* fall through to LAN discovery */ }
     }
 
-    // 1. Same machine
+    // 1. Same machine (legacy fallback for local-only sessions)
     onStatus('Searching… (localhost)');
     try {
       const r = await fetchTimeout(`http://localhost:8765/api/find_room?code=${encodeURIComponent(code)}`, 800);
