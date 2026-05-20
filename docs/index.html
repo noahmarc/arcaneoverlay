@@ -800,8 +800,12 @@
 
         <!-- DM-only: tunnel URL + shareable player link -->
         <div id="mp-tunnel-wrap">
-          <span class="mp-label">🌐 Tunnel URL <span class="mp-hint" style="font-weight:400">— paste your cloudflared URL so off-LAN players can connect</span></span>
-          <input id="mp-tunnel-url" type="text" placeholder="https://example.trycloudflare.com" autocomplete="off">
+          <span class="mp-label">🌐 Tunnel <span class="mp-hint" style="font-weight:400">— for players who aren't on your LAN</span></span>
+          <div id="mp-tunnel-row">
+            <input id="mp-tunnel-url" type="text" placeholder="Click ▶ Start Tunnel — URL fills in automatically" autocomplete="off">
+            <button id="mp-tunnel-toggle-btn" title="Start a cloudflared tunnel so off-LAN players can connect">▶ Start Tunnel</button>
+          </div>
+          <div id="mp-tunnel-status" class="mp-hint"></div>
           <button id="mp-copy-link-btn" title="Copy a ready-to-share link with your tunnel URL and room code baked in">📋 Copy Player Link</button>
           <div id="mp-link-preview" class="mp-hint" style="word-break:break-all"></div>
         </div>

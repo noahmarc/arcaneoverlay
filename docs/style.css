@@ -2480,3 +2480,31 @@ body.player-restricted #col-val,
 body.player-restricted #row-val,
 body.player-restricted label[for="col-slider"],
 body.player-restricted label[for="row-slider"] { display: none !important; }
+
+/* ── Tunnel toggle row ─────────────────────────────────────── */
+#mp-tunnel-row {
+  display: flex; gap: 6px; align-items: stretch;
+}
+#mp-tunnel-row #mp-tunnel-url { flex: 1; min-width: 0; }
+#mp-tunnel-toggle-btn {
+  white-space: nowrap;
+  background: rgba(52,211,153,0.30); border: 1px solid #34D399;
+  color: #EAE8F5; padding: 5px 10px; border-radius: 6px;
+  font-size: 11px; font-weight: 700; cursor: pointer;
+  font-family: inherit;
+}
+#mp-tunnel-toggle-btn:hover { background: #34D399; color: #051; }
+#mp-tunnel-toggle-btn.active {
+  background: rgba(248,113,113,0.28); border-color: #F87171;
+}
+#mp-tunnel-toggle-btn.active:hover { background: #F87171; color: #fff; }
+#mp-tunnel-toggle-btn.starting {
+  background: rgba(255,210,90,0.25); border-color: #FFD25A;
+  color: rgba(234,232,245,0.8);
+  cursor: progress;
+}
+#mp-tunnel-status {
+  min-height: 14px;
+  color: rgba(255,255,255,0.55);
+}
+#mp-tunnel-status.error { color: #F87171; }

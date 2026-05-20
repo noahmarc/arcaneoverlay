@@ -3625,6 +3625,87 @@ requestAnimationFrame(render);
     });
   }
 
+  // ── One-click tunnel start/stop (DM only) ─────────────────────
+  // Talks to the Swift wrapper via window.webkit.messageHandlers.tunnel.
+  // Swift launches cloudflared, reads its stdout, and calls back into JS
+  // via arcaneOnTunnelUrl(url) / arcaneOnTunnelStatus({starting,error}).
+  const tunnelToggleBtn = document.getElementById('mp-tunnel-toggle-btn');
+  const tunnelStatusEl  = document.getElementById('mp-tunnel-status');
+
+  function tunnelBridge() {
+    return window.webkit && window.webkit.messageHandlers
+      && window.webkit.messageHandlers.tunnel
+      ? window.webkit.messageHandlers.tunnel
+      : null;
+  }
+  function setTunnelButton(state, text) {
+    if (!tunnelToggleBtn) return;
+    tunnelToggleBtn.classList.remove('active', 'starting');
+    if (state === 'active')   tunnelToggleBtn.classList.add('active');
+    if (state === 'starting') tunnelToggleBtn.classList.add('starting');
+    tunnelToggleBtn.textContent = text;
+  }
+  if (tunnelToggleBtn) {
+    if (!tunnelBridge()) {
+      // Running in a regular browser (hosted page) — there's no Swift
+      // wrapper to launch cloudflared. Hide the button and let the DM
+      // paste a URL manually.
+      tunnelToggleBtn.style.display = 'none';
+      if (tunnelIn) tunnelIn.placeholder = 'https://example.trycloudflare.com';
+    } else {
+      tunnelToggleBtn.addEventListener('click', () => {
+        const isActive = tunnelToggleBtn.classList.contains('active');
+        const isStarting = tunnelToggleBtn.classList.contains('starting');
+        if (isStarting) return;
+        if (isActive) {
+          tunnelBridge().postMessage({ action: 'stop' });
+        } else {
+          setTunnelButton('starting', '⏳ Starting…');
+          if (tunnelStatusEl) {
+            tunnelStatusEl.classList.remove('error');
+            tunnelStatusEl.textContent = 'Connecting to Cloudflare… this can take 5-15 seconds.';
+          }
+          tunnelBridge().postMessage({ action: 'start' });
+        }
+      });
+    }
+  }
+
+  // Called by Swift when cloudflared prints a fresh trycloudflare URL.
+  window.arcaneOnTunnelUrl = (url) => {
+    if (!tunnelIn) return;
+    if (url) {
+      tunnelIn.value = url;
+      try { localStorage.setItem(TUNNEL_KEY, url); } catch (e) {}
+      setTunnelButton('active', '⏹ Stop Tunnel');
+      if (tunnelStatusEl) {
+        tunnelStatusEl.classList.remove('error');
+        tunnelStatusEl.textContent = '✓ Tunnel live — click Copy Player Link to share';
+      }
+    } else {
+      // Tunnel was stopped
+      setTunnelButton('', '▶ Start Tunnel');
+      if (tunnelStatusEl) {
+        tunnelStatusEl.classList.remove('error');
+        tunnelStatusEl.textContent = '';
+      }
+    }
+    updateLinkPreview();
+  };
+  // Called by Swift to report start failures or "starting…" state.
+  window.arcaneOnTunnelStatus = (info) => {
+    if (!info) return;
+    if (info.error) {
+      setTunnelButton('', '▶ Start Tunnel');
+      if (tunnelStatusEl) {
+        tunnelStatusEl.classList.add('error');
+        tunnelStatusEl.textContent = info.error;
+      }
+    } else if (info.starting) {
+      setTunnelButton('starting', '⏳ Starting…');
+    }
+  };
+
   if (copyLinkBtn) {
     copyLinkBtn.addEventListener('click', async () => {
       const url = buildPlayerLink();
