@@ -3330,6 +3330,8 @@ requestAnimationFrame(render);
     // Show / hide DM-only Roll-Request tools
     const dmTools = document.getElementById('mp-dm-roll-tools');
     if (dmTools) dmTools.classList.toggle('visible', isDM);
+    // Lock down the toolbar for players — only token / LoS / inspect
+    document.body.classList.toggle('player-restricted', !isDM);
     // Refresh the DM player-link preview now that the room code exists
     if (typeof window.__mpRefreshPlayerLink === 'function') {
       window.__mpRefreshPlayerLink();
@@ -3835,6 +3837,8 @@ requestAnimationFrame(render);
     roomDiv.style.display = 'none';
     setupDiv.style.display = 'block';
     updateBadge();
+    // Restore full toolbar on leave
+    document.body.classList.remove('player-restricted');
   });
 
   function escHtml(s) {

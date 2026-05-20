@@ -2452,3 +2452,31 @@ canvas { display: block; }
   color: rgba(255,255,255,0.45);
   min-height: 14px;
 }
+
+/* ── Player-restricted view ─────────────────────────────────────
+ * When a non-DM joins a multiplayer room, hide every toolbar tool
+ * except the three they're allowed to use (token, LoS, inspect).
+ * The DM and anyone not currently in a room sees the full toolbar.
+ */
+body.player-restricted #toolbar .effect-categories .effect-cat:not(#cat-tools) {
+  display: none !important;
+}
+/* Hide all .cat-icon-btn except the allowed three */
+body.player-restricted #toolbar .cat-icon-btn:not(#token-btn):not(#los-btn):not(#inspect-btn) {
+  display: none !important;
+}
+/* Hide their associated sub-panels too */
+body.player-restricted #fog-panel,
+body.player-restricted #map-panel,
+body.player-restricted #grid-scale-panel { display: none !important; }
+/* Hide the Tools category Erase pill (it's an effect, not a "tool") */
+body.player-restricted #toolbar #pill-erase { display: none !important; }
+/* Hide the right-hand actions strip (save/load/presets/scenes/undo/history) */
+body.player-restricted #toolbar .toolbar-actions { display: none !important; }
+/* Hide grid-size sliders if they're in the toolbar */
+body.player-restricted #col-slider,
+body.player-restricted #row-slider,
+body.player-restricted #col-val,
+body.player-restricted #row-val,
+body.player-restricted label[for="col-slider"],
+body.player-restricted label[for="row-slider"] { display: none !important; }
