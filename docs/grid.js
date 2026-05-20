@@ -5529,6 +5529,12 @@ requestAnimationFrame(render);
     } catch (renderErr) {
       try { console.warn('[arcane] re-render after grid_state failed:', renderErr); } catch(e){}
     }
+    // Tell the sync layer that our local state already matches `s`, so we
+    // don't immediately push it back to the server in an echo loop.
+    try {
+      const snap = captureGridState();
+      if (typeof window.__mpNoteSynced === 'function') window.__mpNoteSynced(snap);
+    } catch (e) {}
   }
 
   // Expose so MP IIFE can call into us
@@ -5542,9 +5548,7 @@ requestAnimationFrame(render);
 
   async function flushSync() {
     if (typeof window.__mpApi !== 'function')     return;
-    if (typeof window.__mpIsDM !== 'function')    return;
     if (typeof window.__mpRoom !== 'function')    return;
-    if (!window.__mpIsDM())                       return;
     const room = window.__mpRoom();
     const myId = window.__mpMyId && window.__mpMyId();
     if (!room || !myId)                            return;
@@ -5560,6 +5564,10 @@ requestAnimationFrame(render);
         inflight = false;
         return;
       }
+      // Everyone in the room pushes. The server merges:
+      //   • DM pushes replace the full state.
+      //   • Non-DM pushes only update the `tokens` field —
+      //     preserving the DM's effects / walls / fog / etc.
       await window.__mpApi('/api/grid_state', { room, player_id: myId, state: snap });
       lastSnapshotJson = snapJson;
     } catch (e) {
@@ -5584,12 +5592,16 @@ requestAnimationFrame(render);
 
   // Also push periodically as a safety net (catches any mutations that
   // forgot to call __mpScheduleSync — e.g., direct token edits via the
-  // modal).
+  // modal). Runs for everyone in a room, not just the DM.
   setInterval(() => {
-    if (window.__mpIsDM && window.__mpIsDM() && window.__mpRoom && window.__mpRoom()) {
-      scheduleSync();
-    }
+    if (window.__mpRoom && window.__mpRoom()) scheduleSync();
   }, 2000);
+
+  // Public so applyGridState can mark a received state as already-synced
+  // (prevents the player echoing the DM's state right back at the server).
+  window.__mpNoteSynced = function (state) {
+    try { lastSnapshotJson = JSON.stringify(state); } catch (e) {}
+  };
 })();
 
 // ═══════════════════════════════════════════════════════════════════

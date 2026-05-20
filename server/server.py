@@ -151,22 +151,42 @@ async def handle_join_room(writer, body):
 
 # ── Grid state sync (DM → server → players) ──────────────────────────────────
 async def handle_grid_state(writer, body):
-    """DM-only: replace the room's grid snapshot and broadcast it to players."""
+    """Sync grid snapshot.
+       • DM push  → full replace.
+       • Player push → only `tokens` (and `labels`) fields are merged into
+         the existing snapshot, so players can move/place tokens without
+         overwriting the DM's effects, walls, fog, etc.
+    """
     code = (body.get('room') or '').strip().upper()
     pid  = (body.get('player_id') or '').strip()
     state = body.get('state')
     room = rooms.get(code)
     if not room:
         json_err(writer, 'Room not found'); return
-    if pid != room['dm_id']:
-        json_err(writer, 'Only the DM can push grid state', '403 Forbidden'); return
+    if pid not in room['players']:
+        json_err(writer, 'You are not in this room', '403 Forbidden'); return
     if not isinstance(state, dict):
         json_err(writer, 'Bad grid state payload'); return
-    room['grid_state'] = state
+
+    is_dm = (pid == room['dm_id'])
+    if is_dm:
+        # DM has full authority — replace the whole state
+        room['grid_state'] = state
+    else:
+        # Player push: merge only the fields players are allowed to mutate
+        current = room.get('grid_state') or {}
+        # Player-mutable fields (mirror the player-restricted UI: tokens
+        # via TOKEN, plus labels if they ever get permission).
+        for field in ('tokens', 'labels'):
+            if field in state:
+                current[field] = state[field]
+        # If the room had no prior state, seed with what we have
+        room['grid_state'] = current
+
     room['last_seen'][pid] = now_s()
     ev = {
-        'type': 'grid_state',
-        'state': state,
+        'type':  'grid_state',
+        'state': room['grid_state'],
         'ts':    now_ms(),
     }
     add_event(room, ev)
