@@ -31,6 +31,15 @@ const cellCvs = document.createElement('canvas');
 const cctx    = cellCvs.getContext('2d');
 
 
+// Global error reporter — surfaces any uncaught error in the browser
+// console with a clear tag so we can spot it during multiplayer sessions.
+window.addEventListener('error', e => {
+  try { console.error('[arcane:uncaught]', e.message, 'at', e.filename, e.lineno + ':' + e.colno, e.error); } catch(_){}
+});
+window.addEventListener('unhandledrejection', e => {
+  try { console.error('[arcane:unhandledrejection]', e.reason); } catch(_){}
+});
+
 let cols = 20, rows = 20, CELL = 28;
 
 // ── 8-bit sprite sheets ───────────────────────────────────────
@@ -5334,10 +5343,19 @@ requestAnimationFrame(render);
 
   function applyGridState(s) {
     if (!s || typeof s !== 'object') return;
+    // Log to console so we can diagnose blank-page reports
+    try { console.log('[arcane] applying grid_state', {
+      rows: s.rows, cols: s.cols,
+      hasBg: !!s.bgImageDataUrl,
+      bgSize: s.bgImageDataUrl ? s.bgImageDataUrl.length : 0,
+      tokenCount: (s.tokens || []).length,
+      gridCells: Object.keys(s.grid || {}).length,
+    }); } catch(e) {}
 
-    // Dimensions first — affects canvas sizing
-    if (typeof s.rows === 'number') rows = s.rows;
-    if (typeof s.cols === 'number') cols = s.cols;
+    // Dimensions first — affects canvas sizing.
+    // Guard against bad inputs that could collapse the canvas to 0×0.
+    if (typeof s.rows === 'number' && s.rows >= 1) rows = s.rows;
+    if (typeof s.cols === 'number' && s.cols >= 1) cols = s.cols;
     const colSlider = document.getElementById('col-slider');
     const rowSlider = document.getElementById('row-slider');
     if (colSlider) { colSlider.value = cols; document.getElementById('col-val').textContent = cols; }
@@ -5386,9 +5404,13 @@ requestAnimationFrame(render);
       bgImage = null; window._bgImageDataUrl = null;
     }
 
-    // Re-render
-    if (typeof resize === 'function') resize();
-    else if (typeof rebuildCells === 'function') rebuildCells();
+    // Re-render — wrap in try/catch so a single bad field can't blank the page.
+    try {
+      if (typeof resize === 'function') resize();
+      else if (typeof rebuildCells === 'function') rebuildCells();
+    } catch (renderErr) {
+      try { console.warn('[arcane] re-render after grid_state failed:', renderErr); } catch(e){}
+    }
   }
 
   // Expose so MP IIFE can call into us
