@@ -2508,3 +2508,31 @@ body.player-restricted label[for="row-slider"] { display: none !important; }
   color: rgba(255,255,255,0.55);
 }
 #mp-tunnel-status.error { color: #F87171; }
+
+/* Roll-request send-target picker */
+#rollreq-send-row {
+  display: none;
+  gap: 8px;
+  margin-top: 8px;
+}
+#rollreq-send-row.visible { display: flex; }
+#rollreq-send-row > button {
+  flex: 1; padding: 10px;
+  border-radius: 8px;
+  font-size: 12px; font-weight: 800; letter-spacing: .04em;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: transform .08s, box-shadow .12s;
+}
+#rollreq-send-party {
+  background: linear-gradient(135deg, #7C6FF7, #9188F9);
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(124,111,247,0.4);
+}
+#rollreq-send-party:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(124,111,247,0.55); }
+#rollreq-send-dm {
+  background: rgba(255,210,90,0.15);
+  border-color: rgba(255,210,90,0.55);
+  color: #FFD25A;
+}
+#rollreq-send-dm:hover { background: rgba(255,210,90,0.30); color: #fff; }

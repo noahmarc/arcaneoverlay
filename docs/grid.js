@@ -4827,23 +4827,51 @@ requestAnimationFrame(render);
   reqClose?.addEventListener('click', closeRollRequest);
   reqOverlay?.addEventListener('click', e => { if (e.target === reqOverlay) closeRollRequest(); });
 
+  // After clicking ROLL we hold the result here until the player picks
+  // a send target.
+  let _pendingRollResult = null;
+  const reqSendRow   = document.getElementById('rollreq-send-row');
+  const reqSendParty = document.getElementById('rollreq-send-party');
+  const reqSendDm    = document.getElementById('rollreq-send-dm');
+
   reqRollBtn?.addEventListener('click', () => {
     if (!_pendingReqSkill) return;
     const r = rollSkill(mpActiveSheet(), _pendingReqSkill);
+    _pendingRollResult = r;
+    // Reveal the result
     reqD20El.style.display = 'block';
     reqD20El.textContent = `d20 → ${r.d20}`;
     reqTotalEl.style.display = 'block';
     reqTotalEl.textContent = r.total;
-    reqRollBtn.disabled = true;
-    reqRollBtn.textContent = '✓ Sent';
-    // Share with party so DM and others see the result
-    if (window.arcaneSendRollResult) window.arcaneSendRollResult(r, 'all');
-    // Auto-close after a moment so the player sees their roll
-    setTimeout(closeRollRequest, 2500);
+    // Swap the Roll button out for the two send-target buttons
+    reqRollBtn.style.display = 'none';
+    if (reqSendRow) reqSendRow.classList.add('visible');
   });
 
+  function sendAndClose(to) {
+    if (_pendingRollResult && window.arcaneSendRollResult) {
+      window.arcaneSendRollResult(_pendingRollResult, to);
+    }
+    // Brief acknowledgement, then close
+    if (reqSendRow) reqSendRow.classList.remove('visible');
+    reqRollBtn.style.display = 'block';
+    reqRollBtn.disabled    = true;
+    reqRollBtn.textContent = to === 'dm' ? '✓ Sent to DM' : '✓ Sent to Party';
+    setTimeout(closeRollRequest, 1500);
+  }
+  reqSendParty?.addEventListener('click', () => sendAndClose('all'));
+  reqSendDm?.addEventListener('click',    () => sendAndClose('dm'));
+
+  // Reset the send-target picker every time the modal re-opens
+  const _origOpenRollRequest = openRollRequest;
+  function openRollRequestReset(skill, fromName) {
+    _pendingRollResult = null;
+    if (reqSendRow) reqSendRow.classList.remove('visible');
+    if (reqRollBtn) reqRollBtn.style.display = 'block';
+    _origOpenRollRequest(skill, fromName);
+  }
   // Expose so the chat layer can fire it
-  window.arcaneOpenRollRequest = openRollRequest;
+  window.arcaneOpenRollRequest = openRollRequestReset;
 
   // ── DM Roll-Request UI (in mp panel) ──────────────────────────
   // Populate skill picker
