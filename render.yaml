@@ -1,0 +1,13 @@
+# Render Blueprint — auto-deploys server.py as an always-on Python web service.
+# Setup: at render.com → New → Blueprint → select this repo → Apply.
+services:
+  - type: web
+    name: arcaneoverlay-server
+    runtime: python
+    plan: free                    # 0$, sleeps after 15 min idle, wakes on demand
+    region: oregon                # Pick the region closest to your players
+    rootDir: server               # Run from /server (we put server.py there)
+    buildCommand: "true"          # No build step — server.py is pure stdlib
+    startCommand: "python3 server.py"
+    # Render injects PORT — server.py reads it from os.environ
+    healthCheckPath: /api/my_ip
