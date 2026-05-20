@@ -1,0 +1,863 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>D&D 4e Battle Grid</title>
+<link rel="stylesheet" href="style.css?v=13">
+</head>
+<body>
+<div id="app">
+  <div id="toolbar" role="toolbar" aria-label="Drawing tools">
+    <div class="toolbar-left">
+      <!-- Effect categories (expandable) -->
+      <div class="effect-categories">
+
+        <!-- ── Elemental ── -->
+        <div class="effect-cat open" id="cat-elemental">
+          <button class="cat-toggle" type="button" aria-expanded="true">
+            <span class="cat-icon">🔥</span><span class="cat-label">Elemental</span>
+            <span class="cat-arrow">▾</span>
+          </button>
+          <div class="cat-pills">
+            <div class="cat-pills-inner">
+              <div class="effect-group">
+                <div class="effect-pill fire-pill active" id="pill-fire">
+                  <button class="effect-main" data-effect="fire" aria-pressed="true" title="Fire effect"><span class="icon">🔥</span>FIRE</button>
+                  <button class="arrow-btn" data-toggle="fire" aria-haspopup="true" aria-expanded="false" aria-label="Fire shape options">▾</button>
+                </div>
+                <div class="shape-dropdown" id="dd-fire" role="menu">
+                  <button class="shape-item selected" data-effect="fire" data-shape="draw" role="menuitem"><span class="sicon">✏️</span>Freehand</button>
+                  <button class="shape-item" data-effect="fire" data-shape="cone" role="menuitem"><span class="sicon">📐</span>Cone</button>
+                  <button class="shape-item" data-effect="fire" data-shape="circle" role="menuitem"><span class="sicon">⭕</span>Circle</button>
+                  <button class="shape-item" data-effect="fire" data-shape="square" role="menuitem"><span class="sicon">⬜</span>Square</button>
+                </div>
+              </div>
+              <div class="effect-group">
+                <div class="effect-pill ice-pill" id="pill-ice">
+                  <button class="effect-main" data-effect="ice" aria-pressed="false" title="Ice effect"><span class="icon">❄️</span>ICE</button>
+                  <button class="arrow-btn" data-toggle="ice" aria-haspopup="true" aria-expanded="false" aria-label="Ice shape options">▾</button>
+                </div>
+                <div class="shape-dropdown" id="dd-ice" role="menu">
+                  <button class="shape-item selected" data-effect="ice" data-shape="draw" role="menuitem"><span class="sicon">✏️</span>Freehand</button>
+                  <button class="shape-item" data-effect="ice" data-shape="cone" role="menuitem"><span class="sicon">📐</span>Cone</button>
+                  <button class="shape-item" data-effect="ice" data-shape="circle" role="menuitem"><span class="sicon">⭕</span>Circle</button>
+                  <button class="shape-item" data-effect="ice" data-shape="square" role="menuitem"><span class="sicon">⬜</span>Square</button>
+                </div>
+              </div>
+              <div class="effect-group">
+                <div class="effect-pill lightning-pill" id="pill-lightning">
+                  <button class="effect-main" data-effect="lightning" aria-pressed="false" title="Lightning effect"><span class="icon">⚡</span>LIGHTNING</button>
+                  <button class="arrow-btn" data-toggle="lightning" aria-haspopup="true" aria-expanded="false" aria-label="Lightning shape options">▾</button>
+                </div>
+                <div class="shape-dropdown" id="dd-lightning" role="menu">
+                  <button class="shape-item selected" data-effect="lightning" data-shape="draw" role="menuitem"><span class="sicon">✏️</span>Freehand</button>
+                  <button class="shape-item" data-effect="lightning" data-shape="cone" role="menuitem"><span class="sicon">📐</span>Cone</button>
+                  <button class="shape-item" data-effect="lightning" data-shape="circle" role="menuitem"><span class="sicon">⭕</span>Circle</button>
+                  <button class="shape-item" data-effect="lightning" data-shape="square" role="menuitem"><span class="sicon">⬜</span>Square</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Arcane ── -->
+        <div class="effect-cat" id="cat-arcane">
+          <button class="cat-toggle" type="button" aria-expanded="false">
+            <span class="cat-icon">⚗️</span><span class="cat-label">Arcane</span>
+            <span class="cat-arrow">▾</span>
+          </button>
+          <div class="cat-pills">
+            <div class="cat-pills-inner">
+              <div class="effect-group">
+                <div class="effect-pill poison-pill" id="pill-poison">
+                  <button class="effect-main" data-effect="poison" aria-pressed="false" title="Poison effect"><span class="icon">☠️</span>POISON</button>
+                  <button class="arrow-btn" data-toggle="poison" aria-haspopup="true" aria-expanded="false" aria-label="Poison shape options">▾</button>
+                </div>
+                <div class="shape-dropdown" id="dd-poison" role="menu">
+                  <button class="shape-item selected" data-effect="poison" data-shape="draw" role="menuitem"><span class="sicon">✏️</span>Freehand</button>
+                  <button class="shape-item" data-effect="poison" data-shape="cone" role="menuitem"><span class="sicon">📐</span>Cone</button>
+                  <button class="shape-item" data-effect="poison" data-shape="circle" role="menuitem"><span class="sicon">⭕</span>Circle</button>
+                  <button class="shape-item" data-effect="poison" data-shape="square" role="menuitem"><span class="sicon">⬜</span>Square</button>
+                </div>
+              </div>
+              <div class="effect-group">
+                <div class="effect-pill holy-pill" id="pill-holy">
+                  <button class="effect-main" data-effect="holy" aria-pressed="false" title="Holy effect"><span class="icon">✨</span>HOLY</button>
+                  <button class="arrow-btn" data-toggle="holy" aria-haspopup="true" aria-expanded="false" aria-label="Holy shape options">▾</button>
+                </div>
+                <div class="shape-dropdown" id="dd-holy" role="menu">
+                  <button class="shape-item selected" data-effect="holy" data-shape="draw" role="menuitem"><span class="sicon">✏️</span>Freehand</button>
+                  <button class="shape-item" data-effect="holy" data-shape="cone" role="menuitem"><span class="sicon">📐</span>Cone</button>
+                  <button class="shape-item" data-effect="holy" data-shape="circle" role="menuitem"><span class="sicon">⭕</span>Circle</button>
+                  <button class="shape-item" data-effect="holy" data-shape="square" role="menuitem"><span class="sicon">⬜</span>Square</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Terrain ── -->
+        <div class="effect-cat" id="cat-terrain">
+          <button class="cat-toggle" type="button" aria-expanded="false">
+            <span class="cat-icon">🌊</span><span class="cat-label">Terrain</span>
+            <span class="cat-arrow">▾</span>
+          </button>
+          <div class="cat-pills">
+            <div class="cat-pills-inner">
+              <div class="effect-group">
+                <div class="effect-pill water-pill" id="pill-water">
+                  <button class="effect-main" data-effect="water" aria-pressed="false" title="Water terrain"><span class="icon">💧</span>WATER</button>
+                  <button class="arrow-btn" data-toggle="water" aria-haspopup="true" aria-expanded="false" aria-label="Water shape options">▾</button>
+                </div>
+                <div class="shape-dropdown" id="dd-water" role="menu">
+                  <button class="shape-item selected" data-effect="water" data-shape="draw" role="menuitem"><span class="sicon">✏️</span>Freehand</button>
+                  <button class="shape-item" data-effect="water" data-shape="cone" role="menuitem"><span class="sicon">📐</span>Cone</button>
+                  <button class="shape-item" data-effect="water" data-shape="circle" role="menuitem"><span class="sicon">⭕</span>Circle</button>
+                  <button class="shape-item" data-effect="water" data-shape="square" role="menuitem"><span class="sicon">⬜</span>Square</button>
+                </div>
+              </div>
+              <div class="effect-group">
+                <div class="effect-pill grass-pill" id="pill-grass">
+                  <button class="effect-main" data-effect="grass" aria-pressed="false" title="Grass terrain"><span class="icon">🌿</span>GRASS</button>
+                  <button class="arrow-btn" data-toggle="grass" aria-haspopup="true" aria-expanded="false" aria-label="Grass shape options">▾</button>
+                </div>
+                <div class="shape-dropdown" id="dd-grass" role="menu">
+                  <button class="shape-item selected" data-effect="grass" data-shape="draw" role="menuitem"><span class="sicon">✏️</span>Freehand</button>
+                  <button class="shape-item" data-effect="grass" data-shape="cone" role="menuitem"><span class="sicon">📐</span>Cone</button>
+                  <button class="shape-item" data-effect="grass" data-shape="circle" role="menuitem"><span class="sicon">⭕</span>Circle</button>
+                  <button class="shape-item" data-effect="grass" data-shape="square" role="menuitem"><span class="sicon">⬜</span>Square</button>
+                </div>
+              </div>
+              <div class="effect-group">
+                <div class="effect-pill lava-pill" id="pill-lava">
+                  <button class="effect-main" data-effect="lava" aria-pressed="false" title="Lava terrain"><span class="icon">🌋</span>LAVA</button>
+                  <button class="arrow-btn" data-toggle="lava" aria-haspopup="true" aria-expanded="false" aria-label="Lava shape options">▾</button>
+                </div>
+                <div class="shape-dropdown" id="dd-lava" role="menu">
+                  <button class="shape-item selected" data-effect="lava" data-shape="draw" role="menuitem"><span class="sicon">✏️</span>Freehand</button>
+                  <button class="shape-item" data-effect="lava" data-shape="cone" role="menuitem"><span class="sicon">📐</span>Cone</button>
+                  <button class="shape-item" data-effect="lava" data-shape="circle" role="menuitem"><span class="sicon">⭕</span>Circle</button>
+                  <button class="shape-item" data-effect="lava" data-shape="square" role="menuitem"><span class="sicon">⬜</span>Square</button>
+                </div>
+              </div>
+              <div class="effect-group">
+                <div class="effect-pill stone-pill" id="pill-stone">
+                  <button class="effect-main" data-effect="stone" aria-pressed="false" title="Stone floor terrain"><span class="icon">🪨</span>STONE</button>
+                  <button class="arrow-btn" data-toggle="stone" aria-haspopup="true" aria-expanded="false" aria-label="Stone shape options">▾</button>
+                </div>
+                <div class="shape-dropdown" id="dd-stone" role="menu">
+                  <button class="shape-item selected" data-effect="stone" data-shape="draw" role="menuitem"><span class="sicon">✏️</span>Freehand</button>
+                  <button class="shape-item" data-effect="stone" data-shape="cone" role="menuitem"><span class="sicon">📐</span>Cone</button>
+                  <button class="shape-item" data-effect="stone" data-shape="circle" role="menuitem"><span class="sicon">⭕</span>Circle</button>
+                  <button class="shape-item" data-effect="stone" data-shape="square" role="menuitem"><span class="sicon">⬜</span>Square</button>
+                </div>
+              </div>
+              <div class="effect-group">
+                <div class="effect-pill difficult-pill" id="pill-difficult">
+                  <button class="effect-main" data-effect="difficult" aria-pressed="false" title="Difficult terrain"><span class="icon">⚠️</span>DIFFICULT</button>
+                  <button class="arrow-btn" data-toggle="difficult" aria-haspopup="true" aria-expanded="false" aria-label="Difficult shape options">▾</button>
+                </div>
+                <div class="shape-dropdown" id="dd-difficult" role="menu">
+                  <button class="shape-item selected" data-effect="difficult" data-shape="draw" role="menuitem"><span class="sicon">✏️</span>Freehand</button>
+                  <button class="shape-item" data-effect="difficult" data-shape="cone" role="menuitem"><span class="sicon">📐</span>Cone</button>
+                  <button class="shape-item" data-effect="difficult" data-shape="circle" role="menuitem"><span class="sicon">⭕</span>Circle</button>
+                  <button class="shape-item" data-effect="difficult" data-shape="square" role="menuitem"><span class="sicon">⬜</span>Square</button>
+                </div>
+              </div>
+              <div class="effect-group">
+                <div class="effect-pill blood-pill" id="pill-blood">
+                  <button class="effect-main" data-effect="blood" aria-pressed="false" title="Blood splatter"><span class="icon">🩸</span>BLOOD</button>
+                  <button class="arrow-btn" data-toggle="blood" aria-haspopup="true" aria-expanded="false" aria-label="Blood shape options">▾</button>
+                </div>
+                <div class="shape-dropdown" id="dd-blood" role="menu">
+                  <button class="shape-item selected" data-effect="blood" data-shape="draw" role="menuitem"><span class="sicon">✏️</span>Freehand</button>
+                  <button class="shape-item" data-effect="blood" data-shape="cone" role="menuitem"><span class="sicon">📐</span>Cone</button>
+                  <button class="shape-item" data-effect="blood" data-shape="circle" role="menuitem"><span class="sicon">⭕</span>Circle</button>
+                  <button class="shape-item" data-effect="blood" data-shape="square" role="menuitem"><span class="sicon">⬜</span>Square</button>
+                </div>
+              </div>
+              <button class="icon-btn cat-icon-btn" id="wall-btn" title="Wall tool — click and drag to draw walls · Shift-click to erase nearest wall"><span class="icon">🧱</span>WALL</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Tools ── -->
+        <div class="effect-cat" id="cat-tools">
+          <button class="cat-toggle" type="button" aria-expanded="false">
+            <span class="cat-icon">🛠️</span><span class="cat-label">Tools</span>
+            <span class="cat-arrow">▾</span>
+          </button>
+          <div class="cat-pills">
+            <div class="cat-pills-inner">
+              <div class="effect-group">
+                <div class="effect-pill erase-pill" id="pill-erase">
+                  <button class="effect-main" data-effect="erase" aria-pressed="false" title="Erase"><span class="icon">🧹</span>ERASE</button>
+                  <button class="arrow-btn" data-toggle="erase" aria-haspopup="true" aria-expanded="false" aria-label="Erase shape options">▾</button>
+                </div>
+                <div class="shape-dropdown" id="dd-erase" role="menu">
+                  <button class="shape-item selected" data-effect="erase" data-shape="draw" role="menuitem"><span class="sicon">✏️</span>Freehand</button>
+                  <button class="shape-item" data-effect="erase" data-shape="cone" role="menuitem"><span class="sicon">📐</span>Cone</button>
+                  <button class="shape-item" data-effect="erase" data-shape="circle" role="menuitem"><span class="sicon">⭕</span>Circle</button>
+                  <button class="shape-item" data-effect="erase" data-shape="square" role="menuitem"><span class="sicon">⬜</span>Square</button>
+                </div>
+              </div>
+              <button class="icon-btn cat-icon-btn" id="inspect-btn" title="Inspect cell status effects"><span class="icon">🔍</span>INSPECT</button>
+              <button class="icon-btn cat-icon-btn" id="ruler-btn" title="Measure distance — click and drag"><span class="icon">📐</span>RULER</button>
+              <button class="icon-btn cat-icon-btn" id="cover-btn" title="Mark cell edges with cover (½, ¾, full)"><span class="icon">🛡️</span>COVER</button>
+              <button class="icon-btn cat-icon-btn" id="token-btn" title="Open bestiary &amp; place tokens — drag a creature onto the grid, or click an empty cell for a quick token, or click an existing token to edit"><span class="icon">🪙</span>TOKEN</button>
+              <button class="icon-btn cat-icon-btn" id="bounds-btn" title="Set projection boundary for your table"><span class="icon">🖼️</span>TABLE</button>
+              <button class="icon-btn cat-icon-btn" id="init-btn" title="Initiative tracker"><span class="icon">⚔️</span>INIT</button>
+              <button class="icon-btn cat-icon-btn" id="project-btn" title="Open projection window for projector display"><span class="icon">🖥️</span>PROJECT</button>
+              <button class="icon-btn cat-icon-btn" id="fog-btn" title="Fog of War — drag to reveal, Shift-drag to hide"><span class="icon">🌫️</span>FOG</button>
+              <div id="fog-panel" style="display:none">
+                <button class="icon-btn" id="fog-cover-btn" title="Cover all tiles with fog">⬛ COVER</button>
+                <button class="icon-btn" id="fog-uncover-btn" title="Remove all fog">⬜ UNCOVER</button>
+              </div>
+              <button class="icon-btn cat-icon-btn" id="grid-overlay-btn" title="Cycle grid display: Off → Coords (A1, B2…) → 1″ physical overlay → Off"><span class="icon">📏</span><span id="grid-overlay-label">GRID</span></button>
+              <div id="grid-scale-panel" style="display:none">
+                <label for="grid-scale-input">SCALE</label>
+                <input type="range" id="grid-scale-input" min="32" max="150" value="96" step="1" aria-label="Grid overlay size in pixels per inch">
+                <input type="number" id="grid-scale-val" value="96" min="32" max="150" step="1" aria-label="Grid overlay size exact value">
+                <span class="radius-note">px</span>
+              </div>
+              <button class="icon-btn cat-icon-btn" id="dm-ref-btn" title="Toggle DM reference view — full map without fog"><span class="icon">👁️</span>DM REF</button>
+              <button class="icon-btn cat-icon-btn" id="map-btn" title="Import background map image"><span class="icon">🗺️</span>MAP</button>
+              <div id="map-panel" style="display:none">
+                <button class="icon-btn" id="map-clear-btn" title="Remove background image">✕ CLEAR</button>
+              </div>
+              <input type="file" id="map-input" accept="image/*" style="display:none">
+              <button class="icon-btn cat-icon-btn" id="label-btn" title="Place text labels on the map · click cell to place or edit"><span class="icon">🏷️</span>LABEL</button>
+              <button class="icon-btn cat-icon-btn" id="los-btn" title="Line of sight checker — drag to check LoS"><span class="icon">👁️</span>LOS</button>
+              <button class="icon-btn cat-icon-btn" id="trap-btn" title="Place DM-only trap markers · visible in DM Ref, hidden on projector"><span class="icon">⚠️</span>TRAPS</button>
+              <button class="icon-btn cat-icon-btn" id="teleport-btn" title="Teleport a token — click token then destination"><span class="icon">✨</span>TPORT</button>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /effect-categories -->
+      <div id="radius-panel">
+        <label for="radius-input">RADIUS</label>
+        <input type="range" id="radius-input" min="1" max="10" value="3" aria-label="Radius in squares">
+        <span id="radius-val-display">3</span>
+        <span class="radius-note">sq</span>
+      </div>
+
+      <!-- Utility buttons separated by a visual divider -->
+      <div class="toolbar-actions">
+        <button class="icon-btn" id="undo-btn" title="Undo (Ctrl+Z)"><span class="icon">↩️</span>UNDO</button>
+        <button class="icon-btn" id="redo-btn" title="Redo (Ctrl+Shift+Z)"><span class="icon">↪️</span>REDO</button>
+        <button class="icon-btn" id="save-btn" title="Save current battle state to a JSON file">💾 SAVE</button>
+        <button class="icon-btn" id="load-btn" title="Load a battle state from a JSON file">📂 LOAD</button>
+        <input type="file" id="load-input" accept=".json" style="display:none">
+        <button class="icon-btn" id="preset-btn" title="Save and restore named encounter presets">📋 PRESETS</button>
+        <div id="preset-panel" style="display:none">
+          <div id="preset-list"></div>
+          <div id="preset-add-row">
+            <input type="text" id="preset-name-in" placeholder="Preset name…" maxlength="24" autocomplete="off">
+            <button id="preset-save-btn">+ Save</button>
+          </div>
+        </div>
+        <button class="icon-btn" id="scenes-btn" title="Save and switch between named scenes">🎬 SCENES</button>
+        <div id="scenes-panel" style="display:none">
+          <div id="scene-list"></div>
+          <div id="scene-add-row">
+            <input type="text" id="scene-name-in" placeholder="Scene name…" maxlength="28" autocomplete="off">
+            <button id="scene-save-btn">+ Save</button>
+          </div>
+        </div>
+        <button class="icon-btn" id="undo-history-btn" title="Undo history">🕐 HISTORY</button>
+        <div id="undo-panel" style="display:none; flex-direction:column; gap:6px; padding:8px">
+          <div id="undo-count" style="font-size:11px; color:rgba(255,255,255,0.6)"></div>
+          <button class="icon-btn" id="undo-all-btn">↩ Undo All</button>
+        </div>
+      </div>
+    </div>
+    <div class="toolbar-right">
+      <label>W<input type="range" id="col-slider" min="8" max="30" value="20" aria-label="Grid width"><span id="col-val">20</span></label>
+      <label>H<input type="range" id="row-slider" min="8" max="30" value="20" aria-label="Grid height"><span id="row-val">20</span></label>
+      <button class="icon-btn" id="clear-btn" title="Clear all effects and tokens">CLR</button>
+    </div>
+  </div>
+
+  <div id="canvas-wrap"><canvas id="grid" role="img" aria-label="Battle grid"></canvas></div>
+  <div id="hint" aria-live="polite"></div>
+
+  <div id="init-panel" aria-label="Initiative tracker">
+    <div id="init-header">
+      <h3>⚔️ INITIATIVE ORDER</h3>
+      <span id="round-label"></span>
+      <div id="turn-timer" style="display:none">
+        <span id="timer-display">0:30</span>
+        <button class="timer-btn" id="timer-toggle" title="Start/pause timer">▶</button>
+        <button class="timer-btn" id="timer-reset" title="Reset timer">↺</button>
+      </div>
+    </div>
+    <div id="init-add-row">
+      <input id="init-name-in" type="text" placeholder="Name…" maxlength="24" autocomplete="off" aria-label="Combatant name">
+      <input id="init-score-in" type="number" placeholder="Init" aria-label="Initiative score">
+      <button id="init-add-btn">+ Add</button>
+    </div>
+    <div id="init-list" role="list"></div>
+    <div id="init-controls">
+      <button class="init-ctrl-btn" id="init-sort-btn" title="Sort by initiative score">Sort ↓</button>
+      <button class="init-ctrl-btn go" id="init-next-btn" title="Advance to next turn">Next Turn ▶</button>
+      <button class="init-ctrl-btn" id="init-reset-btn" title="Reset to round 1">Reset</button>
+      <button class="init-ctrl-btn" id="timer-btn" title="Toggle turn timer">⏱ Timer</button>
+    </div>
+  </div>
+</div>
+
+<!-- Projector Setup Modal -->
+<div class="modal-overlay" id="projector-modal" role="dialog" aria-modal="true" aria-labelledby="projector-modal-title" style="display:none">
+  <div class="modal">
+    <h3 id="projector-modal-title">🖥️ PROJECTOR SETUP</h3>
+    <ol class="proj-steps">
+      <li>In your OS display settings, set the projector as an <strong>extended display</strong> (not mirrored)</li>
+      <li>Click <strong>OPEN WINDOW</strong> below to open the projection window</li>
+      <li>Drag it to your projector display</li>
+      <li>Click the <strong>⛶ FULLSCREEN</strong> button inside that window</li>
+    </ol>
+    <p class="proj-note">Bluetooth projectors: connect first so the OS sees them as a display, then follow the steps above.</p>
+    <div class="modal-btns">
+      <button class="modal-btn primary" id="proj-open-btn">OPEN WINDOW</button>
+      <button class="modal-btn secondary" id="proj-cancel-btn">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Label Modal -->
+<div class="modal-overlay" id="label-modal" role="dialog" aria-modal="true" aria-labelledby="label-modal-title">
+  <div class="modal">
+    <h3 id="label-modal-title">PLACE LABEL</h3>
+    <label for="label-text-in">TEXT</label>
+    <input type="text" id="label-text-in" placeholder="Entrance, Trap, Boss Room…" maxlength="32" autocomplete="off">
+    <div class="modal-btns">
+      <button class="modal-btn primary" id="label-ok">Place</button>
+      <button class="modal-btn danger" id="label-delete" style="display:none">Delete</button>
+      <button class="modal-btn secondary" id="label-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Token Modal -->
+<div class="modal-overlay" id="token-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+  <div class="modal modal-token">
+    <h3 id="modal-title">PLACE TOKEN</h3>
+    <label for="tok-name">NAME</label>
+    <input type="text" id="tok-name" placeholder="Goblin, Fighter…" maxlength="12" autocomplete="off">
+    <label>COLOR</label>
+    <div class="color-row" id="color-swatches" role="radiogroup" aria-label="Token color"></div>
+    <div class="tok-row">
+      <div class="tok-field">
+        <label>SIZE</label>
+        <div class="size-btns" id="tok-size-row" role="radiogroup" aria-label="Token size">
+          <button class="size-btn" data-size="1">1×1</button>
+          <button class="size-btn" data-size="2">2×2</button>
+          <button class="size-btn" data-size="3">3×3</button>
+        </div>
+      </div>
+      <div class="tok-field">
+        <label for="tok-speed">SPEED</label>
+        <div style="display:flex;align-items:center;gap:4px">
+          <input type="number" id="tok-speed" value="6" min="0" max="20" step="1" aria-label="Speed in squares">
+          <span class="radius-note">sq</span>
+        </div>
+      </div>
+    </div>
+    <div class="tok-row">
+      <div class="tok-field">
+        <label>HP</label>
+        <div style="display:flex;align-items:center;gap:4px">
+          <input type="number" id="tok-hp" placeholder="—" min="0" aria-label="Current HP">
+          <span style="opacity:.4">/</span>
+          <input type="number" id="tok-maxhp" placeholder="—" min="1" aria-label="Max HP">
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
+      <input type="checkbox" id="tok-conc" style="width:14px;height:14px;accent-color:#9B59B6">
+      <label for="tok-conc" style="font-size:11px;font-weight:700;letter-spacing:.05em;color:rgba(255,255,255,0.6)">CONCENTRATING</label>
+    </div>
+    <label>EXHAUSTION
+      <select id="tok-exhaustion" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#fff;border-radius:6px;padding:4px 8px;font-size:12px;margin-left:6px">
+        <option value="0">None</option>
+        <option value="1">1 – Disadvantage on checks</option>
+        <option value="2">2 – Speed halved</option>
+        <option value="3">3 – Disadvantage on attacks/saves</option>
+        <option value="4">4 – Max HP halved</option>
+        <option value="5">5 – Speed = 0</option>
+        <option value="6">6 – Death</option>
+      </select>
+    </label>
+    <label>LIGHT (squares)
+      <span style="font-size:11px;color:rgba(255,255,255,0.45);font-weight:400">Bright</span>
+      <input type="number" id="tok-light-bright" min="0" max="20" value="0" style="width:42px">
+      <span style="font-size:11px;color:rgba(255,255,255,0.45);font-weight:400">Dim</span>
+      <input type="number" id="tok-light-dim" min="0" max="30" value="0" style="width:42px">
+    </label>
+    <label>CONDITIONS</label>
+    <div id="tok-conditions" class="conditions-grid"></div>
+    <div id="death-saves-section" style="display:none">
+      <label>DEATH SAVES</label>
+      <div class="ds-row">
+        <span class="ds-label">Successes</span>
+        <label><input type="checkbox" class="ds-success" data-i="0"></label>
+        <label><input type="checkbox" class="ds-success" data-i="1"></label>
+        <label><input type="checkbox" class="ds-success" data-i="2"></label>
+      </div>
+      <div class="ds-row">
+        <span class="ds-label">Failures</span>
+        <label><input type="checkbox" class="ds-fail" data-i="0"></label>
+        <label><input type="checkbox" class="ds-fail" data-i="1"></label>
+        <label><input type="checkbox" class="ds-fail" data-i="2"></label>
+      </div>
+    </div>
+    <div class="modal-btns">
+      <button class="modal-btn primary" id="tok-ok">Place</button>
+      <button class="modal-btn danger" id="tok-delete" style="display:none">Delete</button>
+      <button class="modal-btn secondary" id="tok-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div id="cell-tooltip" aria-live="polite" aria-atomic="true"></div>
+
+<div id="layer-menu" role="menu" aria-label="Remove layer">
+  <div id="layer-menu-title">REMOVE LAYER</div>
+  <div id="layer-menu-items"></div>
+</div>
+
+<div id="autosave-notice" aria-label="Auto-save recovery">
+  <div id="autosave-msg"></div>
+  <div style="display:flex;gap:8px">
+    <button id="autosave-restore" class="modal-btn primary" style="flex:1;padding:6px">Restore</button>
+    <button id="autosave-dismiss" class="modal-btn secondary" style="flex:1;padding:6px">Dismiss</button>
+  </div>
+</div>
+
+<div id="dm-ref-panel" style="display:none" aria-label="DM reference view">
+  <div id="dm-ref-header">
+    <span>👁️ DM REFERENCE</span>
+    <button id="dm-ref-close" title="Close">✕</button>
+  </div>
+  <canvas id="dm-ref-canvas"></canvas>
+  <div id="dm-ref-hint">Full map · no fog · not projected</div>
+</div>
+<!-- ── Multiplayer sidebar tab ── -->
+<!-- ── Dice roller button ── -->
+<button id="dice-btn" title="Roll Dice">🎲</button>
+
+<!-- ── 4e Character Sheet button ── -->
+<button id="sheet-btn" title="Open character sheet">🎭</button>
+
+<!-- ── Bestiary button ── -->
+<button id="bestiary-btn" title="Open bestiary (creature library)">📚</button>
+
+<!-- ── Bestiary overlay ── -->
+<div id="bestiary-overlay">
+  <div id="bestiary-panel">
+    <div id="bestiary-header">
+      <span class="bestiary-title">📚 Bestiary</span>
+      <button id="bestiary-close" title="Close">✕</button>
+    </div>
+    <div id="bestiary-toolbar">
+      <input id="bestiary-search" type="text" placeholder="🔍 Search by name, type, CR…" autocomplete="off">
+      <button id="bestiary-new-btn">＋ New Creature</button>
+      <button id="bestiary-presets-btn" title="Add a roster of monster names from your 4e Monster Manual (default stats — fill them in yourself)">📥 Load Presets</button>
+    </div>
+    <div id="bestiary-list"></div>
+
+    <!-- Editor (hidden until New/Edit is clicked) -->
+    <div id="bestiary-editor" style="display:none">
+      <div class="be-editor-title">
+        <span id="be-editor-mode">New Creature</span>
+        <button id="be-cancel-btn">✕ Cancel</button>
+      </div>
+      <div class="be-row">
+        <label>Name</label>
+        <input id="be-name" type="text" placeholder="e.g. Goblin">
+      </div>
+      <div class="be-row be-row-3">
+        <div><label>Size</label>
+          <select id="be-size">
+            <option value="tiny">Tiny</option>
+            <option value="small">Small</option>
+            <option value="medium" selected>Medium</option>
+            <option value="large">Large</option>
+            <option value="huge">Huge</option>
+            <option value="gargantuan">Gargantuan</option>
+          </select>
+        </div>
+        <div><label>Type</label><input id="be-type" type="text" placeholder="humanoid"></div>
+        <div><label>CR / Level</label><input id="be-cr" type="text" placeholder="1/4"></div>
+      </div>
+      <div class="be-section-title">DEFENSES</div>
+      <div class="be-row be-row-3">
+        <div><label>AC</label><input id="be-ac" type="number" min="0" value="10"></div>
+        <div><label>HP</label><input id="be-hp" type="number" min="0" value="10"></div>
+        <div><label>Speed</label><input id="be-speed" type="number" min="0" value="6"></div>
+      </div>
+      <div class="be-section-title">SAVES</div>
+      <div class="be-row be-row-saves">
+        <div><label>STR</label><input id="be-save-STR" type="number" value="0"></div>
+        <div><label>DEX</label><input id="be-save-DEX" type="number" value="0"></div>
+        <div><label>CON</label><input id="be-save-CON" type="number" value="0"></div>
+        <div><label>INT</label><input id="be-save-INT" type="number" value="0"></div>
+        <div><label>WIS</label><input id="be-save-WIS" type="number" value="0"></div>
+        <div><label>CHA</label><input id="be-save-CHA" type="number" value="0"></div>
+      </div>
+      <div class="be-section-title">RESISTANCES &amp; IMMUNITIES</div>
+      <div class="be-row"><label>Resistances</label><input id="be-resist" type="text" placeholder="fire, cold…"></div>
+      <div class="be-row"><label>Immunities</label><input id="be-immune" type="text" placeholder="poison…"></div>
+      <div class="be-row"><label>Vulnerabilities</label><input id="be-vuln" type="text" placeholder="radiant…"></div>
+      <div class="be-row"><label>Cond. Immunities</label><input id="be-cond-immune" type="text" placeholder="charmed, frightened…"></div>
+      <div class="be-section-title">SENSES &amp; LANGUAGES</div>
+      <div class="be-row"><label>Senses</label><input id="be-senses" type="text" placeholder="darkvision 60ft…"></div>
+      <div class="be-row"><label>Languages</label><input id="be-languages" type="text" placeholder="Common, Goblin…"></div>
+      <div class="be-row"><label>Notes</label><textarea id="be-notes" rows="3" placeholder="Tactics, special abilities, source page…"></textarea></div>
+
+      <div class="be-editor-footer">
+        <button id="be-save-btn">💾 Save</button>
+        <button id="be-delete-btn" style="display:none">🗑 Delete</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Floating banner shown when a creature is queued for placement -->
+<div id="bestiary-place-banner" style="display:none">
+  <span id="bestiary-place-banner-text"></span>
+  <button id="bestiary-place-cancel">✕ Cancel</button>
+</div>
+
+<!-- ── DM Give-Item modal ── -->
+<div id="give-item-overlay">
+  <div id="give-item-modal">
+    <div id="give-item-header">
+      <span>🎁 Send Item to Player</span>
+      <button id="gi-close" title="Close">✕</button>
+    </div>
+    <div id="give-item-body">
+      <div class="gi-row">
+        <label>To</label>
+        <select id="gi-target" aria-label="Recipient">
+          <!-- populated by JS: Party + each player -->
+        </select>
+      </div>
+      <div class="gi-row">
+        <label>Item Name</label>
+        <input id="gi-name" type="text" placeholder="e.g. Healing Potion" maxlength="60">
+      </div>
+      <div class="gi-row gi-row-2">
+        <div><label>Quantity</label>
+          <input id="gi-qty" type="number" min="1" max="9999" value="1">
+        </div>
+        <div><label>Weight (lb per unit)</label>
+          <input id="gi-weight" type="number" min="0" step="0.1" value="0">
+        </div>
+      </div>
+      <div class="gi-row">
+        <label>Notes (optional)</label>
+        <textarea id="gi-notes" rows="2" placeholder="A short flavour blurb or rules note"></textarea>
+      </div>
+    </div>
+    <div id="give-item-footer">
+      <button id="gi-send-btn">🎁 Send</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Received-item toast (players) ── -->
+<div id="item-received-toast" style="display:none">
+  <div id="item-received-icon">🎁</div>
+  <div id="item-received-body">
+    <div id="item-received-title"></div>
+    <div id="item-received-detail"></div>
+  </div>
+  <button id="item-received-dismiss">✓</button>
+</div>
+
+<!-- ── DM Roll Request pop-up ── -->
+<div id="rollreq-overlay">
+  <div id="rollreq-modal">
+    <div id="rollreq-header">
+      <span>🎲 DM ROLL REQUEST</span>
+      <button id="rollreq-close" title="Dismiss">✕</button>
+    </div>
+    <div id="rollreq-body">
+      <div id="rollreq-from"></div>
+      <div id="rollreq-skill"></div>
+      <div id="rollreq-breakdown"></div>
+      <div id="rollreq-d20" style="display:none"></div>
+      <div id="rollreq-total" style="display:none"></div>
+    </div>
+    <div id="rollreq-footer">
+      <button id="rollreq-roll-btn">🎲 ROLL</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── 4e Character Sheet overlay ── -->
+<div id="sheet-overlay">
+  <div id="sheet-panel">
+    <div id="sheet-panel-header">
+      <span class="sheet-title">🎭 4e Character Sheet</span>
+      <button id="sheet-close-btn" title="Close">✕</button>
+    </div>
+    <div id="sheet-switcher">
+      <label>Sheet</label>
+      <select id="sh-active-select" aria-label="Active character sheet"></select>
+      <button id="sh-new-btn" title="Create a new character sheet">＋ New</button>
+      <button id="sh-delete-btn" title="Delete this character sheet">🗑</button>
+    </div>
+    <div id="sheet-body">
+      <div class="sheet-row">
+        <label>Name</label><input id="sh-name" type="text" placeholder="Hero">
+        <label>Level</label><input id="sh-level" type="number" min="1" max="30" value="1" style="width:54px">
+      </div>
+      <div class="sheet-row">
+        <label>Class</label><input id="sh-class" type="text" placeholder="Fighter">
+        <label>Race</label><input id="sh-race" type="text" placeholder="Human">
+      </div>
+      <div class="sheet-section-title">ABILITY SCORES</div>
+      <div id="sh-abilities" class="sheet-abilities">
+        <div class="sh-ability"><label>STR</label><input data-abi="STR" type="number" min="1" max="30" value="10"><span class="sh-mod" data-mod="STR">+0</span></div>
+        <div class="sh-ability"><label>CON</label><input data-abi="CON" type="number" min="1" max="30" value="10"><span class="sh-mod" data-mod="CON">+0</span></div>
+        <div class="sh-ability"><label>DEX</label><input data-abi="DEX" type="number" min="1" max="30" value="10"><span class="sh-mod" data-mod="DEX">+0</span></div>
+        <div class="sh-ability"><label>INT</label><input data-abi="INT" type="number" min="1" max="30" value="10"><span class="sh-mod" data-mod="INT">+0</span></div>
+        <div class="sh-ability"><label>WIS</label><input data-abi="WIS" type="number" min="1" max="30" value="10"><span class="sh-mod" data-mod="WIS">+0</span></div>
+        <div class="sh-ability"><label>CHA</label><input data-abi="CHA" type="number" min="1" max="30" value="10"><span class="sh-mod" data-mod="CHA">+0</span></div>
+      </div>
+      <div class="sheet-section-title">DEFENSES &amp; HP</div>
+      <div class="sheet-row sheet-row-defs">
+        <label>AC</label><input id="sh-AC" type="number" value="10">
+        <label>Fort</label><input id="sh-Fort" type="number" value="10">
+        <label>Ref</label><input id="sh-Ref" type="number" value="10">
+        <label>Will</label><input id="sh-Will" type="number" value="10">
+      </div>
+      <div class="sheet-row">
+        <label>HP</label><input id="sh-hp" type="number" value="0" style="width:60px">
+        <label>/ Max</label><input id="sh-maxhp" type="number" value="0" style="width:60px">
+        <label>Surges</label><input id="sh-surges" type="number" value="0" style="width:50px">
+      </div>
+      <div class="sheet-section-title">SKILLS  <span class="sh-hint">✔ = trained (+5) · click 🎲 to roll</span></div>
+      <div id="sh-skills" class="sheet-skills"></div>
+      <div id="sh-result" class="sh-result" style="display:none"></div>
+
+      <div class="sheet-section-title">INVENTORY  <span class="sh-hint">✔ = equipped · ± adjust quantity · 🗑 remove</span></div>
+      <div id="sh-inventory" class="sheet-inventory"></div>
+      <div id="sh-inv-add-row">
+        <input id="sh-inv-name" type="text" placeholder="Item name…" maxlength="60">
+        <input id="sh-inv-qty"  type="number" value="1" min="1" max="9999" title="Quantity">
+        <input id="sh-inv-weight" type="number" value="0" min="0" step="0.1" placeholder="lb" title="Weight per unit">
+        <button id="sh-inv-add" title="Add item">＋ Add</button>
+      </div>
+      <div id="sh-inv-totals"></div>
+    </div>
+    <div id="sheet-footer">
+      <button id="sheet-save-btn">💾 Save</button>
+      <button id="sheet-reset-btn">↺ Reset</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Dice roller overlay ── -->
+<div id="dice-overlay">
+  <div id="dice-panel">
+    <div id="dice-panel-header">
+      <span id="dice-panel-title">🎲 Dice Roller</span>
+      <button id="dr-close">✕</button>
+    </div>
+
+    <!-- Die type selector -->
+    <div id="dr-dice-row">
+      <button class="dr-die" data-sides="4">d4</button>
+      <button class="dr-die" data-sides="6">d6</button>
+      <button class="dr-die" data-sides="8">d8</button>
+      <button class="dr-die" data-sides="10">d10</button>
+      <button class="dr-die" data-sides="12">d12</button>
+      <button class="dr-die active" data-sides="20">d20</button>
+      <button class="dr-die" data-sides="100">d%</button>
+    </div>
+
+    <!-- Count + modifier -->
+    <div id="dr-config">
+      <div id="dr-count-row">
+        <button class="dr-adj" id="dr-dec">−</button>
+        <div id="dr-count-display">
+          <span id="dr-count">1</span>
+          <span id="dr-label">d20</span>
+        </div>
+        <button class="dr-adj" id="dr-inc">+</button>
+      </div>
+      <div id="dr-mod-row">
+        <label for="dr-mod">Modifier</label>
+        <input type="number" id="dr-mod" value="0" min="-99" max="99">
+      </div>
+    </div>
+
+    <!-- Enchantment presets -->
+    <div id="dr-presets">
+      <div class="dr-preset" id="dr-preset-0">
+        <div class="dr-preset-view">
+          <span class="dr-preset-name">Enchantment 1</span>
+          <span class="dr-preset-val">+0</span>
+          <button class="dr-preset-edit" data-idx="0" title="Edit">✏️</button>
+        </div>
+        <div class="dr-preset-form" style="display:none">
+          <input class="dr-preset-name-in" type="text" maxlength="20" placeholder="Name…">
+          <input class="dr-preset-val-in"  type="number" min="-99" max="99" placeholder="0">
+          <button class="dr-preset-save" data-idx="0">✓</button>
+        </div>
+      </div>
+      <div class="dr-preset" id="dr-preset-1">
+        <div class="dr-preset-view">
+          <span class="dr-preset-name">Enchantment 2</span>
+          <span class="dr-preset-val">+0</span>
+          <button class="dr-preset-edit" data-idx="1" title="Edit">✏️</button>
+        </div>
+        <div class="dr-preset-form" style="display:none">
+          <input class="dr-preset-name-in" type="text" maxlength="20" placeholder="Name…">
+          <input class="dr-preset-val-in"  type="number" min="-99" max="99" placeholder="0">
+          <button class="dr-preset-save" data-idx="1">✓</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Result display -->
+    <div id="dr-result">
+      <div id="dr-rolls"></div>
+      <div id="dr-total">—</div>
+      <div id="dr-formula"></div>
+    </div>
+
+    <!-- Roll button -->
+    <button id="dr-roll">Roll</button>
+
+    <!-- Share (shown only in session) -->
+    <div id="dr-share" style="display:none">
+      <button id="dr-send-party">📢 Send to Party</button>
+      <button id="dr-send-dm">🔒 Send to DM</button>
+    </div>
+  </div>
+</div>
+
+<button id="mp-tab-btn" title="Multiplayer chat &amp; rooms">💬<span id="mp-badge" style="display:none">●</span></button>
+
+<!-- ── Multiplayer panel ── -->
+<div id="mp-panel">
+  <div id="mp-panel-header">
+    <!-- Close button left so title can be truly centered -->
+    <button id="mp-panel-close" title="Close panel" aria-label="Close multiplayer panel">✕</button>
+    <span id="mp-panel-title">⚔ MULTIPLAYER</span>
+    <!-- spacer to balance the close button -->
+    <span style="width:28px"></span>
+  </div>
+
+  <!-- ── Not in a room ── -->
+  <div id="mp-setup">
+    <div id="mp-setup-inner">
+
+      <!-- HOST card -->
+      <button id="mp-create-btn" class="mp-action-btn dm-btn">
+        <span style="font-size:22px;line-height:1">👑</span>
+        <span style="font-size:14px;font-weight:800;letter-spacing:.05em">HOST A SESSION</span>
+        <span class="mp-sub">You are the Dungeon Master</span>
+      </button>
+
+      <div class="mp-or">or</div>
+
+      <!-- JOIN section -->
+      <div class="mp-field">
+        <label for="mp-code-in">Room Code</label>
+        <input id="mp-code-in" type="text" placeholder="ABC123" maxlength="6" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="mp-field">
+        <label for="mp-name-in">Your Name</label>
+        <input id="mp-name-in" type="text" placeholder="Gandalf…" maxlength="16" autocomplete="off">
+      </div>
+      <button id="mp-join-btn" class="mp-action-btn">
+        <span style="font-size:15px;line-height:1">🗡️</span>
+        <span style="font-size:13px;font-weight:700">JOIN A SESSION</span>
+      </button>
+
+      <div id="mp-join-error" class="mp-error" style="display:none" aria-live="polite"></div>
+    </div>
+  </div>
+
+  <!-- ── In a room ── -->
+  <div id="mp-room" style="display:none">
+
+    <!-- Top info strip (200px) -->
+    <div id="mp-room-top">
+
+      <!-- DM-only: room code -->
+      <div id="mp-code-wrap" style="display:none">
+        <span class="mp-label">Room Code — share with players</span>
+        <div id="mp-code-display" title="Click to copy" aria-label="Room code — click to copy"></div>
+        <span class="mp-hint">Click to copy to clipboard</span>
+      </div>
+
+      <!-- Active character for this session -->
+      <div id="mp-active-sheet-wrap">
+        <span class="mp-label">🎭 Playing as</span>
+        <select id="mp-active-sheet" aria-label="Active character sheet for multiplayer rolls"></select>
+      </div>
+
+      <!-- Players list -->
+      <div id="mp-players-wrap">
+        <span class="mp-label">Players Online</span>
+        <div id="mp-players-list" role="list" aria-label="Online players"></div>
+      </div>
+
+      <!-- Leave -->
+      <button id="mp-leave-btn" class="mp-leave" aria-label="Leave this room">Leave Room</button>
+    </div>
+
+    <!-- Chat area (fills remaining height) -->
+    <div id="mp-chat">
+      <!-- Tab pills -->
+      <div id="mp-chat-tabs" role="tablist" aria-label="Chat channels"></div>
+
+      <!-- DM-only tools -->
+      <div id="mp-dm-roll-tools">
+        <div class="mp-dm-row">
+          <select id="mp-dm-roll-skill" aria-label="Skill to request"><!-- populated by JS --></select>
+          <select id="mp-dm-roll-target" aria-label="Who to send the request to"><!-- populated by JS --></select>
+          <button id="mp-dm-roll-req" title="Send a roll request">🎲 Request</button>
+        </div>
+        <div class="mp-dm-row">
+          <button id="mp-dm-give-item-btn" title="Send an item directly to a player's inventory">🎁 Send Item</button>
+        </div>
+      </div>
+
+      <!-- Message feed -->
+      <div id="mp-messages" role="log" aria-live="polite" aria-label="Chat messages"></div>
+
+      <!-- Input row -->
+      <div id="mp-input-row">
+        <input type="text" id="mp-msg-in" placeholder="Send a message…" maxlength="400" autocomplete="off" aria-label="Chat message">
+        <button id="mp-send-btn" title="Send message" aria-label="Send">➤</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Create room modal ── -->
+<div class="modal-overlay" id="mp-dm-modal" role="dialog" aria-modal="true" aria-labelledby="mp-dm-modal-title">
+  <div class="modal">
+    <h3 id="mp-dm-modal-title">👑 CREATE ROOM</h3>
+    <label for="mp-room-name">Room Name</label>
+    <input type="text" id="mp-room-name" placeholder="The Dragon's Den…" maxlength="32" autocomplete="off">
+    <label for="mp-dm-name">Your DM Name</label>
+    <input type="text" id="mp-dm-name" placeholder="Dungeon Master…" maxlength="16" autocomplete="off">
+    <div class="modal-btns">
+      <button class="modal-btn primary" id="mp-dm-ok">Create Room</button>
+      <button class="modal-btn secondary" id="mp-dm-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+<script src="grid.js"></script>
+</body>
+</html>
