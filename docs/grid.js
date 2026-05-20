@@ -3713,6 +3713,19 @@ requestAnimationFrame(render);
   }
 
   async function discoverServer(code, onStatus) {
+    // 0. Explicit override — ?server=… in the page URL or a remembered
+    //    value in localStorage takes priority. This is how off-LAN players
+    //    reach the DM through a cloudflared/ngrok tunnel.
+    if (SERVER && SERVER !== 'http://localhost:8765') {
+      onStatus('Trying configured server…');
+      try {
+        const r = await fetchTimeout(
+          `${SERVER}/api/find_room?code=${encodeURIComponent(code)}`, 5000);
+        const d = await r.json();
+        if (d.ok) return SERVER;
+      } catch(e) { /* fall through to LAN discovery */ }
+    }
+
     // 1. Same machine
     onStatus('Searching… (localhost)');
     try {
