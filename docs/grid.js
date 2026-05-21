@@ -105,7 +105,7 @@ window.__pushTokenForBestiary = function (cr, r, c) {
     id: tokenIdSeq++,
     r, c,
     name: cr.name,
-    color: '#B47028',   // bestiary "monster" copper colour
+    color: cr.color || '#B47028',   // override per creature; default = copper
     size: sz,
     speed: cr.speed || 6,
     hp: cr.hp || 0,
@@ -5191,9 +5191,15 @@ requestAnimationFrame(render);
   }
   function renderList() {
     listEl.innerHTML = '';
+    // Always-on "My Character" card at the top — lets the player drop their
+    // own active character on the map as a token (drag or click Place Me).
+    const sheet = window.arcaneSheet && window.arcaneSheet();
+    if (sheet && (sheet.name || '').trim()) {
+      listEl.appendChild(buildMyCharacterCard(sheet));
+    }
     const visible = db.creatures.filter(matches)
       .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-    if (visible.length === 0) {
+    if (visible.length === 0 && !sheet) {
       const empty = document.createElement('div');
       empty.className = 'be-empty';
       empty.textContent = db.creatures.length === 0
@@ -5203,6 +5209,65 @@ requestAnimationFrame(render);
       return;
     }
     visible.forEach(c => listEl.appendChild(buildCard(c)));
+  }
+
+  // Build a creature-like object from the player's active character sheet
+  // so it can flow through the existing token-placement pipeline.
+  function creatureFromSheet(sheet) {
+    return {
+      name:  sheet.name || 'Adventurer',
+      size:  'medium',
+      type:  (sheet.cls || 'player character').toLowerCase(),
+      cr:    'Lv' + (sheet.level || 1),
+      ac:    (sheet.defenses && sheet.defenses.AC) || 10,
+      hp:    sheet.maxhp || sheet.hp || 0,
+      speed: 6,
+      saves: {},
+      color: '#7C6FF7',   // purple — distinguishes PCs from monster tokens
+    };
+  }
+
+  function buildMyCharacterCard(sheet) {
+    const card = document.createElement('div');
+    card.className = 'be-card my-character';
+    card.draggable = true;
+    card.addEventListener('dragstart', e => {
+      e.dataTransfer.setData('text/x-arcane-mycharacter', sheet.id);
+      e.dataTransfer.effectAllowed = 'copy';
+      e.dataTransfer.setData('text/plain', sheet.name || 'My Character');
+      card.classList.add('be-dragging');
+    });
+    card.addEventListener('dragend', () => card.classList.remove('be-dragging'));
+
+    const main = document.createElement('div');
+    main.className = 'be-card-main';
+
+    const name = document.createElement('div');
+    name.className = 'be-card-name';
+    name.innerHTML = '🎭 ' + escapeHTML(sheet.name || 'Adventurer');
+
+    const sub = document.createElement('div');
+    sub.className = 'be-card-sub';
+    const detail = (sheet.cls ? sheet.cls + ' · ' : '') + 'Lv' + (sheet.level || 1);
+    sub.innerHTML =
+      `<span>${escapeHTML(detail)}</span>` +
+      `<span class="be-badge">AC ${(sheet.defenses && sheet.defenses.AC) || 10}</span>` +
+      `<span class="be-badge">HP ${sheet.maxhp || sheet.hp || 0}</span>`;
+    main.appendChild(name);
+    main.appendChild(sub);
+
+    const actions = document.createElement('div');
+    actions.className = 'be-card-actions';
+
+    const placeBtn = document.createElement('button');
+    placeBtn.className = 'be-place';
+    placeBtn.textContent = '📍 Place Me';
+    placeBtn.addEventListener('click', () => startPlacing(creatureFromSheet(sheet)));
+
+    actions.appendChild(placeBtn);
+    card.appendChild(main);
+    card.appendChild(actions);
+    return card;
   }
   function buildCard(c) {
     const card = document.createElement('div');
@@ -5399,7 +5464,8 @@ requestAnimationFrame(render);
     gridCanvas.addEventListener('dragover', e => {
       // Must preventDefault for 'drop' to fire; signal a copy cursor
       if (e.dataTransfer && e.dataTransfer.types &&
-          [...e.dataTransfer.types].includes('text/x-arcane-creature')) {
+          ([...e.dataTransfer.types].includes('text/x-arcane-creature') ||
+           [...e.dataTransfer.types].includes('text/x-arcane-mycharacter'))) {
         e.preventDefault();
         e.dataTransfer.dropEffect = 'copy';
         gridCanvas.classList.add('be-drop-hover');
@@ -5409,12 +5475,24 @@ requestAnimationFrame(render);
       gridCanvas.classList.remove('be-drop-hover');
     });
     gridCanvas.addEventListener('drop', e => {
-      const id = e.dataTransfer.getData('text/x-arcane-creature');
-      if (!id) return;
+      const creatureId = e.dataTransfer.getData('text/x-arcane-creature');
+      const sheetId    = e.dataTransfer.getData('text/x-arcane-mycharacter');
+      if (!creatureId && !sheetId) return;
       e.preventDefault();
       gridCanvas.classList.remove('be-drop-hover');
-      const cr = db.creatures.find(x => x.id === id);
+
+      // Resolve the creature object — either a saved bestiary entry, or
+      // a synthesised one from the player's active character sheet.
+      let cr = null;
+      if (creatureId) {
+        cr = db.creatures.find(x => x.id === creatureId);
+      } else if (sheetId) {
+        const sheets = (window.arcaneSheets && window.arcaneSheets()) || [];
+        const sh = sheets.find(s => s.id === sheetId);
+        if (sh) cr = creatureFromSheet(sh);
+      }
       if (!cr) return;
+
       // Convert client coords → canvas coords → grid cell
       const rect = gridCanvas.getBoundingClientRect();
       const sx = gridCanvas.width  / rect.width;

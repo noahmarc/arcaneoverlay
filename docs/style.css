@@ -2536,3 +2536,29 @@ body.player-restricted label[for="row-slider"] { display: none !important; }
   color: #FFD25A;
 }
 #rollreq-send-dm:hover { background: rgba(255,210,90,0.30); color: #fff; }
+
+/* "My Character" card at the top of the bestiary (purple = PC) */
+.be-card.my-character {
+  background: linear-gradient(135deg, rgba(124,111,247,0.15), rgba(124,111,247,0.04));
+  border-color: rgba(124,111,247,0.50);
+  box-shadow: 0 0 12px rgba(124,111,247,0.18);
+}
+.be-card.my-character:hover {
+  background: linear-gradient(135deg, rgba(124,111,247,0.25), rgba(124,111,247,0.08));
+  border-color: rgba(124,111,247,0.85);
+}
+.be-card.my-character .be-card-name {
+  color: #B5B0FF;
+}
+.be-card.my-character .be-card-sub .be-badge {
+  background: rgba(124,111,247,0.22);
+  color: #B5B0FF;
+}
+.be-card.my-character .be-place {
+  background: rgba(124,111,247,0.45);
+  border-color: rgba(124,111,247,0.85);
+}
+.be-card.my-character .be-place:hover {
+  background: #7C6FF7;
+  color: #fff;
+}
