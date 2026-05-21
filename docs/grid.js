@@ -5848,11 +5848,22 @@ requestAnimationFrame(render);
 
     // Grid / tokens / walls / labels / covers / traps
     grid    = s.grid    || {};
+    // Remember any drag in flight so we can re-attach after the array is replaced.
+    const _dragId = (typeof draggingToken !== 'undefined' && draggingToken)
+                      ? draggingToken.tok.id : null;
     tokens  = (s.tokens || []).map(t => ({
       ...t,
       conditions: [...(t.conditions || [])],
       deathSaves: { ...(t.deathSaves || { successes:0, failures:0 }) },
     }));
+    // Re-link the dragged token reference so an in-flight drag still
+    // points at the live object after the array was rebuilt — otherwise
+    // the user's pointerUp would mutate an orphaned token.
+    if (_dragId != null) {
+      const live = tokens.find(t => t.id === _dragId);
+      if (live) draggingToken.tok = live;
+      else      draggingToken = null;
+    }
     walls   = (s.walls  || []).map(w => ({ ...w }));
     labels  = (s.labels || []).map(l => ({ ...l }));
     lights  = (s.lights || []).map(l => ({ ...l }));
