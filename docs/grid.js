@@ -110,6 +110,7 @@ window.__pushTokenForBestiary = function (cr, r, c) {
     speed: cr.speed || 6,
     hp: cr.hp || 0,
     maxHp: cr.hp || 0,
+    vision: cr.vision || null,      // null = no auto-reveal; else 'normal' | 'lowlight' | 'darkvision'
     conditions: [],
     concentrating: false,
     exhaustion: 0,
@@ -1493,10 +1494,33 @@ function render(ts) {
 
   // Fog of war overlay
   if (fogEnabled) {
+    // Pre-compute squares auto-revealed by token vision (Chebyshev distance
+    // from the token's footprint, so diagonals count as 1 — D&D convention).
+    const VISION_RADIUS = { normal: 2, lowlight: 4, darkvision: 8 };
+    const visionReveal  = new Set();
+    for (const tok of tokens) {
+      const R = VISION_RADIUS[tok.vision];
+      if (!R) continue;
+      const sz = tok.size || 1;
+      const r0 = tok.r, r1 = tok.r + sz - 1;
+      const c0 = tok.c, c1 = tok.c + sz - 1;
+      for (let rr = r0 - R; rr <= r1 + R; rr++) {
+        if (rr < 0 || rr >= rows) continue;
+        for (let cc = c0 - R; cc <= c1 + R; cc++) {
+          if (cc < 0 || cc >= cols) continue;
+          // Chebyshev distance to the token's footprint
+          const dr = Math.max(0, r0 - rr, rr - r1);
+          const dc = Math.max(0, c0 - cc, cc - c1);
+          if (Math.max(dr, dc) <= R) visionReveal.add(rr + ',' + cc);
+        }
+      }
+    }
+
     ctx.save();
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
         const k = r+','+c;
+        if (visionReveal.has(k)) continue;     // visible thanks to a token's vision
         const vis = fogVis[k] ?? 0;
         if (vis < 0.999) {
           ctx.fillStyle = `rgba(8,6,20,${1 - vis})`;
@@ -1509,6 +1533,23 @@ function render(ts) {
           }
         }
       }
+    }
+    // Soft glow ring at the outer edge of each vision radius — helps the
+    // player see the limit of their own sight.
+    for (const tok of tokens) {
+      const R = VISION_RADIUS[tok.vision];
+      if (!R) continue;
+      const sz = tok.size || 1;
+      const cx = (tok.c + sz/2) * CELL;
+      const cy = (tok.r + sz/2) * CELL;
+      const radiusPx = (R + sz/2) * CELL;
+      const grad = ctx.createRadialGradient(cx, cy, radiusPx*0.8, cx, cy, radiusPx);
+      grad.addColorStop(0, 'rgba(255,210,90,0)');
+      grad.addColorStop(1, 'rgba(255,210,90,0.18)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radiusPx, 0, Math.PI*2);
+      ctx.fill();
     }
     ctx.restore();
   }
@@ -4255,6 +4296,7 @@ requestAnimationFrame(render);
       hp: 0, maxhp: 0, surges: 0,
       trained: [],     // skill names
       inventory: [],   // [{id, name, qty, weight, equipped, notes}]
+      vision: 'normal', // 'normal' | 'lowlight' | 'darkvision'
     };
   }
   function makeItemId() { return 'it_' + Math.random().toString(36).slice(2, 9); }
@@ -4508,6 +4550,8 @@ requestAnimationFrame(render);
     document.getElementById('sh-hp').value    = sheet.hp;
     document.getElementById('sh-maxhp').value = sheet.maxhp;
     document.getElementById('sh-surges').value= sheet.surges;
+    const visSel = document.getElementById('sh-vision');
+    if (visSel) visSel.value = sheet.vision || 'normal';
     renderSkills();
     renderInventory();
   }
@@ -4713,6 +4757,8 @@ requestAnimationFrame(render);
     sheet.hp     = parseInt(document.getElementById('sh-hp').value)    || 0;
     sheet.maxhp  = parseInt(document.getElementById('sh-maxhp').value) || 0;
     sheet.surges = parseInt(document.getElementById('sh-surges').value)|| 0;
+    const visSel = document.getElementById('sh-vision');
+    if (visSel) sheet.vision = visSel.value || 'normal';
   }
 
   // Live recompute when any input changes
@@ -5235,7 +5281,8 @@ requestAnimationFrame(render);
       hp:    sheet.maxhp || sheet.hp || 0,
       speed: 6,
       saves: {},
-      color: '#7C6FF7',   // purple — distinguishes PCs from monster tokens
+      color: '#7C6FF7',           // purple — distinguishes PCs from monster tokens
+      vision: sheet.vision || 'normal',  // controls fog reveal around the token
     };
   }
 

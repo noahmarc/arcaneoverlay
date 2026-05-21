@@ -645,6 +645,17 @@
         <label>/ Max</label><input id="sh-maxhp" type="number" value="0" style="width:60px">
         <label>Surges</label><input id="sh-surges" type="number" value="0" style="width:50px">
       </div>
+
+      <div class="sheet-section-title">SENSES  <span class="sh-hint">controls how many squares of fog your token reveals around it</span></div>
+      <div class="sheet-row">
+        <label>Vision</label>
+        <select id="sh-vision">
+          <option value="normal">Normal Vision (2 sq)</option>
+          <option value="lowlight">Low-Light Vision (4 sq)</option>
+          <option value="darkvision">Darkvision (8 sq)</option>
+        </select>
+      </div>
+
       <div class="sheet-section-title">SKILLS  <span class="sh-hint">✔ = trained (+5) · click 🎲 to roll</span></div>
       <div id="sh-skills" class="sheet-skills"></div>
       <div id="sh-result" class="sh-result" style="display:none"></div>
@@ -874,6 +885,6 @@
     </div>
   </div>
 </div>
-<script src="grid.js?v=10"></script>
+<script src="grid.js?v=11"></script>
 </body>
 </html>
