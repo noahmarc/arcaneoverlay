@@ -2562,3 +2562,22 @@ body.player-restricted label[for="row-slider"] { display: none !important; }
   background: #7C6FF7;
   color: #fff;
 }
+
+/* ── Light source toolbar mini-panel ──────────────────────────── */
+#light-panel {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 8px;
+  background: rgba(255,180,60,0.08);
+  border: 1px solid rgba(255,180,60,0.30);
+  border-radius: 6px;
+  font-size: 11px; color: rgba(255,255,255,0.65);
+  letter-spacing: .04em;
+}
+#light-panel input[type=range] { width: 90px; accent-color: #FFA040; }
+#light-panel input[type=number] {
+  background: rgba(255,255,255,0.06); color: #EAE8F5;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 4px; padding: 2px 4px;
+  font-size: 11px; font-family: inherit; outline: none;
+}
+#light-panel input[type=number]:focus { border-color: #FFA040; }

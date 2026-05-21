@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>D&D 4e Battle Grid</title>
-<link rel="stylesheet" href="style.css?v=14">
+<link rel="stylesheet" href="style.css?v=15">
 </head>
 <body>
 <div id="app">
@@ -214,6 +214,13 @@
                 <button class="icon-btn" id="fog-cover-btn" title="Cover all tiles with fog">⬛ COVER</button>
                 <button class="icon-btn" id="fog-uncover-btn" title="Remove all fog">⬜ UNCOVER</button>
               </div>
+              <button class="icon-btn cat-icon-btn" id="light-btn" title="Place light sources (torch, lantern, daylight) — uncover fog inside their radius"><span class="icon">🔦</span>LIGHT</button>
+              <div id="light-panel" style="display:none">
+                <label for="light-radius-input">RADIUS</label>
+                <input type="range" id="light-radius-input" min="1" max="20" value="5" step="1" aria-label="Light radius in squares">
+                <input type="number" id="light-radius-val" value="5" min="1" max="20" step="1" aria-label="Light radius exact value" style="width:38px">
+                <span class="radius-note">sq</span>
+              </div>
               <button class="icon-btn cat-icon-btn" id="grid-overlay-btn" title="Cycle grid display: Off → Coords (A1, B2…) → 1″ physical overlay → Off"><span class="icon">📏</span><span id="grid-overlay-label">GRID</span></button>
               <div id="grid-scale-panel" style="display:none">
                 <label for="grid-scale-input">SCALE</label>
@@ -336,6 +343,31 @@
       <button class="modal-btn primary" id="label-ok">Place</button>
       <button class="modal-btn danger" id="label-delete" style="display:none">Delete</button>
       <button class="modal-btn secondary" id="label-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Light Source Modal -->
+<div class="modal-overlay" id="light-modal" role="dialog" aria-modal="true" aria-labelledby="light-modal-title">
+  <div class="modal">
+    <h3 id="light-modal-title">EDIT LIGHT SOURCE</h3>
+    <label for="light-name-in">NAME</label>
+    <input type="text" id="light-name-in" placeholder="Torch, Lantern, Sunrod…" maxlength="32" autocomplete="off">
+    <label for="light-edit-radius">RADIUS (squares)</label>
+    <input type="number" id="light-edit-radius" min="1" max="30" value="5">
+    <label for="light-preset">PRESET</label>
+    <select id="light-preset">
+      <option value="">— pick a preset —</option>
+      <option value="candle">🕯 Candle (2 sq)</option>
+      <option value="torch">🔦 Torch (5 sq)</option>
+      <option value="lantern">🏮 Lantern (8 sq)</option>
+      <option value="sunrod">🌟 Sunrod (12 sq)</option>
+      <option value="daylight">☀️ Daylight Spell (20 sq)</option>
+    </select>
+    <div class="modal-btns">
+      <button class="modal-btn primary" id="light-save">Save</button>
+      <button class="modal-btn danger" id="light-delete" style="display:none">Delete</button>
+      <button class="modal-btn secondary" id="light-cancel">Cancel</button>
     </div>
   </div>
 </div>
@@ -885,6 +917,6 @@
     </div>
   </div>
 </div>
-<script src="grid.js?v=12"></script>
+<script src="grid.js?v=13"></script>
 </body>
 </html>

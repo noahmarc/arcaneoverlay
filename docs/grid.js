@@ -146,6 +146,7 @@ function cloneState() {
     })),
     walls: walls.map(w => ({ ...w })),
     labels: labels.map(l => ({ ...l })),
+    lights: lights.map(l => ({ ...l })),
     covers: Object.fromEntries(Object.entries(covers)),
     traps: Object.fromEntries(Object.entries(traps).map(([k,v])=>[k,{...v}])),
   };
@@ -169,6 +170,7 @@ function applyState(s) {
   }));
   walls = s.walls ? s.walls.map(w => ({ ...w })) : [];
   labels = s.labels ? s.labels.map(l => ({ ...l })) : [];
+  lights = s.lights ? s.lights.map(l => ({ ...l })) : [];
   covers = s.covers ? {...s.covers} : {};
   traps = s.traps ? Object.fromEntries(Object.entries(s.traps).map(([k,v])=>[k,{...v}])) : {};
   rebuildCells();
@@ -1519,6 +1521,20 @@ function render(ts) {
         }
       }
     }
+    // Light sources also reveal fog within their radius.
+    for (const lit of lights) {
+      const R = Number(lit.radius) || 0;
+      if (R <= 0) continue;
+      for (let rr = lit.r - R; rr <= lit.r + R; rr++) {
+        if (rr < 0 || rr >= rows) continue;
+        for (let cc = lit.c - R; cc <= lit.c + R; cc++) {
+          if (cc < 0 || cc >= cols) continue;
+          if (Math.max(Math.abs(rr - lit.r), Math.abs(cc - lit.c)) <= R) {
+            visionReveal.add(rr + ',' + cc);
+          }
+        }
+      }
+    }
 
     ctx.save();
     for (let r = 0; r < rows; r++) {
@@ -1554,6 +1570,58 @@ function render(ts) {
       ctx.beginPath();
       ctx.arc(cx, cy, radiusPx, 0, Math.PI*2);
       ctx.fill();
+    }
+    // Warm glow rings around each light source (drawn over the fog so
+    // there's a visible halo even into still-fogged territory).
+    for (const lit of lights) {
+      const R = Number(lit.radius) || 0;
+      if (R <= 0) continue;
+      const cx = (lit.c + 0.5) * CELL;
+      const cy = (lit.r + 0.5) * CELL;
+      const radiusPx = (R + 0.5) * CELL;
+      const grad = ctx.createRadialGradient(cx, cy, radiusPx*0.6, cx, cy, radiusPx);
+      grad.addColorStop(0, 'rgba(255,180,60,0)');
+      grad.addColorStop(1, 'rgba(255,180,60,0.28)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radiusPx, 0, Math.PI*2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // ── Light source icons (always visible, even when fog is off) ──────
+  if (lights.length) {
+    ctx.save();
+    for (const lit of lights) {
+      const cx = (lit.c + 0.5) * CELL;
+      const cy = (lit.r + 0.5) * CELL;
+      // Pulsing inner glow
+      const pulse = 0.7 + 0.3 * Math.sin((t || 0) * 0.005 + lit.id * 0.7);
+      const radInner = CELL * 0.45;
+      const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, radInner);
+      g.addColorStop(0, `rgba(255,200,80,${0.55 * pulse})`);
+      g.addColorStop(0.6, `rgba(255,140,40,${0.25 * pulse})`);
+      g.addColorStop(1, 'rgba(255,80,10,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radInner, 0, Math.PI*2);
+      ctx.fill();
+      // Flame emoji
+      const fs = Math.max(12, CELL * 0.5);
+      ctx.font = `${fs}px system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('🔦', cx, cy);
+      // Highlight when lightMode is on and this is hovered
+      if (lightMode) {
+        const hover = cellFromXY(mouseX, mouseY);
+        if (hover.r === lit.r && hover.c === lit.c) {
+          ctx.strokeStyle = 'rgba(255,210,90,0.85)';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(lit.c*CELL + 1, lit.r*CELL + 1, CELL - 2, CELL - 2);
+        }
+      }
     }
     ctx.restore();
   }
@@ -1847,6 +1915,7 @@ const COND_COLORS = {
 // ── Walls / Labels ────────────────────────────────────────────
 let walls = [], wallIdSeq = 1;
 let labels = [], labelIdSeq = 1;
+let lights = [], lightIdSeq = 1;
 
 // ── Presets ───────────────────────────────────────────────────
 let presets = [];
@@ -1887,6 +1956,7 @@ let gridCoordsVisible=false;
 // Feature 9 — Cover
 let covers={}, coverMode=false;
 let labelMode=false, pendingLabelCell=null, editingLabelId=null;
+let lightMode=false, editingLightId=null, lightPlaceRadius=5;
 let draggingLabel=null, labelDragMoved=false;
 let moveRangeToken=null;
 let selectedSize=1, selectedSpeed=6, selectedHp=null, selectedMaxHp=null, selectedConditions=[];
@@ -2137,6 +2207,34 @@ function pointerDown(x,y) {
     document.getElementById('label-delete').style.display='none';
     document.getElementById('label-modal').classList.add('open');
     setTimeout(()=>document.getElementById('label-text-in').focus(),50);
+    return;
+  }
+
+  // Light source mode
+  if (lightMode) {
+    const cell = cellFromXY(x, y);
+    const existing = lights.find(l => l.r === cell.r && l.c === cell.c);
+    if (existing) {
+      if (shiftHeld) {
+        // Shift-click → instant delete
+        pushUndo();
+        lights = lights.filter(l => l.id !== existing.id);
+      } else {
+        // Click existing → open edit modal
+        openLightModal(existing);
+      }
+    } else {
+      // Click empty cell → place new light at the chosen radius
+      pushUndo();
+      lights.push({
+        id:     lightIdSeq++,
+        r:      cell.r,
+        c:      cell.c,
+        radius: Math.max(1, Math.min(30, parseInt(lightPlaceRadius) || 5)),
+        name:   'Torch',
+        color:  '#FFA040',
+      });
+    }
     return;
   }
 
@@ -2541,6 +2639,7 @@ function updateHint() {
   if(coverMode){document.getElementById('hint').textContent='Click near a cell edge to cycle cover: ½ → ¾ → full → clear · Shift-click to erase immediately';return;}
   if(wallMode){document.getElementById('hint').textContent='Click & drag to draw a wall · Shift-drag to erase walls · Keys 1-8 switch effects';return;}
   if(labelMode){document.getElementById('hint').textContent='Click a cell to place a text label · Click existing label to edit or delete';return;}
+  if(lightMode){document.getElementById('hint').textContent='Click a cell to place a light source · Click existing light to edit · Shift-click to delete · Adjust radius with the slider above';return;}
   if(losMode){document.getElementById('hint').textContent='Click and drag to check line of sight · Walls that block are highlighted red';return;}
   if(trapMode){document.getElementById('hint').textContent='Click a cell to place a trap marker · Click again to reveal · Click revealed trap to remove';return;}
   if(teleportMode){document.getElementById('hint').textContent=teleportToken?'Click destination to teleport · Esc to cancel':'Click a token to select it · Click destination to teleport · Esc to cancel';return;}
@@ -2783,7 +2882,7 @@ function getSaveData() {
     version:3, rows, cols, grid, tokens,
     fogEnabled, fogVis:{...fogVis}, fogTarget:{...fogTarget},
     projBounds, initiative, initCurrent, roundNum,
-    walls, labels, presets,
+    walls, labels, lights, presets,
     covers: {...covers},
     traps: {...traps},
   };
@@ -2823,6 +2922,7 @@ function loadGame(json) {
     initiative=s.initiative||[]; initCurrent=s.initCurrent??-1; roundNum=s.roundNum||1;
     walls=s.walls||[]; wallIdSeq=walls.length?Math.max(...walls.map(w=>w.id))+1:1;
     labels=s.labels||[]; labelIdSeq=labels.length?Math.max(...labels.map(l=>l.id))+1:1;
+    lights=s.lights||[]; lightIdSeq=lights.length?Math.max(...lights.map(l=>l.id))+1:1;
     covers=s.covers||{};
     traps=s.traps||{};
     if(s.presets) presets=s.presets;
@@ -3045,12 +3145,13 @@ function showToolTooltip(el, clientX, clientY) {
 
 // ── Wall / Label toolbar ─────────────────────────────────────
 function exitDrawModes(){
-  wallMode=false; labelMode=false;
+  wallMode=false; labelMode=false; lightMode=false;
   losMode=false; losStart=null; trapMode=false; teleportMode=false; teleportToken=null;
   wallActive=false; wallStart=null; wallErasing=false;
-  ['wall-btn','label-btn','los-btn','trap-btn','teleport-btn'].forEach(id=>{
+  ['wall-btn','label-btn','light-btn','los-btn','trap-btn','teleport-btn'].forEach(id=>{
     const el=document.getElementById(id); if(el) el.classList.remove('active');
   });
+  const lp=document.getElementById('light-panel'); if(lp) lp.style.display='none';
 }
 
 document.getElementById('wall-btn').addEventListener('click',()=>{
@@ -3060,6 +3161,75 @@ document.getElementById('wall-btn').addEventListener('click',()=>{
 document.getElementById('label-btn').addEventListener('click',()=>{
   const on=!labelMode; exitDrawModes(); if(on){labelMode=true;document.getElementById('label-btn').classList.add('active');}
   updateHint();
+});
+document.getElementById('light-btn').addEventListener('click',()=>{
+  const on=!lightMode; exitDrawModes();
+  if(on){
+    lightMode=true;
+    document.getElementById('light-btn').classList.add('active');
+    document.getElementById('light-panel').style.display='flex';
+  }
+  updateHint();
+});
+
+// ── Light source: radius slider + modal handlers ─────────────
+(function () {
+  const slider = document.getElementById('light-radius-input');
+  const valIn  = document.getElementById('light-radius-val');
+  function setRadius(v) {
+    lightPlaceRadius = Math.max(1, Math.min(20, parseInt(v) || 5));
+    if (slider) slider.value = lightPlaceRadius;
+    if (valIn)  valIn.value  = lightPlaceRadius;
+  }
+  if (slider) slider.addEventListener('input', () => setRadius(slider.value));
+  if (valIn)  valIn.addEventListener('input',  () => setRadius(valIn.value));
+})();
+
+// Open the light-edit modal pre-filled with the given light's values
+function openLightModal(light) {
+  editingLightId = light.id;
+  const modal = document.getElementById('light-modal');
+  document.getElementById('light-name-in').value      = light.name || 'Torch';
+  document.getElementById('light-edit-radius').value  = light.radius || 5;
+  document.getElementById('light-preset').value       = '';
+  document.getElementById('light-delete').style.display = '';
+  modal.classList.add('open');
+  setTimeout(()=>document.getElementById('light-name-in').focus(), 50);
+}
+// Light preset → fills name + radius
+document.getElementById('light-preset').addEventListener('change', e => {
+  const map = {
+    candle:   { name:'Candle',         r:2  },
+    torch:    { name:'Torch',          r:5  },
+    lantern:  { name:'Lantern',        r:8  },
+    sunrod:   { name:'Sunrod',         r:12 },
+    daylight: { name:'Daylight Spell', r:20 },
+  };
+  const p = map[e.target.value];
+  if (!p) return;
+  document.getElementById('light-name-in').value     = p.name;
+  document.getElementById('light-edit-radius').value = p.r;
+});
+document.getElementById('light-save').addEventListener('click', () => {
+  const lit = lights.find(l => l.id === editingLightId);
+  if (!lit) return;
+  pushUndo();
+  lit.name   = (document.getElementById('light-name-in').value || '').trim().slice(0, 32) || 'Light';
+  lit.radius = Math.max(1, Math.min(30, parseInt(document.getElementById('light-edit-radius').value) || 5));
+  document.getElementById('light-modal').classList.remove('open');
+  editingLightId = null;
+});
+document.getElementById('light-delete').addEventListener('click', () => {
+  if (!editingLightId) return;
+  if (!confirm('Delete this light source?')) return;
+  pushUndo();
+  lights = lights.filter(l => l.id !== editingLightId);
+  document.getElementById('light-modal').classList.remove('open');
+  editingLightId = null;
+});
+document.getElementById('light-cancel').addEventListener('click', () => {
+  document.getElementById('light-modal').classList.remove('open');
+  editingLightId = null;
 });
 
 // ── Label modal ───────────────────────────────────────────────
@@ -5588,6 +5758,7 @@ requestAnimationFrame(render);
       tokens: tokens.map(t => ({ ...t })),
       walls: walls.map(w => ({ ...w })),
       labels: labels.map(l => ({ ...l })),
+      lights: lights.map(l => ({ ...l })),
       covers: { ...covers },
       traps: JSON.parse(JSON.stringify(traps || {})),
       fogEnabled,
@@ -5629,6 +5800,7 @@ requestAnimationFrame(render);
     }));
     walls   = (s.walls  || []).map(w => ({ ...w }));
     labels  = (s.labels || []).map(l => ({ ...l }));
+    lights  = (s.lights || []).map(l => ({ ...l }));
     covers  = { ...(s.covers || {}) };
     traps   = JSON.parse(JSON.stringify(s.traps || {}));
 
