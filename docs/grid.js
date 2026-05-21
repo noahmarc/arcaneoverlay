@@ -1496,11 +1496,15 @@ function render(ts) {
   if (fogEnabled) {
     // Pre-compute squares auto-revealed by token vision (Chebyshev distance
     // from the token's footprint, so diagonals count as 1 — D&D convention).
-    const VISION_RADIUS = { normal: 2, lowlight: 4, darkvision: 8 };
+    // Squares cleared around the token's footprint (Chebyshev / D&D 5ft rule).
+    //   normal     → 0  (only the token's own square)
+    //   lowlight   → 6
+    //   darkvision → 12
+    const VISION_RADIUS = { normal: 0, lowlight: 6, darkvision: 12 };
     const visionReveal  = new Set();
     for (const tok of tokens) {
       const R = VISION_RADIUS[tok.vision];
-      if (!R) continue;
+      if (R === undefined) continue;   // 0 is valid (Normal Vision = own square only)
       const sz = tok.size || 1;
       const r0 = tok.r, r1 = tok.r + sz - 1;
       const c0 = tok.c, c1 = tok.c + sz - 1;
@@ -1538,7 +1542,7 @@ function render(ts) {
     // player see the limit of their own sight.
     for (const tok of tokens) {
       const R = VISION_RADIUS[tok.vision];
-      if (!R) continue;
+      if (R === undefined) continue;   // 0 is valid (Normal Vision = own square only)
       const sz = tok.size || 1;
       const cx = (tok.c + sz/2) * CELL;
       const cy = (tok.r + sz/2) * CELL;
