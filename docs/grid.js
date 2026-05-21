@@ -1571,26 +1571,49 @@ function render(ts) {
       ctx.arc(cx, cy, radiusPx, 0, Math.PI*2);
       ctx.fill();
     }
-    // Warm glow rings around each light source — flickering organically
-    // with the same per-torch waveform as the inner sprite glow, so the
-    // halo and the flame breathe together.
+    // Warm glow pools around each light source — irregular organic shape
+    // (radial gradient clipped to a noisy polygon) that flickers slowly.
     for (const lit of lights) {
       const R = Number(lit.radius) || 0;
       if (R <= 0) continue;
       const flick = torchFlicker(t, lit.id);
       const cx = (lit.c + 0.5) * CELL;
       const cy = (lit.r + 0.5) * CELL;
-      // Radius itself wavers a touch — the halo edge dances
-      const radiusPx = (R + 0.5) * CELL * (0.94 + 0.10 * flick);
-      const grad = ctx.createRadialGradient(cx, cy, radiusPx*0.55, cx, cy, radiusPx);
-      // Inner stop brightens with the flicker too (small amber bloom)
-      grad.addColorStop(0,    `rgba(255,200,90,${0.06 * flick})`);
+      const baseR = (R + 0.5) * CELL * (0.94 + 0.10 * flick);
+
+      // ── Build the irregular pool outline ───────────────────────
+      // Three superimposed low-frequency sines per-torch (seeded by id)
+      // plus a very slow time-dependent term so the edge breathes.
+      const sides   = 48;
+      const tt      = (t || 0) * 0.00018;     // VERY slow drift
+      const seedA   = lit.id * 1.31;
+      const seedB   = lit.id * 2.07;
+      const seedC   = lit.id * 4.93;
+      ctx.save();
+      ctx.beginPath();
+      for (let i = 0; i <= sides; i++) {
+        const ang = (i / sides) * Math.PI * 2;
+        // Each lobe count is intentionally non-multiple to avoid symmetry.
+        const n1 = Math.sin(ang * 3  + seedA + tt) * 0.090;
+        const n2 = Math.sin(ang * 5  + seedB + tt * 1.7) * 0.055;
+        const n3 = Math.sin(ang * 11 + seedC + tt * 2.3) * 0.028;
+        const r  = baseR * (1 + n1 + n2 + n3);
+        const x  = cx + Math.cos(ang) * r;
+        const y  = cy + Math.sin(ang) * r;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.clip();
+
+      // Fill the clipped pool with a soft radial gradient
+      const grad = ctx.createRadialGradient(cx, cy, baseR * 0.45, cx, cy, baseR * 1.10);
+      grad.addColorStop(0,    `rgba(255,205,95,${0.06 * flick})`);
       grad.addColorStop(0.55, `rgba(255,170,55,${0.14 * flick})`);
       grad.addColorStop(1,    `rgba(255,150,45,${0.32 * flick})`);
       ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(cx, cy, radiusPx, 0, Math.PI*2);
-      ctx.fill();
+      // Rect big enough to cover the irregular polygon — clip handles the shape
+      ctx.fillRect(cx - baseR * 1.4, cy - baseR * 1.4, baseR * 2.8, baseR * 2.8);
+      ctx.restore();
     }
     ctx.restore();
   }
