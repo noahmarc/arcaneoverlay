@@ -2581,3 +2581,30 @@ body.player-restricted label[for="row-slider"] { display: none !important; }
   font-size: 11px; font-family: inherit; outline: none;
 }
 #light-panel input[type=number]:focus { border-color: #FFA040; }
+
+/* ── Floating "Pick Up" prompt ─────────────────────────────────── */
+#pickup-light-btn {
+  position: fixed;
+  bottom: 24px; left: 50%;
+  transform: translateX(-50%);
+  z-index: 970;
+  padding: 10px 22px;
+  background: linear-gradient(135deg, #FFA040, #FF6B1F);
+  color: #fff;
+  border: 1px solid #FFD25A;
+  border-radius: 999px;
+  font-size: 14px; font-weight: 800; letter-spacing: .04em;
+  cursor: pointer;
+  box-shadow: 0 6px 22px rgba(255,140,40,0.45),
+              0 0 16px rgba(255,200,80,0.35) inset;
+  animation: pickup-pop 0.22s ease-out;
+}
+#pickup-light-btn:hover {
+  transform: translateX(-50%) translateY(-2px);
+  box-shadow: 0 10px 28px rgba(255,140,40,0.55),
+              0 0 18px rgba(255,210,120,0.55) inset;
+}
+@keyframes pickup-pop {
+  from { transform: translateX(-50%) translateY(8px); opacity: 0; }
+  to   { transform: translateX(-50%) translateY(0);   opacity: 1; }
+}

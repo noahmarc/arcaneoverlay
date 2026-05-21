@@ -111,6 +111,8 @@ window.__pushTokenForBestiary = function (cr, r, c) {
     hp: cr.hp || 0,
     maxHp: cr.hp || 0,
     vision: cr.vision || null,      // null = no auto-reveal; else 'normal' | 'lowlight' | 'darkvision'
+    ownerSheetId: cr.ownerSheetId || null,
+    equippedLight: null,            // {radius,name} once a torch is picked up + equipped
     conditions: [],
     concentrating: false,
     exhaustion: 0,
@@ -1505,8 +1507,13 @@ function render(ts) {
     const VISION_RADIUS = { normal: 0, lowlight: 6, darkvision: 12 };
     const visionReveal  = new Set();
     for (const tok of tokens) {
-      const R = VISION_RADIUS[tok.vision];
-      if (R === undefined) continue;   // 0 is valid (Normal Vision = own square only)
+      // Effective radius = max(natural vision, equipped torch).
+      // A torch only helps when its radius would exceed your natural sight;
+      // a Darkvision dwarf doesn't shrink to torch range by holding one.
+      const visionR = VISION_RADIUS[tok.vision];
+      const equipR  = tok.equippedLight && Number(tok.equippedLight.radius) || 0;
+      if (visionR === undefined && equipR === 0) continue;
+      const R = Math.max(visionR ?? 0, equipR);
       const sz = tok.size || 1;
       const r0 = tok.r, r1 = tok.r + sz - 1;
       const c0 = tok.c, c1 = tok.c + sz - 1;
@@ -1514,7 +1521,6 @@ function render(ts) {
         if (rr < 0 || rr >= rows) continue;
         for (let cc = c0 - R; cc <= c1 + R; cc++) {
           if (cc < 0 || cc >= cols) continue;
-          // Chebyshev distance to the token's footprint
           const dr = Math.max(0, r0 - rr, rr - r1);
           const dc = Math.max(0, c0 - cc, cc - c1);
           if (Math.max(dr, dc) <= R) visionReveal.add(rr + ',' + cc);
@@ -1555,10 +1561,13 @@ function render(ts) {
       }
     }
     // Soft glow ring at the outer edge of each vision radius — helps the
-    // player see the limit of their own sight.
+    // player see the limit of their own sight. Uses the same effective
+    // radius (max of natural vision and any equipped torch).
     for (const tok of tokens) {
-      const R = VISION_RADIUS[tok.vision];
-      if (R === undefined) continue;   // 0 is valid (Normal Vision = own square only)
+      const visionR = VISION_RADIUS[tok.vision];
+      const equipR  = tok.equippedLight && Number(tok.equippedLight.radius) || 0;
+      if (visionR === undefined && equipR === 0) continue;
+      const R = Math.max(visionR ?? 0, equipR);
       const sz = tok.size || 1;
       const cx = (tok.c + sz/2) * CELL;
       const cy = (tok.r + sz/2) * CELL;
@@ -4570,6 +4579,13 @@ requestAnimationFrame(render);
   // Use the MP-selected sheet whenever multiplayer code asks for "the sheet"
   window.arcaneSheet  = () => mpActiveSheet();
   window.arcaneSheets = () => Object.values(store.sheets);
+  // Save the whole sheets store to localStorage (used by pickup flow).
+  window.__arcaneSaveSheets = saveStore;
+  // Refresh the inventory list in the open sheet panel (used by pickup flow).
+  window.arcaneRefreshInventory = function () {
+    try { if (typeof renderInventory === 'function') renderInventory(); } catch (e) {}
+  };
+
   // Add a granted item to the player's MP-active sheet's inventory.
   // Used by the chat layer when a __GIVEITEM__ message arrives.
   window.arcaneAddItemToActive = function (item) {
@@ -4829,6 +4845,20 @@ requestAnimationFrame(render);
       item.equipped = cb.checked;
       row.classList.toggle('equipped', cb.checked);
       saveStore();
+      // If this item is a light source, mirror its equipped state on the
+      // owner's token(s) so the fog renderer picks up the change and the
+      // new range is broadcast to other clients.
+      if (item.lightRadius && typeof tokens !== 'undefined') {
+        const myTokens = tokens.filter(t => t.ownerSheetId === sheet.id);
+        for (const tok of myTokens) {
+          if (cb.checked) {
+            tok.equippedLight = { radius: Number(item.lightRadius) || 0, name: item.name };
+          } else if (tok.equippedLight && tok.equippedLight.name === item.name) {
+            tok.equippedLight = null;
+          }
+        }
+        if (window.__mpScheduleSync) window.__mpScheduleSync();
+      }
     });
 
     // Name (editable)
@@ -5481,6 +5511,7 @@ requestAnimationFrame(render);
       saves: {},
       color: '#7C6FF7',           // purple — distinguishes PCs from monster tokens
       vision: sheet.vision || 'normal',  // controls fog reveal around the token
+      ownerSheetId: sheet.id,     // links the token back to its character sheet
     };
   }
 
@@ -6049,5 +6080,88 @@ requestAnimationFrame(render);
   if (toastDismiss) toastDismiss.addEventListener('click', () => {
     toast.style.display = 'none';
     if (_toastTimer) clearTimeout(_toastTimer);
+  });
+})();
+
+// ═══════════════════════════════════════════════════════════════════
+// 🔥 PICK UP TORCH — player stands on a light tile, clicks to take it.
+// The light leaves the map, joins their inventory equipped, and extends
+// their effective vision (max of their natural vision and the torch).
+// ═══════════════════════════════════════════════════════════════════
+(function () {
+  const btn = document.getElementById('pickup-light-btn');
+  if (!btn) return;
+
+  // Per-frame check (cheap — just iterating lights × tokens once)
+  function detectPickup() {
+    if (typeof window.arcaneSheet !== 'function') return null;
+    const sheet = window.arcaneSheet();
+    if (!sheet || !sheet.id) return null;
+    // Any token owned by this player's active character?
+    const myTokens = tokens.filter(t => t.ownerSheetId === sheet.id);
+    if (myTokens.length === 0) return null;
+    // Light on the same cell as any of those tokens?
+    for (const tok of myTokens) {
+      const lit = lights.find(l => l.r === tok.r && l.c === tok.c);
+      if (lit) return { sheet, token: tok, light: lit };
+    }
+    return null;
+  }
+
+  // Refresh the floating button visibility periodically
+  setInterval(() => {
+    const pick = detectPickup();
+    if (pick) {
+      btn.textContent = `🔥 Pick Up ${pick.light.name || 'Light'}`;
+      btn.dataset.lightId = pick.light.id;
+      btn.style.display = 'block';
+    } else {
+      btn.style.display = 'none';
+      btn.dataset.lightId = '';
+    }
+  }, 400);
+
+  btn.addEventListener('click', () => {
+    const pick = detectPickup();
+    if (!pick) return;
+    const { sheet, token, light } = pick;
+
+    pushUndo();
+
+    // 1) Add the light to the active sheet's inventory, equipped
+    if (!Array.isArray(sheet.inventory)) sheet.inventory = [];
+    sheet.inventory.push({
+      id:          'it_' + Math.random().toString(36).slice(2, 9),
+      name:        light.name || 'Torch',
+      qty:         1,
+      weight:      1,
+      equipped:    true,
+      lightRadius: light.radius || 5,
+      notes:       'Picked up — illuminates ' + (light.radius || 5) + ' sq when equipped',
+    });
+    if (typeof window.__arcaneSaveSheets === 'function') window.__arcaneSaveSheets();
+
+    // 2) Reflect on the token so other clients see the enhanced vision
+    token.equippedLight = {
+      radius: light.radius || 5,
+      name:   light.name   || 'Torch',
+    };
+
+    // 3) Remove the light source from the map
+    lights = lights.filter(l => l.id !== light.id);
+
+    // 4) Refresh sheet panel if it's currently showing this character
+    if (typeof window.arcaneOpenSheetTo === 'function' &&
+        sheet && sheet.id) {
+      // No-op if nothing's open — but if it IS, refresh inventory
+      try { window.arcaneRefreshInventory && window.arcaneRefreshInventory(); } catch (e) {}
+    }
+
+    // 5) Sync to all clients
+    if (window.__mpScheduleSync) window.__mpScheduleSync();
+
+    // Brief confirmation animation
+    btn.textContent = '✓ Picked up!';
+    setTimeout(() => { btn.style.display = 'none'; }, 600);
   });
 })();
