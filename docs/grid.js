@@ -5193,9 +5193,17 @@ requestAnimationFrame(render);
     listEl.innerHTML = '';
     // Always-on "My Character" card at the top — lets the player drop their
     // own active character on the map as a token (drag or click Place Me).
+    // We render it whenever there's any sheet at all; if the name is blank
+    // we still show the card with a CTA to open the sheet panel and set up.
     const sheet = window.arcaneSheet && window.arcaneSheet();
-    if (sheet && (sheet.name || '').trim()) {
+    if (sheet) {
       listEl.appendChild(buildMyCharacterCard(sheet));
+    } else {
+      // No sheet IIFE loaded — fall back to a static prompt
+      const hint = document.createElement('div');
+      hint.className = 'be-empty';
+      hint.innerHTML = '🎭 Open the character sheet (top-left) and add a character to enable "Place Me".';
+      listEl.appendChild(hint);
     }
     const visible = db.creatures.filter(matches)
       .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
