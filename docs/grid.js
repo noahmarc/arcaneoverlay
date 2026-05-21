@@ -1571,17 +1571,22 @@ function render(ts) {
       ctx.arc(cx, cy, radiusPx, 0, Math.PI*2);
       ctx.fill();
     }
-    // Warm glow rings around each light source (drawn over the fog so
-    // there's a visible halo even into still-fogged territory).
+    // Warm glow rings around each light source — flickering organically
+    // with the same per-torch waveform as the inner sprite glow, so the
+    // halo and the flame breathe together.
     for (const lit of lights) {
       const R = Number(lit.radius) || 0;
       if (R <= 0) continue;
+      const flick = torchFlicker(t, lit.id);
       const cx = (lit.c + 0.5) * CELL;
       const cy = (lit.r + 0.5) * CELL;
-      const radiusPx = (R + 0.5) * CELL;
-      const grad = ctx.createRadialGradient(cx, cy, radiusPx*0.6, cx, cy, radiusPx);
-      grad.addColorStop(0, 'rgba(255,180,60,0)');
-      grad.addColorStop(1, 'rgba(255,180,60,0.28)');
+      // Radius itself wavers a touch — the halo edge dances
+      const radiusPx = (R + 0.5) * CELL * (0.94 + 0.10 * flick);
+      const grad = ctx.createRadialGradient(cx, cy, radiusPx*0.55, cx, cy, radiusPx);
+      // Inner stop brightens with the flicker too (small amber bloom)
+      grad.addColorStop(0,    `rgba(255,200,90,${0.06 * flick})`);
+      grad.addColorStop(0.55, `rgba(255,170,55,${0.14 * flick})`);
+      grad.addColorStop(1,    `rgba(255,150,45,${0.32 * flick})`);
       ctx.fillStyle = grad;
       ctx.beginPath();
       ctx.arc(cx, cy, radiusPx, 0, Math.PI*2);
@@ -1597,22 +1602,30 @@ function render(ts) {
     for (const lit of lights) {
       const cx = (lit.c + 0.5) * CELL;
       const cy = (lit.r + 0.5) * CELL;
-      // Pulsing inner glow behind the sprite
-      const pulse = 0.7 + 0.3 * Math.sin((t || 0) * 0.005 + lit.id * 0.7);
-      const radInner = CELL * 0.55;
+      // Organic per-torch flicker — drives both glow alpha and a tiny
+      // sprite "leap" so the flame appears to dance.
+      const flick = torchFlicker(t, lit.id);
+      const radInner = CELL * (0.50 + 0.12 * flick);
       const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, radInner);
-      g.addColorStop(0, `rgba(255,200,80,${0.50 * pulse})`);
-      g.addColorStop(0.55, `rgba(255,140,40,${0.22 * pulse})`);
-      g.addColorStop(1, 'rgba(255,80,10,0)');
+      g.addColorStop(0,    `rgba(255,210,100,${0.55 * flick})`);
+      g.addColorStop(0.55, `rgba(255,140,40,${0.26 * flick})`);
+      g.addColorStop(1,    'rgba(255,80,10,0)');
       ctx.fillStyle = g;
       ctx.beginPath();
       ctx.arc(cx, cy, radInner, 0, Math.PI*2);
       ctx.fill();
-      // 8-bit torch sprite — drawn pixel-perfect (NEAREST scaling via no smoothing)
+      // 8-bit torch sprite — drawn pixel-perfect (NEAREST scaling via no smoothing).
+      // Subtle vertical bob and horizontal sway driven by independent waves so
+      // the flame looks alive.
+      const swayX = Math.sin((t || 0) * 0.013 + lit.id * 4.1) * CELL * 0.018;
+      const bobY  = Math.sin((t || 0) * 0.024 + lit.id * 2.3) * CELL * 0.02;
       if (sprite && sprite.complete && sprite.naturalWidth) {
+        // Slight brightness modulation on the sprite itself via globalAlpha
         const size = CELL * 0.95;
         ctx.imageSmoothingEnabled = false;
-        ctx.drawImage(sprite, cx - size/2, cy - size/2, size, size);
+        ctx.globalAlpha = 0.92 + 0.08 * flick;
+        ctx.drawImage(sprite, cx - size/2 + swayX, cy - size/2 + bobY, size, size);
+        ctx.globalAlpha = 1;
         ctx.imageSmoothingEnabled = true;
       } else {
         // Fallback while the sprite hasn't loaded yet
@@ -1932,6 +1945,22 @@ function getTorchSprite() {
     _torchSprite.src = 'torch-8bit.png';
   }
   return _torchSprite;
+}
+
+// Organic torch flicker — multi-frequency sine combination plus rare
+// "gust" dips, returns a value roughly in [0.25 .. 1.05]. Each torch's
+// `seed` (its id) keeps its waveform out of phase with the others so a
+// row of torches doesn't pulse in lock-step.
+function torchFlicker(ts, seed) {
+  const t = ts || 0;
+  const a = Math.sin(t * 0.0048 + seed * 1.71);    // slow, body
+  const b = Math.sin(t * 0.0197 + seed * 3.07);    // medium hiss
+  const c = Math.sin(t * 0.0683 + seed * 7.31);    // quick jitter
+  let v = 0.62 + 0.18 * a + 0.12 * b + 0.10 * c;
+  // Occasional "wind" — short, deeper dim
+  const gust = Math.sin(t * 0.011 + seed * 5.13);
+  if (gust > 0.93) v -= 0.30;
+  return Math.max(0.25, Math.min(1.08, v));
 }
 
 // ── Presets ───────────────────────────────────────────────────
