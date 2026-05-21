@@ -5828,6 +5828,14 @@ requestAnimationFrame(render);
 
   function applyGridState(s) {
     if (!s || typeof s !== 'object') return;
+    // Skip when we have a local push queued — our own state is fresher and
+    // the upcoming flushSync will reconcile within ~350ms. Without this
+    // guard, an inbound server snapshot would clobber the player's freshly
+    // moved token before they could broadcast the move.
+    if (typeof window.__mpHasPendingSync === 'function' && window.__mpHasPendingSync()) return;
+    // Also skip while a token drag is in progress — otherwise the array
+    // gets rebuilt under the dragged token and the move is lost.
+    if (typeof draggingToken !== 'undefined' && draggingToken) return;
     // Log to console so we can diagnose blank-page reports
     try { console.log('[arcane] applying grid_state', {
       rows: s.rows, cols: s.cols,
@@ -5924,6 +5932,10 @@ requestAnimationFrame(render);
   let pendingTimer = null;
   let lastSnapshotJson = '';
   let inflight = false;
+
+  // Expose so applyGridState can skip a server-side overwrite while we
+  // have local mutations on their way out.
+  window.__mpHasPendingSync = () => pending || inflight;
 
   async function flushSync() {
     if (typeof window.__mpApi !== 'function')     return;
