@@ -3300,8 +3300,12 @@ requestAnimationFrame(render);
         receiveChat(ev);
         break;
       case 'grid_state':
-        // Players receive a fresh snapshot of the DM's grid
-        if (!isDM && ev.state && typeof window.__applyMpGridState === 'function') {
+        // Everyone (DM included) applies the merged snapshot so that
+        // a player moving their own token shows up on the DM's grid too.
+        // The server merges per-role: DM pushes overwrite the full state,
+        // player pushes only touch tokens/labels — so applying a received
+        // snapshot doesn't disturb DM-controlled fields.
+        if (ev.state && typeof window.__applyMpGridState === 'function') {
           try { window.__applyMpGridState(ev.state); } catch(e) {}
         }
         break;
