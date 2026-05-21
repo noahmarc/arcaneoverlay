@@ -1593,26 +1593,34 @@ function render(ts) {
   // ── Light source icons (always visible, even when fog is off) ──────
   if (lights.length) {
     ctx.save();
+    const sprite = getTorchSprite();
     for (const lit of lights) {
       const cx = (lit.c + 0.5) * CELL;
       const cy = (lit.r + 0.5) * CELL;
-      // Pulsing inner glow
+      // Pulsing inner glow behind the sprite
       const pulse = 0.7 + 0.3 * Math.sin((t || 0) * 0.005 + lit.id * 0.7);
-      const radInner = CELL * 0.45;
+      const radInner = CELL * 0.55;
       const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, radInner);
-      g.addColorStop(0, `rgba(255,200,80,${0.55 * pulse})`);
-      g.addColorStop(0.6, `rgba(255,140,40,${0.25 * pulse})`);
+      g.addColorStop(0, `rgba(255,200,80,${0.50 * pulse})`);
+      g.addColorStop(0.55, `rgba(255,140,40,${0.22 * pulse})`);
       g.addColorStop(1, 'rgba(255,80,10,0)');
       ctx.fillStyle = g;
       ctx.beginPath();
       ctx.arc(cx, cy, radInner, 0, Math.PI*2);
       ctx.fill();
-      // Flame emoji
-      const fs = Math.max(12, CELL * 0.5);
-      ctx.font = `${fs}px system-ui, sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('🔦', cx, cy);
+      // 8-bit torch sprite — drawn pixel-perfect (NEAREST scaling via no smoothing)
+      if (sprite && sprite.complete && sprite.naturalWidth) {
+        const size = CELL * 0.95;
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(sprite, cx - size/2, cy - size/2, size, size);
+        ctx.imageSmoothingEnabled = true;
+      } else {
+        // Fallback while the sprite hasn't loaded yet
+        ctx.font = `${Math.max(12, CELL * 0.5)}px system-ui, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('🔦', cx, cy);
+      }
       // Highlight when lightMode is on and this is hovered
       if (lightMode) {
         const hover = cellFromXY(mouseX, mouseY);
@@ -1916,6 +1924,15 @@ const COND_COLORS = {
 let walls = [], wallIdSeq = 1;
 let labels = [], labelIdSeq = 1;
 let lights = [], lightIdSeq = 1;
+// Lazy-loaded torch sprite. Same image is reused by every light icon.
+let _torchSprite = null;
+function getTorchSprite() {
+  if (!_torchSprite) {
+    _torchSprite = new Image();
+    _torchSprite.src = 'torch-8bit.png';
+  }
+  return _torchSprite;
+}
 
 // ── Presets ───────────────────────────────────────────────────
 let presets = [];
