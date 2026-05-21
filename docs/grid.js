@@ -1614,18 +1614,13 @@ function render(ts) {
       ctx.beginPath();
       ctx.arc(cx, cy, radInner, 0, Math.PI*2);
       ctx.fill();
-      // 8-bit torch sprite — drawn pixel-perfect (NEAREST scaling via no smoothing).
-      // Subtle vertical bob and horizontal sway driven by independent waves so
-      // the flame looks alive.
-      const swayX = Math.sin((t || 0) * 0.013 + lit.id * 4.1) * CELL * 0.018;
-      const bobY  = Math.sin((t || 0) * 0.024 + lit.id * 2.3) * CELL * 0.02;
+      // 8-bit torch sprite — drawn pixel-perfect and *stationary*. Only the
+      // emitted light flickers (via the glow / halo rendered above and below
+      // this sprite). The torch itself stays put.
       if (sprite && sprite.complete && sprite.naturalWidth) {
-        // Slight brightness modulation on the sprite itself via globalAlpha
         const size = CELL * 0.95;
         ctx.imageSmoothingEnabled = false;
-        ctx.globalAlpha = 0.92 + 0.08 * flick;
-        ctx.drawImage(sprite, cx - size/2 + swayX, cy - size/2 + bobY, size, size);
-        ctx.globalAlpha = 1;
+        ctx.drawImage(sprite, cx - size/2, cy - size/2, size, size);
         ctx.imageSmoothingEnabled = true;
       } else {
         // Fallback while the sprite hasn't loaded yet
@@ -1953,13 +1948,14 @@ function getTorchSprite() {
 // row of torches doesn't pulse in lock-step.
 function torchFlicker(ts, seed) {
   const t = ts || 0;
-  const a = Math.sin(t * 0.0048 + seed * 1.71);    // slow, body
-  const b = Math.sin(t * 0.0197 + seed * 3.07);    // medium hiss
-  const c = Math.sin(t * 0.0683 + seed * 7.31);    // quick jitter
+  // All rates dialled down ~4× so the breath is slow and meditative.
+  const a = Math.sin(t * 0.0012 + seed * 1.71);    // slow, body
+  const b = Math.sin(t * 0.0048 + seed * 3.07);    // medium hiss
+  const c = Math.sin(t * 0.0170 + seed * 7.31);    // gentle high jitter
   let v = 0.62 + 0.18 * a + 0.12 * b + 0.10 * c;
-  // Occasional "wind" — short, deeper dim
-  const gust = Math.sin(t * 0.011 + seed * 5.13);
-  if (gust > 0.93) v -= 0.30;
+  // Occasional "wind" — even rarer now, deeper dim
+  const gust = Math.sin(t * 0.0028 + seed * 5.13);
+  if (gust > 0.96) v -= 0.30;
   return Math.max(0.25, Math.min(1.08, v));
 }
 
