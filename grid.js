@@ -1217,6 +1217,37 @@ function deleteNearestWall(x, y, skipUndo=false) {
   if(best){if(!skipUndo)pushUndo();walls=walls.filter(w=>w.id!==best.id);}
 }
 
+// ── LOS helpers for wall-blocked fog reveal ───────────────────────────────────
+// Strict segment intersection: returns true only when segments properly cross
+// (endpoints touching are ignored so walls that merely touch the ray origin or
+// destination don't count as a block).
+function _segCross(ax,ay,bx,by,cx,cy,dx,dy){
+  const ex=bx-ax,ey=by-ay, fx=dx-cx,fy=dy-cy;
+  const p=ex*fy-ey*fx;
+  if(Math.abs(p)<1e-10) return false; // parallel / collinear
+  const gx=cx-ax,gy=cy-ay;
+  const t=(gx*fy-gy*fx)/p;
+  const u=(gx*ey-gy*ex)/p;
+  return t>1e-6&&t<1-1e-6&&u>1e-6&&u<1-1e-6;
+}
+
+// Check if any wall blocks the straight-line path between two points given in
+// fractional cell-space (column = x, row = y).  Walls are stored as fractions
+// of canvas width/height which equal (cols, rows) in cell space.
+function _wallBlocksPt(ax,ay,bx,by){
+  if(!walls.length) return false;
+  for(const w of walls){
+    if(_segCross(ax,ay,bx,by, w.fx1*cols,w.fy1*rows, w.fx2*cols,w.fy2*rows)) return true;
+  }
+  return false;
+}
+
+// Convenience wrapper: checks LOS between the centres of two grid cells.
+// Returns true if a wall blocks the line from cell (sr,sc) to (tr,tc).
+function wallBlocksLOS(sr,sc,tr,tc){
+  return _wallBlocksPt(sc+0.5,sr+0.5, tc+0.5,tr+0.5);
+}
+
 function drawLabels() {
   if(!labels.length) return;
   ctx.save();
@@ -1517,26 +1548,38 @@ function render(ts) {
       const sz = tok.size || 1;
       const r0 = tok.r, r1 = tok.r + sz - 1;
       const c0 = tok.c, c1 = tok.c + sz - 1;
+      // LOS origin = centre of the token's footprint in cell-space (col, row).
+      const srcC = tok.c + sz * 0.5;
+      const srcR = tok.r + sz * 0.5;
       for (let rr = r0 - R; rr <= r1 + R; rr++) {
         if (rr < 0 || rr >= rows) continue;
         for (let cc = c0 - R; cc <= c1 + R; cc++) {
           if (cc < 0 || cc >= cols) continue;
           const dr = Math.max(0, r0 - rr, rr - r1);
           const dc = Math.max(0, c0 - cc, cc - c1);
-          if (Math.max(dr, dc) <= R) visionReveal.add(rr + ',' + cc);
+          if (Math.max(dr, dc) <= R) {
+            // The token's own footprint is always visible.
+            const inFootprint = rr >= r0 && rr <= r1 && cc >= c0 && cc <= c1;
+            if (inFootprint || !_wallBlocksPt(srcC, srcR, cc+0.5, rr+0.5)) {
+              visionReveal.add(rr + ',' + cc);
+            }
+          }
         }
       }
     }
-    // Light sources also reveal fog within their radius.
+    // Light sources also reveal fog within their radius, blocked by walls.
     for (const lit of lights) {
       const R = Number(lit.radius) || 0;
       if (R <= 0) continue;
+      const srcC = lit.c + 0.5, srcR = lit.r + 0.5;
       for (let rr = lit.r - R; rr <= lit.r + R; rr++) {
         if (rr < 0 || rr >= rows) continue;
         for (let cc = lit.c - R; cc <= lit.c + R; cc++) {
           if (cc < 0 || cc >= cols) continue;
           if (Math.max(Math.abs(rr - lit.r), Math.abs(cc - lit.c)) <= R) {
-            visionReveal.add(rr + ',' + cc);
+            if (!_wallBlocksPt(srcC, srcR, cc+0.5, rr+0.5)) {
+              visionReveal.add(rr + ',' + cc);
+            }
           }
         }
       }
