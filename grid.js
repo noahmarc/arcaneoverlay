@@ -1571,7 +1571,9 @@ function render(ts) {
     for (const lit of lights) {
       const R = Number(lit.radius) || 0;
       if (R <= 0) continue;
-      const srcC = lit.c + 0.5, srcR = lit.r + 0.5;
+      // Use exact placement position for LOS origin (falls back to cell-centre).
+      const srcC = lit.fx != null ? lit.fx * cols : lit.c + 0.5;
+      const srcR = lit.fy != null ? lit.fy * rows : lit.r + 0.5;
       for (let rr = lit.r - R; rr <= lit.r + R; rr++) {
         if (rr < 0 || rr >= rows) continue;
         for (let cc = lit.c - R; cc <= lit.c + R; cc++) {
@@ -1634,8 +1636,10 @@ function render(ts) {
     ctx.save();
     const sprite = getTorchSprite();
     for (const lit of lights) {
-      const cx = (lit.c + 0.5) * CELL;
-      const cy = (lit.r + 0.5) * CELL;
+      // Use the exact placement position when available (fx/fy), otherwise
+      // fall back to cell-centre for lights placed before this change.
+      const cx = lit.fx != null ? lit.fx * canvas.width  : (lit.c + 0.5) * CELL;
+      const cy = lit.fy != null ? lit.fy * canvas.height : (lit.r + 0.5) * CELL;
       // Organic per-torch flicker — drives both glow alpha and a tiny
       // sprite "leap" so the flame appears to dance.
       const flick = torchFlicker(t, lit.id);
@@ -1663,14 +1667,13 @@ function render(ts) {
         ctx.textBaseline = 'middle';
         ctx.fillText('🔦', cx, cy);
       }
-      // Highlight when lightMode is on and this is hovered
-      if (lightMode) {
-        const hover = cellFromXY(mouseX, mouseY);
-        if (hover.r === lit.r && hover.c === lit.c) {
-          ctx.strokeStyle = 'rgba(255,210,90,0.85)';
-          ctx.lineWidth = 2;
-          ctx.strokeRect(lit.c*CELL + 1, lit.r*CELL + 1, CELL - 2, CELL - 2);
-        }
+      // Highlight when lightMode is on and this is hovered (pixel proximity)
+      if (lightMode && Math.hypot(mouseX - cx, mouseY - cy) <= CELL * 0.55) {
+        ctx.strokeStyle = 'rgba(255,210,90,0.85)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(cx, cy, CELL * 0.45, 0, Math.PI * 2);
+        ctx.stroke();
       }
     }
     ctx.restore();
@@ -2290,8 +2293,13 @@ function pointerDown(x,y) {
 
   // Light source mode
   if (lightMode) {
-    const cell = cellFromXY(x, y);
-    const existing = lights.find(l => l.r === cell.r && l.c === cell.c);
+    // Find an existing light near the click (within half a cell in pixel space)
+    const hitR = CELL * 0.55;
+    const existing = lights.find(l => {
+      const lx = (l.fx != null ? l.fx * canvas.width  : (l.c + 0.5) * CELL);
+      const ly = (l.fy != null ? l.fy * canvas.height : (l.r + 0.5) * CELL);
+      return Math.hypot(x - lx, y - ly) <= hitR;
+    });
     if (existing) {
       if (shiftHeld) {
         // Shift-click → instant delete
@@ -2302,12 +2310,15 @@ function pointerDown(x,y) {
         openLightModal(existing);
       }
     } else {
-      // Click empty cell → place new light at the chosen radius
+      // Place new light exactly where the user clicked
+      const cell = cellFromXY(x, y);
       pushUndo();
       lights.push({
         id:     lightIdSeq++,
         r:      cell.r,
         c:      cell.c,
+        fx:     x / canvas.width,
+        fy:     y / canvas.height,
         radius: Math.max(1, Math.min(30, parseInt(lightPlaceRadius) || 5)),
         name:   'Torch',
         color:  '#FFA040',
