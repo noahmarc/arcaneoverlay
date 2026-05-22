@@ -3853,6 +3853,40 @@ requestAnimationFrame(render);
       } catch (e) {}
     }
 
+    // ── Auto-add to initiative when the DM receives an Initiative roll result
+    // The DM is the authority on the initiative list, so only the DM side
+    // acts on this.  Players can still add themselves manually if needed.
+    if (isDM && !entry.isMine
+        && typeof msg.text === 'string'
+        && msg.text.startsWith('__ROLLRES__:')) {
+      try {
+        const res = JSON.parse(msg.text.slice('__ROLLRES__:'.length));
+        if (res && res.skill === 'Initiative' && typeof res.total === 'number') {
+          const charName  = res.name || entry.from || 'Unknown';
+          const score     = res.total;
+          // Find a matching token by name for colour + tokenId linkage.
+          const tok = (typeof tokens !== 'undefined')
+            ? tokens.find(t => t.name.toLowerCase() === charName.toLowerCase())
+            : null;
+          const color   = tok ? tok.color : '#aaa';
+          const tokenId = tok ? tok.id    : null;
+          // If this character is already in the tracker, update their score.
+          const existing = initiative.find(
+            e => e.name.toLowerCase() === charName.toLowerCase()
+          );
+          if (existing) {
+            existing.score   = score;
+            existing.color   = color;
+            if (tokenId) existing.tokenId = tokenId;
+          } else {
+            initiative.push({ id: initIdSeq++, name: charName, color, score, tokenId });
+          }
+          renderInitiative();
+          if (window.__mpScheduleSync) window.__mpScheduleSync();
+        }
+      } catch (e) {}
+    }
+
     // Auto-deposit an item into our inventory when DM sends one to us
     // (or to the whole party). The DM should not receive a copy — they're
     // the sender.
@@ -4540,6 +4574,8 @@ requestAnimationFrame(render);
 (function () {
   // 4e skill list with their key ability
   const SKILLS_4E = [
+    // Initiative first so it appears at the top of the DM roll-request picker.
+    ['Initiative',   'DEX'],
     ['Acrobatics',   'DEX'],
     ['Arcana',       'INT'],
     ['Athletics',    'STR'],
