@@ -2719,6 +2719,23 @@ document.getElementById('init-next-btn').addEventListener('click',()=>{
 });
 document.getElementById('init-reset-btn').addEventListener('click',()=>{initCurrent=-1;roundNum=1;renderInitiative();});
 
+// Exposed so the chat IIFE can add a result from a different closure scope.
+window.__arcaneAddToInitiative = function(charName, score) {
+  const tok = tokens.find(t => t.name.toLowerCase() === charName.toLowerCase());
+  const color   = tok ? tok.color : '#aaa';
+  const tokenId = tok ? tok.id    : null;
+  const existing = initiative.find(e => e.name.toLowerCase() === charName.toLowerCase());
+  if (existing) {
+    existing.score = score;
+    existing.color = color;
+    if (tokenId) existing.tokenId = tokenId;
+  } else {
+    initiative.push({ id: initIdSeq++, name: charName, color, score, tokenId });
+  }
+  renderInitiative();
+  if (window.__mpScheduleSync) window.__mpScheduleSync();
+};
+
 // ── Toolbar ────────────────────────────────────────────────────
 function setActiveEffect(eff) {
   currentEffect=eff; tokenMode=false;
@@ -3866,36 +3883,18 @@ requestAnimationFrame(render);
       } catch (e) {}
     }
 
-    // ── Auto-add to initiative when the DM receives an Initiative roll result
-    // The DM is the authority on the initiative list, so only the DM side
-    // acts on this.  Players can still add themselves manually if needed.
-    if (isDM && !entry.isMine
+    // ── Auto-add to initiative when the DM receives an Initiative roll result.
+    // Uses the window-exposed helper so the chat IIFE doesn't need to close
+    // over the initiative array / render function defined in a sibling scope.
+    if (isDM
         && typeof msg.text === 'string'
-        && msg.text.startsWith('__ROLLRES__:')) {
+        && msg.text.startsWith('__ROLLRES__:')
+        && typeof window.__arcaneAddToInitiative === 'function') {
       try {
         const res = JSON.parse(msg.text.slice('__ROLLRES__:'.length));
         if (res && res.skill === 'Initiative' && typeof res.total === 'number') {
-          const charName  = res.name || entry.from || 'Unknown';
-          const score     = res.total;
-          // Find a matching token by name for colour + tokenId linkage.
-          const tok = (typeof tokens !== 'undefined')
-            ? tokens.find(t => t.name.toLowerCase() === charName.toLowerCase())
-            : null;
-          const color   = tok ? tok.color : '#aaa';
-          const tokenId = tok ? tok.id    : null;
-          // If this character is already in the tracker, update their score.
-          const existing = initiative.find(
-            e => e.name.toLowerCase() === charName.toLowerCase()
-          );
-          if (existing) {
-            existing.score   = score;
-            existing.color   = color;
-            if (tokenId) existing.tokenId = tokenId;
-          } else {
-            initiative.push({ id: initIdSeq++, name: charName, color, score, tokenId });
-          }
-          renderInitiative();
-          if (window.__mpScheduleSync) window.__mpScheduleSync();
+          const charName = res.name || entry.from || 'Unknown';
+          window.__arcaneAddToInitiative(charName, res.total);
         }
       } catch (e) {}
     }
