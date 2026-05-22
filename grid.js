@@ -2201,16 +2201,34 @@ function pointerDown(x,y) {
   // Teleport mode
   if (teleportMode) {
     if (!teleportToken) {
+      // First click — pick up a token.
       const tok = tokenAt(x, y);
       if (tok) { teleportToken = tok; }
     } else {
-      const dest = cellFromXY(x, y);
-      const occupied = tokens.find(t => t.id !== teleportToken.id && t.r === dest.r && t.c === dest.c);
+      // Second click — try to place at destination.
+      // Clicking the selected token itself de-selects it (user changed mind).
+      if (tokenAt(x, y) === teleportToken) {
+        teleportToken = null;
+        return;
+      }
+      const dest     = cellFromXY(x, y);
+      const sz       = teleportToken.size || 1;
+      // Check whether any other token overlaps the destination footprint.
+      const occupied = tokens.find(t => {
+        if (t.id === teleportToken.id) return false;
+        const ts = t.size || 1;
+        // AABB overlap between dest footprint and this token's footprint
+        return dest.r < t.r + ts && dest.r + sz > t.r &&
+               dest.c < t.c + ts && dest.c + sz > t.c;
+      });
       if (!occupied) {
         pushUndo();
-        teleportToken.r = dest.r; teleportToken.c = dest.c;
+        teleportToken.r = dest.r;
+        teleportToken.c = dest.c;
+        teleportToken = null;   // de-select after successful teleport
       }
-      teleportToken = null;
+      // If occupied: keep teleportToken selected so user can pick another spot
+      // (no silent reset — the pulsing ring stays visible as feedback).
     }
     return;
   }
@@ -5912,21 +5930,29 @@ requestAnimationFrame(render);
 
     // Grid / tokens / walls / labels / covers / traps
     grid    = s.grid    || {};
-    // Remember any drag in flight so we can re-attach after the array is replaced.
-    const _dragId = (typeof draggingToken !== 'undefined' && draggingToken)
-                      ? draggingToken.tok.id : null;
+    // Remember any drag or pending teleport so we can re-attach after the
+    // array is replaced. Without this, a server snapshot arriving between the
+    // two teleport clicks would orphan teleportToken and the second click
+    // would mutate a stale object that the renderer ignores.
+    const _dragId     = (typeof draggingToken  !== 'undefined' && draggingToken)
+                          ? draggingToken.tok.id : null;
+    const _teleportId = (typeof teleportToken  !== 'undefined' && teleportToken)
+                          ? teleportToken.id    : null;
     tokens  = (s.tokens || []).map(t => ({
       ...t,
       conditions: [...(t.conditions || [])],
       deathSaves: { ...(t.deathSaves || { successes:0, failures:0 }) },
     }));
-    // Re-link the dragged token reference so an in-flight drag still
-    // points at the live object after the array was rebuilt — otherwise
-    // the user's pointerUp would mutate an orphaned token.
+    // Re-link drag reference.
     if (_dragId != null) {
       const live = tokens.find(t => t.id === _dragId);
       if (live) draggingToken.tok = live;
       else      draggingToken = null;
+    }
+    // Re-link teleport reference.
+    if (_teleportId != null) {
+      const live = tokens.find(t => t.id === _teleportId);
+      teleportToken = live || null;   // null = token was removed; user must re-select
     }
     walls   = (s.walls  || []).map(w => ({ ...w }));
     labels  = (s.labels || []).map(l => ({ ...l }));
