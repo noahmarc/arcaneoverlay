@@ -2581,6 +2581,9 @@ function openTokenModal(existing) {
   document.getElementById('tok-conc').checked=existing?!!existing.concentrating:false;
   // Exhaustion
   document.getElementById('tok-exhaustion').value=existing?(existing.exhaustion||0):0;
+  // Initiative bonus
+  const tokInitEl = document.getElementById('tok-initiative');
+  if (tokInitEl) tokInitEl.value = (existing && existing.initBonus != null) ? existing.initBonus : '';
   // Light
   document.getElementById('tok-light-bright').value=existing?(existing.lightRadius||0):0;
   document.getElementById('tok-light-dim').value=existing?(existing.lightDim||0):0;
@@ -2628,15 +2631,18 @@ document.getElementById('tok-ok').addEventListener('click',()=>{
   document.querySelectorAll('.ds-success').forEach(cb=>{if(cb.checked)dsSuccesses++;});
   document.querySelectorAll('.ds-fail').forEach(cb=>{if(cb.checked)dsFailures++;});
   const deathSaves={successes:dsSuccesses,failures:dsFailures};
+  const initBonusRaw = document.getElementById('tok-initiative')?.value ?? '';
+  const initBonus = initBonusRaw !== '' ? (parseInt(initBonusRaw) || 0) : null;
   pushUndo();
   if (editingTokenId!==null) {
     const tok=tokens.find(t=>t.id===editingTokenId);
-    if(tok){tok.name=name;tok.color=selectedColor;tok.size=selectedSize;tok.speed=speed;tok.hp=hp;tok.maxHp=maxHp;tok.conditions=[...selectedConditions];tok.concentrating=concentrating;tok.exhaustion=exhaustion;tok.lightRadius=lightRadius;tok.lightDim=lightDim;tok.deathSaves=deathSaves;}
+    if(tok){tok.name=name;tok.color=selectedColor;tok.size=selectedSize;tok.speed=speed;tok.hp=hp;tok.maxHp=maxHp;tok.conditions=[...selectedConditions];tok.concentrating=concentrating;tok.exhaustion=exhaustion;tok.lightRadius=lightRadius;tok.lightDim=lightDim;tok.deathSaves=deathSaves;tok.initBonus=initBonus;}
+    // Sync colour/name in the initiative tracker if this token is already listed.
     const ie=initiative.find(i=>i.tokenId===editingTokenId);
     if(ie){ie.color=selectedColor;ie.name=name;}
     renderInitiative();
   } else if (pendingTokenCell) {
-    tokens.push({id:tokenIdSeq++,r:pendingTokenCell.r,c:pendingTokenCell.c,name,color:selectedColor,size:selectedSize,speed,hp,maxHp,conditions:[...selectedConditions],concentrating,exhaustion,lightRadius,lightDim,deathSaves});
+    tokens.push({id:tokenIdSeq++,r:pendingTokenCell.r,c:pendingTokenCell.c,name,color:selectedColor,size:selectedSize,speed,hp,maxHp,conditions:[...selectedConditions],concentrating,exhaustion,lightRadius,lightDim,deathSaves,initBonus});
   }
   closeTokenModal();
 });
@@ -2695,6 +2701,13 @@ document.getElementById('init-add-btn').addEventListener('click',()=>{
 });
 document.getElementById('init-name-in').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('init-add-btn').click();});
 document.getElementById('init-score-in').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('init-add-btn').click();});
+// Auto-fill the score field from the token's initBonus when the DM types a matching name.
+document.getElementById('init-name-in').addEventListener('input', function() {
+  const scoreIn = document.getElementById('init-score-in');
+  if (!scoreIn || scoreIn.value !== '') return; // don't override manual entry
+  const match = tokens.find(t => t.name.toLowerCase() === this.value.trim().toLowerCase());
+  if (match && match.initBonus != null) scoreIn.value = match.initBonus;
+});
 document.getElementById('init-sort-btn').addEventListener('click',()=>{initiative.sort((a,b)=>b.score-a.score);initCurrent=-1;renderInitiative();});
 document.getElementById('init-next-btn').addEventListener('click',()=>{
   if(!initiative.length)return;
@@ -4611,6 +4624,7 @@ requestAnimationFrame(render);
       abilities: { STR:10, CON:10, DEX:10, INT:10, WIS:10, CHA:10 },
       defenses:  { AC:10, Fort:10, Ref:10, Will:10 },
       hp: 0, maxhp: 0, surges: 0,
+      initMisc: 0,     // misc initiative bonus (feats, items, etc.)
       trained: [],     // skill names
       inventory: [],   // [{id, name, qty, weight, equipped, notes}]
       vision: 'normal', // 'normal' | 'lowlight' | 'darkvision'
@@ -4755,7 +4769,9 @@ requestAnimationFrame(render);
     const entry = SKILLS_4E.find(([n]) => n === skillName);
     if (!entry) return 0;
     const ability = entry[1];
-    return modOf(s.abilities[ability]) + halfLevel(s) + (s.trained.includes(skillName) ? 5 : 0);
+    const base = modOf(s.abilities[ability]) + halfLevel(s) + (s.trained.includes(skillName) ? 5 : 0);
+    // Initiative also adds any misc bonus stored on the sheet.
+    return skillName === 'Initiative' ? base + (s.initMisc || 0) : base;
   }
   function rollSkill(s, skillName) {
     const d20 = Math.floor(Math.random() * 20) + 1;
@@ -4874,10 +4890,13 @@ requestAnimationFrame(render);
     document.getElementById('sh-hp').value    = sheet.hp;
     document.getElementById('sh-maxhp').value = sheet.maxhp;
     document.getElementById('sh-surges').value= sheet.surges;
+    const initMiscEl = document.getElementById('sh-init-misc');
+    if (initMiscEl) initMiscEl.value = sheet.initMisc || 0;
     const visSel = document.getElementById('sh-vision');
     if (visSel) visSel.value = sheet.vision || 'normal';
     renderSkills();
     renderInventory();
+    updateInitDisplay();
   }
 
   function fmtMod(n) { return (n >= 0 ? '+' : '') + n; }
@@ -5076,6 +5095,16 @@ requestAnimationFrame(render);
       const el = document.querySelector(`#sh-abilities .sh-mod[data-mod="${a}"]`);
       if (el) el.textContent = fmtMod(modOf(sheet.abilities[a]));
     });
+    updateInitDisplay();
+  }
+
+  function updateInitDisplay() {
+    const el = document.getElementById('sh-init-display');
+    if (!el) return;
+    const base = skillModFor(sheet, 'Initiative'); // DEX mod + ½ level
+    const misc = sheet.initMisc || 0;
+    const total = base + misc;
+    el.textContent = fmtMod(total);
   }
 
   // ── Capture form state into the sheet (does NOT persist yet) ──
@@ -5095,6 +5124,7 @@ requestAnimationFrame(render);
     sheet.hp     = parseInt(document.getElementById('sh-hp').value)    || 0;
     sheet.maxhp  = parseInt(document.getElementById('sh-maxhp').value) || 0;
     sheet.surges = parseInt(document.getElementById('sh-surges').value)|| 0;
+    sheet.initMisc = parseInt(document.getElementById('sh-init-misc')?.value) || 0;
     const visSel = document.getElementById('sh-vision');
     if (visSel) sheet.vision = visSel.value || 'normal';
   }

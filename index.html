@@ -406,6 +406,13 @@
           <input type="number" id="tok-maxhp" placeholder="—" min="1" aria-label="Max HP">
         </div>
       </div>
+      <div class="tok-field">
+        <label for="tok-initiative">INITIATIVE</label>
+        <div style="display:flex;align-items:center;gap:4px">
+          <input type="number" id="tok-initiative" placeholder="—" style="width:54px" aria-label="Initiative bonus">
+          <span class="radius-note">mod</span>
+        </div>
+      </div>
     </div>
     <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
       <input type="checkbox" id="tok-conc" style="width:14px;height:14px;accent-color:#9B59B6">
@@ -681,6 +688,12 @@
         <label>/ Max</label><input id="sh-maxhp" type="number" value="0" style="width:60px">
         <label>Surges</label><input id="sh-surges" type="number" value="0" style="width:50px">
       </div>
+      <div class="sheet-row" style="align-items:center">
+        <label>Initiative</label>
+        <span id="sh-init-display" style="font-size:18px;font-weight:800;color:#FFD700;min-width:36px;text-align:center;letter-spacing:.02em">+0</span>
+        <label style="font-size:11px;color:rgba(255,255,255,0.5);margin-left:8px" for="sh-init-misc">Misc bonus</label>
+        <input id="sh-init-misc" type="number" value="0" style="width:46px" placeholder="0" title="Extra initiative bonus (feats, items, etc.)">
+      </div>
 
       <div class="sheet-section-title">SENSES  <span class="sh-hint">controls how many squares of fog your token reveals around it</span></div>
       <div class="sheet-row">
@@ -921,6 +934,6 @@
     </div>
   </div>
 </div>
-<script src="grid.js?v=26"></script>
+<script src="grid.js?v=27"></script>
 </body>
 </html>
