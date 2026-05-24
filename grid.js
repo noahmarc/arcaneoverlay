@@ -937,7 +937,7 @@ function getWaterPattern() {
     }
   }
 
-  _waterPattern = ctx.createPattern(tc, 'repeat');
+  _waterPattern = cctx.createPattern(tc, 'repeat');
   return _waterPattern;
 }
 
@@ -1021,7 +1021,7 @@ function getGrassPattern() {
     }
   }
 
-  _grassPattern = ctx.createPattern(tc, 'repeat');
+  _grassPattern = cctx.createPattern(tc, 'repeat');
   return _grassPattern;
 }
 
@@ -1097,7 +1097,7 @@ function getLavaPattern() {
     tx.fillRect(crx, cry - px, px, px);
   }
 
-  _lavaPattern = ctx.createPattern(tc, 'repeat');
+  _lavaPattern = cctx.createPattern(tc, 'repeat');
   return _lavaPattern;
 }
 
@@ -1158,44 +1158,75 @@ function getStoneFloorPattern() {
     }
   }
 
-  _stoneFloorPattern = ctx.createPattern(tc, 'repeat');
+  _stoneFloorPattern = cctx.createPattern(tc, 'repeat');
   return _stoneFloorPattern;
 }
 
 function drawWalls() {
   if (!walls.length && !(wallActive && wallStart)) return;
 
-  const pat       = getCobblestonePattern();
-  const thickness = Math.max(10, CELL * 0.52);
+  const pat   = getCobblestonePattern();
+  const thick = Math.max(10, CELL * 0.52);
+
+  // Helper: draw the wall path once then stroke — reused across layers
+  const wallPath = (x1, y1, x2, y2) => {
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+  };
 
   for (const w of walls) {
-    const x1=w.fx1*canvas.width, y1=w.fy1*canvas.height;
-    const x2=w.fx2*canvas.width, y2=w.fy2*canvas.height;
+    const x1 = w.fx1*canvas.width,  y1 = w.fy1*canvas.height;
+    const x2 = w.fx2*canvas.width,  y2 = w.fy2*canvas.height;
     if (Math.hypot(x2-x1, y2-y1) < 1) continue;
 
     ctx.save();
-    // Cobblestone fill
+    ctx.lineCap  = 'round';
+    ctx.lineJoin = 'round';
+
+    // ── 1. Drop-shadow halo — lifts the wall off the map floor ──────────
+    ctx.shadowColor = 'rgba(0,0,0,0.72)';
+    ctx.shadowBlur  = 7;
+    ctx.shadowOffsetX = 0; ctx.shadowOffsetY = 0;
+    ctx.strokeStyle = 'rgba(3,2,1,0.88)';
+    ctx.lineWidth   = thick + 8;
+    wallPath(x1,y1,x2,y2); ctx.stroke();
+    ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
+
+    // ── 2. Crisp dark outer border — defines the wall perimeter ─────────
+    ctx.strokeStyle = '#0c0a06';
+    ctx.lineWidth   = thick + 4;
+    wallPath(x1,y1,x2,y2); ctx.stroke();
+
+    // ── 3. Slightly lighter framing band — creates visible edge inset ───
+    ctx.strokeStyle = 'rgba(55,45,30,0.90)';
+    ctx.lineWidth   = thick + 1;
+    wallPath(x1,y1,x2,y2); ctx.stroke();
+
+    // ── 4. Cobblestone body ──────────────────────────────────────────────
     ctx.strokeStyle = pat;
-    ctx.lineWidth   = thickness;
-    ctx.lineCap     = 'round';
-    ctx.lineJoin    = 'round';
-    ctx.beginPath();
-    ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
-    ctx.stroke();
-    // Dark mortar outline on top
-    ctx.strokeStyle = 'rgba(10,8,5,0.82)';
+    ctx.lineWidth   = thick;
+    wallPath(x1,y1,x2,y2); ctx.stroke();
+
+    // ── 5. Warm top-face tint — simulates ambient light on stone top ────
+    ctx.strokeStyle = 'rgba(220,185,125,0.22)';
+    ctx.lineWidth   = thick * 0.62;
+    wallPath(x1,y1,x2,y2); ctx.stroke();
+
+    // ── 6. Centre mortar crease — thin dark seam across the top face ────
+    ctx.strokeStyle = 'rgba(5,3,1,0.68)';
     ctx.lineWidth   = 1.5;
-    ctx.stroke();
+    wallPath(x1,y1,x2,y2); ctx.stroke();
+
     ctx.restore();
   }
 
   // Ghost preview while drawing
   if (wallActive && wallStart) {
+    const thick2 = Math.max(10, CELL * 0.52);
     ctx.save();
-    ctx.strokeStyle = 'rgba(100,85,55,0.48)';
-    ctx.lineWidth   = thickness;
+    ctx.strokeStyle = 'rgba(110,90,55,0.45)';
+    ctx.lineWidth   = thick2;
     ctx.lineCap     = 'round';
-    ctx.setLineDash([Math.ceil(thickness * 0.9), Math.ceil(thickness * 0.55)]);
+    ctx.setLineDash([Math.ceil(thick2 * 0.9), Math.ceil(thick2 * 0.55)]);
     ctx.beginPath();
     ctx.moveTo(wallStart.x, wallStart.y); ctx.lineTo(mouseX, mouseY);
     ctx.stroke();
@@ -1567,19 +1598,49 @@ function render(ts) {
         }
       }
     }
-    // Light sources also reveal fog within their radius, blocked by walls.
-    for (const lit of lights) {
-      const R = Number(lit.radius) || 0;
+    // Light sources reveal fog: torchlight is wall-blocked, spotlights are not.
+    // Build a combined list of placed lights + token-carried lights for fog reveal.
+    const dkSetFog = _buildDarknessSet();
+    const fogRevealLights = [...lights];
+    for (const tok of tokens) {
+      if (!tok.attachedLightPreset) continue;
+      const p = tok.attachedLightPreset;
+      const sz = tok.size || 1;
+      fogRevealLights.push({
+        ...p,
+        r: tok.r + Math.floor(sz / 2), c: tok.c + Math.floor(sz / 2),
+        fx: (tok.c + sz * 0.5) / cols,  fy: (tok.r + sz * 0.5) / rows,
+        enabled: true,
+      });
+    }
+    for (const lit of fogRevealLights) {
+      if (lit.enabled === false) continue;
+      if (dkSetFog.has(lit.r + ',' + lit.c)) continue;
+      const R = Math.max(Number(lit.radius)||0, Number(lit.dimRadius)||0);
       if (R <= 0) continue;
-      // Use exact placement position for LOS origin (falls back to cell-centre).
-      const srcC = lit.fx != null ? lit.fx * cols : lit.c + 0.5;
-      const srcR = lit.fy != null ? lit.fy * rows : lit.r + 0.5;
+      const srcC      = lit.fx != null ? lit.fx * cols : lit.c + 0.5;
+      const srcR      = lit.fy != null ? lit.fy * rows : lit.r + 0.5;
+      const shape     = lit.shape || 'full';
+      const isSpot    = (lit.type || 'torch') === 'spotlight';
+      const halfArcRad = shape === 'quarter' ? Math.PI / 4
+                       : shape === 'half'    ? Math.PI / 2
+                       : Math.PI;
+      const facingRad  = ((lit.angle || 0) * Math.PI) / 180;
       for (let rr = lit.r - R; rr <= lit.r + R; rr++) {
         if (rr < 0 || rr >= rows) continue;
         for (let cc = lit.c - R; cc <= lit.c + R; cc++) {
           if (cc < 0 || cc >= cols) continue;
           if (Math.max(Math.abs(rr - lit.r), Math.abs(cc - lit.c)) <= R) {
-            if (!_wallBlocksPt(srcC, srcR, cc+0.5, rr+0.5)) {
+            if (shape !== 'full') {
+              const dx = (cc + 0.5) - srcC, dy = (rr + 0.5) - srcR;
+              if (Math.abs(dx) > 0.001 || Math.abs(dy) > 0.001) {
+                let diff = Math.atan2(dy, dx) - facingRad;
+                diff = ((diff + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
+                if (Math.abs(diff) > halfArcRad) continue;
+              }
+            }
+            const isSourceCell = (rr === lit.r && cc === lit.c);
+            if (isSpot || isSourceCell || !_wallBlocksPt(srcC, srcR, cc + 0.5, rr + 0.5)) {
               visionReveal.add(rr + ',' + cc);
             }
           }
@@ -1587,27 +1648,31 @@ function render(ts) {
       }
     }
 
+    // ── Torchlight pools (drawn BEFORE fog — fog naturally covers unexplored areas) ──
+    _drawLightPools(ctx, t, 'torch');
+
     ctx.save();
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
         const k = r+','+c;
         if (visionReveal.has(k)) continue;     // visible thanks to a token's vision
         const vis = fogVis[k] ?? 0;
-        if (vis < 0.999) {
-          ctx.fillStyle = `rgba(8,6,20,${1 - vis})`;
+        const fogAlpha = (1 - vis) * (1 - ambientLight);
+        if (fogAlpha > 0.005) {
+          ctx.fillStyle = `rgba(8,6,20,${fogAlpha})`;
           ctx.fillRect(c*CELL, r*CELL, CELL, CELL);
-          // Amber shimmer at the reveal edge
+          // Amber shimmer at the reveal edge (scaled by ambient)
           if (vis > 0.01 && vis < 0.99) {
-            const shimmer = Math.sin(vis * Math.PI) * 0.22;
-            ctx.fillStyle = `rgba(120,55,10,${shimmer})`;
-            ctx.fillRect(c*CELL, r*CELL, CELL, CELL);
+            const shimmer = Math.sin(vis * Math.PI) * 0.22 * (1 - ambientLight);
+            if (shimmer > 0.01) {
+              ctx.fillStyle = `rgba(120,55,10,${shimmer})`;
+              ctx.fillRect(c*CELL, r*CELL, CELL, CELL);
+            }
           }
         }
       }
     }
-    // Soft glow ring at the outer edge of each vision radius — helps the
-    // player see the limit of their own sight. Uses the same effective
-    // radius (max of natural vision and any equipped torch).
+    // Soft glow ring at the outer edge of each vision radius
     for (const tok of tokens) {
       const visionR = VISION_RADIUS[tok.vision];
       const equipR  = tok.equippedLight && Number(tok.equippedLight.radius) || 0;
@@ -1625,10 +1690,18 @@ function render(ts) {
       ctx.arc(cx, cy, radiusPx, 0, Math.PI*2);
       ctx.fill();
     }
-    // Outer halo / amber pool has been removed by request — light sources
-    // simply punch their squares through the fog (via `visionReveal` above).
-    // The map underneath shows through cleanly, no decorative overlay.
     ctx.restore();
+
+    // ── Spotlight pools (drawn AFTER fog — beams punch through walls and darkness) ──
+    _drawLightPools(ctx, t, 'spotlight');
+    // ── Magical darkness zones (drawn last — suppress all light) ──
+    _drawDarknessZones(ctx);
+
+  } else {
+    // Fog is OFF — draw all light pools together, then darkness zones on top.
+    // Ambient only meaningfully applies when fog is on (it reduces fog opacity).
+    _drawLightPools(ctx, t);
+    _drawDarknessZones(ctx);
   }
 
   // ── Light source icons (always visible, even when fog is off) ──────
@@ -1644,39 +1717,149 @@ function render(ts) {
       // sprite "leap" so the flame appears to dance.
       const flick = torchFlicker(t, lit.id);
       const radInner = CELL * (0.50 + 0.12 * flick);
+      const rgb = hexToRgb(lit.color || '#FFA040');
       const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, radInner);
-      g.addColorStop(0,    `rgba(255,210,100,${0.55 * flick})`);
-      g.addColorStop(0.55, `rgba(255,140,40,${0.26 * flick})`);
-      g.addColorStop(1,    'rgba(255,80,10,0)');
+      g.addColorStop(0,    `rgba(${rgb},${0.65 * flick})`);
+      g.addColorStop(0.55, `rgba(${rgb},${0.30 * flick})`);
+      g.addColorStop(1,    `rgba(${rgb},0)`);
       ctx.fillStyle = g;
       ctx.beginPath();
-      ctx.arc(cx, cy, radInner, 0, Math.PI*2);
-      ctx.fill();
-      // 8-bit torch sprite — drawn pixel-perfect and *stationary*. Smaller
-      // than the cell so it reads as an object on the tile rather than
-      // filling it. Only the inner glow flickers.
-      if (sprite && sprite.complete && sprite.naturalWidth) {
-        const size = CELL * 0.60;
-        ctx.imageSmoothingEnabled = false;
-        ctx.drawImage(sprite, cx - size/2, cy - size/2, size, size);
-        ctx.imageSmoothingEnabled = true;
+      const litShape = lit.shape || 'full';
+      if (litShape === 'full') {
+        ctx.arc(cx, cy, radInner, 0, Math.PI * 2);
       } else {
-        // Fallback while the sprite hasn't loaded yet
-        ctx.font = `${Math.max(12, CELL * 0.5)}px system-ui, sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText('🔦', cx, cy);
+        const halfA = litShape === 'quarter' ? Math.PI / 4 : Math.PI / 2;
+        const fRad  = ((lit.angle || 0) * Math.PI) / 180;
+        ctx.moveTo(cx, cy);
+        ctx.arc(cx, cy, radInner, fRad - halfA, fRad + halfA);
+        ctx.closePath();
       }
-      // Highlight when lightMode is on and this is hovered (pixel proximity)
-      if (lightMode && Math.hypot(mouseX - cx, mouseY - cy) <= CELL * 0.55) {
-        ctx.strokeStyle = 'rgba(255,210,90,0.85)';
+      ctx.fill();
+      // 8-bit torch sprite — only for torchlight; spotlights show no icon.
+      if ((lit.type || 'torch') === 'torch') {
+        if (sprite && sprite.complete && sprite.naturalWidth) {
+          const size = CELL * 0.60;
+          ctx.imageSmoothingEnabled = false;
+          ctx.drawImage(sprite, cx - size/2, cy - size/2, size, size);
+          ctx.imageSmoothingEnabled = true;
+        } else {
+          ctx.font = `${Math.max(12, CELL * 0.5)}px system-ui, sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('🔦', cx, cy);
+        }
+      }
+      // Dim radius ring
+      const dimR = Number(lit.dimRadius) || 0;
+      if (dimR > 0 && lightMode) {
+        ctx.strokeStyle = 'rgba(255,220,100,0.25)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 5]);
+        ctx.beginPath();
+        ctx.arc(cx, cy, dimR * CELL, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      // Disabled / locked indicators
+      if (lit.enabled === false) {
+        ctx.strokeStyle = 'rgba(255,60,60,0.8)';
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.arc(cx, cy, CELL * 0.45, 0, Math.PI * 2);
+        ctx.moveTo(cx - 8, cy - 8); ctx.lineTo(cx + 8, cy + 8);
+        ctx.moveTo(cx + 8, cy - 8); ctx.lineTo(cx - 8, cy + 8);
         ctx.stroke();
+      }
+      if (lit.locked) {
+        ctx.fillStyle = 'rgba(255,200,60,0.9)';
+        ctx.font = `bold ${Math.max(8, CELL * 0.25)}px system-ui`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+        ctx.fillText('🔒', cx, cy - CELL * 0.5);
+      }
+      // In lightMode: hover highlight and resize edge ring
+      if (lightMode) {
+        const hovered = Math.hypot(mouseX - cx, mouseY - cy) <= CELL * 0.55;
+        const isRotating = _rotatLight && _rotatLight.id === lit.id;
+        if (hovered || isRotating) {
+          ctx.strokeStyle = 'rgba(255,210,90,0.85)';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(cx, cy, CELL * 0.45, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        // Bright radius ring (shows resize handle)
+        const rPx  = (Number(lit.radius)||1) * CELL;
+        const near = Math.abs(Math.hypot(mouseX - cx, mouseY - cy) - rPx) <= 8;
+        ctx.strokeStyle = near ? 'rgba(255,210,90,0.9)' : 'rgba(255,255,255,0.18)';
+        ctx.lineWidth = near ? 2 : 1;
+        ctx.setLineDash(near ? [] : [6, 6]);
+        ctx.beginPath();
+        ctx.arc(cx, cy, rPx, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
       }
     }
     ctx.restore();
+  }
+
+  // ── Spotlight freehand placement preview ──────────────────────
+  if (_spotDrag) {
+    const sx  = _spotDrag.fx * canvas.width;
+    const sy  = _spotDrag.fy * canvas.height;
+    const dx  = mouseX - sx, dy = mouseY - sy;
+    const dist = Math.hypot(dx, dy);
+    if (dist > 6) {
+      const angle = Math.atan2(dy, dx);
+      const halfA = (lightPlaceShape === 'quarter') ? Math.PI / 4 : Math.PI / 2;
+      const rgb   = hexToRgb(lightPlaceColor || '#FFA040');
+      ctx.save();
+      ctx.globalCompositeOperation = 'screen';
+      // Filled cone preview
+      const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, dist);
+      grad.addColorStop(0,    `rgba(${rgb},0.55)`);
+      grad.addColorStop(0.55, `rgba(${rgb},0.32)`);
+      grad.addColorStop(1,    `rgba(${rgb},0.06)`);
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.arc(sx, sy, dist, angle - halfA, angle + halfA);
+      ctx.closePath();
+      ctx.fill();
+      // Dashed outline
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = `rgba(${rgb},0.9)`;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.arc(sx, sy, dist, angle - halfA, angle + halfA);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // Source dot
+      ctx.fillStyle = `rgba(${rgb},1)`;
+      ctx.beginPath();
+      ctx.arc(sx, sy, 4, 0, Math.PI * 2);
+      ctx.fill();
+      // Radius label
+      const radiusCells = Math.max(1, Math.round(dist / CELL));
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      ctx.font = `bold ${Math.max(10, CELL * 0.28)}px system-ui`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const lx = sx + Math.cos(angle) * (dist + CELL * 0.5);
+      const ly = sy + Math.sin(angle) * (dist + CELL * 0.5);
+      ctx.fillText(`${radiusCells} sq`, lx, ly);
+      ctx.restore();
+    } else {
+      // Just show a source dot before the drag starts
+      const rgb = hexToRgb(lightPlaceColor || '#FFA040');
+      ctx.save();
+      ctx.fillStyle = `rgba(${rgb},0.8)`;
+      ctx.beginPath();
+      ctx.arc(sx, sy, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
   }
 
   // Projection bounds
@@ -1969,6 +2152,21 @@ const COND_COLORS = {
 let walls = [], wallIdSeq = 1;
 let labels = [], labelIdSeq = 1;
 let lights = [], lightIdSeq = 1;
+
+// ── Lighting system globals ───────────────────────────────────
+let ambientLight      = 0;          // 0 = pitch dark, 1 = full daylight
+let darknessZones     = [];         // [{id, cells:['r,c',...]}]
+let darknessZoneIdSeq = 1;
+let darknessMode      = false;      // darkness-draw tool active
+let _darknessDrag     = null;       // {id} of zone being drawn
+let encounterLightPresets = [];     // [{name, lights:[...]}] — localStorage-backed
+let lightGroupManager = {};         // {groupName: true|false}
+let lightPlaceDimRadius = 0;        // placement panel dim radius
+let _resizeDragLight  = null;       // drag-to-resize state {light}
+let _resizeDragStarted = false;
+
+// Load encounter presets from localStorage
+try { encounterLightPresets = JSON.parse(localStorage['arcane_lightPresets'] || '[]'); } catch(e) {}
 // Lazy-loaded torch sprite. Same image is reused by every light icon.
 let _torchSprite = null;
 function getTorchSprite() {
@@ -1977,6 +2175,189 @@ function getTorchSprite() {
     _torchSprite.src = 'torch-8bit.png';
   }
   return _torchSprite;
+}
+
+// ── Colored light pool rendering ──────────────────────────────────────
+// Draws colored light projected onto the map for every placed light source.
+// Two visual modes:
+//   torch     — soft organic radial gradient, subtle flicker, bleeds at edges
+// ── Darkness zone helpers ────────────────────────────────────────────────────
+function _buildDarknessSet() {
+  const s = new Set();
+  for (const dz of darknessZones) for (const k of dz.cells) s.add(k);
+  return s;
+}
+
+function _drawDarknessZones(ctx) {
+  if (!darknessZones.length) return;
+  ctx.save();
+  ctx.globalCompositeOperation = 'source-over';
+  for (const dz of darknessZones) {
+    for (const k of dz.cells) {
+      const [rr, cc] = k.split(',').map(Number);
+      ctx.fillStyle = 'rgba(0,0,0,1)';
+      ctx.fillRect(cc * CELL, rr * CELL, CELL, CELL);
+      // Purple border in DM context so zones are identifiable
+      ctx.strokeStyle = 'rgba(120,0,180,0.55)';
+      ctx.lineWidth   = 1;
+      ctx.strokeRect(cc * CELL + 0.5, rr * CELL + 0.5, CELL - 1, CELL - 1);
+    }
+  }
+  ctx.restore();
+}
+
+// ── lerp rgb helper ──────────────────────────────────────────────────────────
+function _lerpRgb(hex1, hex2, f) {
+  const a = hexToRgb(hex1 || '#FFA040').split(',').map(Number);
+  const b = hexToRgb(hex2 || '#FF4040').split(',').map(Number);
+  return `${Math.round(a[0]+(b[0]-a[0])*f)},${Math.round(a[1]+(b[1]-a[1])*f)},${Math.round(a[2]+(b[2]-a[2])*f)}`;
+}
+
+// ── Core single-zone draw (shared by torchlight + spotlight) ─────────────────
+function _drawLightZone(ctx, t, lit, R, rgb, am, litShape, halfA, fRad) {
+  const cx = lit.fx != null ? lit.fx * canvas.width  : (lit.c + 0.5) * CELL;
+  const cy = lit.fy != null ? lit.fy * canvas.height : (lit.r + 0.5) * CELL;
+  const radiusPx = R * CELL;
+  const isSpot = (lit.type || 'torch') === 'spotlight';
+
+  if (isSpot) {
+    let flick = torchFlicker(t, lit.id || 0) * 0.04 + 0.96;
+    if ((lit.anim||null) === 'pulse') flick = 0.82 + 0.18 * Math.sin(t * 0.0015 + (lit.id||0) * 1.3);
+    const af = am * flick;
+    ctx.save();
+    ctx.beginPath();
+    if (litShape === 'full') {
+      ctx.arc(cx, cy, radiusPx, 0, Math.PI * 2);
+    } else {
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, radiusPx, fRad - halfA, fRad + halfA);
+      ctx.closePath();
+    }
+    ctx.clip();
+    const gSL = ctx.createRadialGradient(cx, cy, radiusPx * 0.05, cx, cy, radiusPx);
+    gSL.addColorStop(0,    `rgba(${rgb},${0.88 * af})`);
+    gSL.addColorStop(0.30, `rgba(${rgb},${0.76 * af})`);
+    gSL.addColorStop(0.60, `rgba(${rgb},${0.58 * af})`);
+    gSL.addColorStop(0.85, `rgba(${rgb},${0.32 * af})`);
+    gSL.addColorStop(1,    `rgba(${rgb},0.06)`);
+    ctx.fillStyle = gSL;
+    ctx.fillRect(cx - radiusPx, cy - radiusPx, radiusPx * 2, radiusPx * 2);
+    ctx.restore();
+  } else {
+    let flick = torchFlicker(t + 0.4, lit.id || 0) * 0.14 + 0.86;
+    if ((lit.anim||null) === 'pulse') flick = 0.82 + 0.18 * Math.sin(t * 0.0015 + (lit.id||0) * 1.3);
+    const af = am * flick;
+    const gTL = ctx.createRadialGradient(cx, cy, 0, cx, cy, radiusPx);
+    gTL.addColorStop(0,    `rgba(${rgb},${0.44 * af})`);
+    gTL.addColorStop(0.40, `rgba(${rgb},${0.26 * af})`);
+    gTL.addColorStop(0.75, `rgba(${rgb},${0.10 * af})`);
+    gTL.addColorStop(1,    `rgba(${rgb},0)`);
+    const srcC = lit.fx != null ? lit.fx * cols : lit.c + 0.5;
+    const srcR = lit.fy != null ? lit.fy * rows : lit.r + 0.5;
+    ctx.save();
+    ctx.beginPath();
+    for (let rr = lit.r - R; rr <= lit.r + R; rr++) {
+      if (rr < 0 || rr >= rows) continue;
+      for (let cc = lit.c - R; cc <= lit.c + R; cc++) {
+        if (cc < 0 || cc >= cols) continue;
+        if (Math.max(Math.abs(rr - lit.r), Math.abs(cc - lit.c)) <= R) {
+          if (litShape !== 'full') {
+            const dx = (cc + 0.5) - srcC, dy = (rr + 0.5) - srcR;
+            if (Math.abs(dx) > 0.001 || Math.abs(dy) > 0.001) {
+              let diff = Math.atan2(dy, dx) - fRad;
+              diff = ((diff + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
+              if (Math.abs(diff) > halfA) continue;
+            }
+          }
+          const isSourceCell = (rr === lit.r && cc === lit.c);
+          if (isSourceCell || !_wallBlocksPt(srcC, srcR, cc + 0.5, rr + 0.5)) {
+            ctx.rect(cc * CELL, rr * CELL, CELL, CELL);
+          }
+        }
+      }
+    }
+    ctx.clip();
+    ctx.fillStyle = gTL;
+    ctx.fillRect(cx - radiusPx, cy - radiusPx, radiusPx * 2, radiusPx * 2);
+    ctx.restore();
+  }
+}
+
+//   spotlight — sharp hard-edged cone, bright & uniform, minimal flicker
+// typeFilter: 'torch' | 'spotlight' | undefined (= both)
+function _drawLightPools(ctx, t, typeFilter) {
+  const dkSet = _buildDarknessSet();
+
+  // Build unified list: placed lights + token-carried synthetic lights
+  const allLights = [...lights];
+  for (const tok of tokens) {
+    if (!tok.attachedLightPreset) continue;
+    const p  = tok.attachedLightPreset;
+    const sz = tok.size || 1;
+    allLights.push({
+      ...p,
+      id:  -(tok.id + 1),           // negative ID keeps flicker phase distinct
+      r:   tok.r + Math.floor(sz / 2),
+      c:   tok.c + Math.floor(sz / 2),
+      fx:  (tok.c + sz * 0.5) / cols,
+      fy:  (tok.r + sz * 0.5) / rows,
+      enabled: true,
+    });
+  }
+
+  if (!allLights.length) return;
+  ctx.save();
+  ctx.globalCompositeOperation = 'screen';
+
+  for (const lit of allLights) {
+    if (lit.enabled === false) continue;
+    if (dkSet.has(lit.r + ',' + lit.c)) continue; // inside magical darkness
+
+    const R = Number(lit.radius) || 0;
+    if (R <= 0) continue;
+
+    const litType = lit.type || 'torch';
+    if (typeFilter && litType !== typeFilter) continue;
+
+    const anim = lit.anim || null;
+
+    // ── Strobe: skip whole light on off-phase ────────────────────
+    if (anim === 'strobe' && Math.floor(t / 120) % 2 !== 0) continue;
+
+    // ── Fade: reduce brightness over 60 s then disable ──────────
+    let fadeAlpha = 1;
+    if (anim === 'fade') {
+      if (lit._fadeStart == null) lit._fadeStart = t;
+      fadeAlpha = Math.max(0, 1 - (t - lit._fadeStart) / 60000);
+      if (fadeAlpha <= 0) { lit.enabled = false; continue; }
+    }
+
+    // ── Cycle: lerp color between two values ─────────────────────
+    let rgb;
+    if (anim === 'cycle' && lit.animColor2) {
+      const f = (Math.sin(t * 0.001 + (lit.id || 0) * 1.3) + 1) / 2;
+      rgb = _lerpRgb(lit.color, lit.animColor2, f);
+    } else {
+      rgb = hexToRgb(lit.color || '#FFA040');
+    }
+
+    const am = (lit.intensity ?? 1.0) * (lit.opacity ?? 1.0) * fadeAlpha;
+    const litShape = lit.shape || 'full';
+    const halfA = litShape === 'quarter' ? Math.PI / 4
+                : litShape === 'half'    ? Math.PI / 2
+                : Math.PI;
+    const fRad = ((lit.angle || 0) * Math.PI) / 180;
+
+    // ── Dim zone (outer, lower opacity) ─────────────────────────
+    const dimR = Number(lit.dimRadius) || 0;
+    if (dimR > R) {
+      _drawLightZone(ctx, t, lit, dimR, rgb, am * 0.4, litShape, halfA, fRad);
+    }
+
+    // ── Bright zone ──────────────────────────────────────────────
+    _drawLightZone(ctx, t, lit, R, rgb, am, litShape, halfA, fRad);
+  }
+  ctx.restore();
 }
 
 // Organic torch flicker — multi-frequency sine combination plus rare
@@ -2035,7 +2416,18 @@ let gridCoordsVisible=false;
 // Feature 9 — Cover
 let covers={}, coverMode=false;
 let labelMode=false, pendingLabelCell=null, editingLabelId=null;
-let lightMode=false, editingLightId=null, lightPlaceRadius=5;
+let lightMode=false, editingLightId=null, lightPlaceRadius=5, lightPlaceShape='full', lightPlaceColor='#FFA040', lightPlaceType='torch';
+let _rotatLight=null, _rotatMoved=false; // drag-to-rotate state
+let _spotDrag=null; // freehand spotlight drag: {x,y,fx,fy,r,c}
+
+// Parse a #rrggbb hex colour into "r,g,b" string for use in rgba()
+function hexToRgb(hex) {
+  const h = (hex||'#FFA040').replace('#','');
+  const r = parseInt(h.slice(0,2),16)||255;
+  const g = parseInt(h.slice(2,4),16)||160;
+  const b = parseInt(h.slice(4,6),16)||64;
+  return `${r},${g},${b}`;
+}
 let draggingLabel=null, labelDragMoved=false;
 let moveRangeToken=null;
 let selectedSize=1, selectedSpeed=6, selectedHp=null, selectedMaxHp=null, selectedConditions=[];
@@ -2111,6 +2503,34 @@ function movePos(x,y) {
     return;
   }
 
+  // Spotlight freehand drag preview (no state change — render loop reads mouseX/Y)
+  if (_spotDrag) {
+    canvas.style.cursor = 'crosshair';
+    return;
+  }
+
+  // Light resize drag
+  if (_resizeDragLight) {
+    const rl = _resizeDragLight;
+    const lx = rl.fx != null ? rl.fx * canvas.width  : (rl.c + 0.5) * CELL;
+    const ly = rl.fy != null ? rl.fy * canvas.height : (rl.r + 0.5) * CELL;
+    rl.radius = Math.max(1, Math.min(30, Math.round(Math.hypot(x - lx, y - ly) / CELL)));
+    canvas.style.cursor = 'ew-resize';
+    return;
+  }
+
+  // Light rotation drag
+  if (_rotatLight) {
+    const lx = _rotatLight.fx != null ? _rotatLight.fx * canvas.width  : (_rotatLight.c + 0.5) * CELL;
+    const ly = _rotatLight.fy != null ? _rotatLight.fy * canvas.height : (_rotatLight.r + 0.5) * CELL;
+    const dx = x - lx, dy = y - ly;
+    if (!_rotatMoved && Math.hypot(dx, dy) > 6) { pushUndo(); _rotatMoved = true; }
+    if (_rotatMoved) {
+      _rotatLight.angle = Math.round(Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
+    }
+    return;
+  }
+
   // Token drag
   if (draggingToken) {
     const dx=x-draggingToken.startX, dy=y-draggingToken.startY;
@@ -2119,7 +2539,35 @@ function movePos(x,y) {
   }
 
   // Cursor logic
-  if (boundsHandle) {
+  if (lightMode) {
+    // Check if hovering near a light's radius edge → resize cursor
+    const hoverEdge = lights.find(l => {
+      if (l.locked) return false;
+      const lx = l.fx != null ? l.fx * canvas.width  : (l.c + 0.5) * CELL;
+      const ly = l.fy != null ? l.fy * canvas.height : (l.r + 0.5) * CELL;
+      return Math.abs(Math.hypot(x - lx, y - ly) - (Number(l.radius)||1) * CELL) <= 8;
+    });
+    // Use 'none' only when a drawn cursor will actually appear (effect selected);
+    // otherwise fall back to 'crosshair' so the cursor isn't invisible.
+    canvas.style.cursor = hoverEdge ? 'ew-resize' : (currentEffect ? 'none' : 'crosshair');
+    return;
+  }
+  if (darknessMode) {
+    const cell = cellFromXY(x, y);
+    const key  = cell.r + ',' + cell.c;
+    if (shiftHeld) {
+      // Shift-drag: erase cells as we sweep over them
+      for (const dz of darknessZones) dz.cells = dz.cells.filter(k => k !== key);
+      darknessZones = darknessZones.filter(dz => dz.cells.length > 0);
+    } else if (_darknessDrag) {
+      // Paint darkness cells while dragging
+      if (!_darknessDrag.cells.includes(key)) _darknessDrag.cells.push(key);
+    }
+    canvas.style.cursor = 'crosshair'; return;
+  }
+  if (_rotatLight) {
+    canvas.style.cursor = 'crosshair';
+  } else if (boundsHandle) {
     canvas.style.cursor = boundsHandleCursor(boundsHandle);
   } else if (boundsMode) {
     canvas.style.cursor = boundsHandleCursor(hitBoundsHandle(x,y));
@@ -2282,6 +2730,26 @@ function pointerDown(x,y) {
     canvas.style.cursor='grabbing';
     return;
   }
+  // Darkness mode — draw/erase darkness zones cell by cell
+  if (darknessMode) {
+    const cell = cellFromXY(x, y);
+    const key  = cell.r + ',' + cell.c;
+    if (shiftHeld) {
+      // Shift: erase — remove key from all zones
+      pushUndo();
+      for (const dz of darknessZones) dz.cells = dz.cells.filter(k => k !== key);
+      darknessZones = darknessZones.filter(dz => dz.cells.length > 0);
+    } else {
+      pushUndo();
+      // Start new zone or continue last one
+      if (!_darknessDrag) {
+        darknessZones.push({ id: darknessZoneIdSeq++, cells: [] });
+        _darknessDrag = darknessZones[darknessZones.length - 1];
+      }
+      if (!_darknessDrag.cells.includes(key)) _darknessDrag.cells.push(key);
+    }
+    return;
+  }
   // Wall mode
   if(wallMode){
     if(shiftHeld){pushUndo();wallErasing=true;deleteNearestWall(x,y,true);}
@@ -2319,28 +2787,70 @@ function pointerDown(x,y) {
       return Math.hypot(x - lx, y - ly) <= hitR;
     });
     if (existing) {
+      if (existing.locked && shiftHeld) return; // locked lights immune to delete
       if (shiftHeld) {
         // Shift-click → instant delete
         pushUndo();
         lights = lights.filter(l => l.id !== existing.id);
+        renderLightGroupManager();
+      } else if (existing.locked) {
+        // locked lights can't be rotated or edited until unlocked via modal
+        openLightModal(existing);
+      } else if ((existing.shape||'full') !== 'full') {
+        // Directional light → start drag-to-rotate; open modal only on pure click
+        _rotatLight = existing;
+        _rotatMoved = false;
       } else {
-        // Click existing → open edit modal
+        // Full-circle light → open edit modal immediately
         openLightModal(existing);
       }
+      return;
+    }
+    // Check for drag-to-resize: pointer near the bright radius edge
+    const nearEdge = lights.find(l => {
+      if (l.locked) return false;
+      const lx = l.fx != null ? l.fx * canvas.width  : (l.c + 0.5) * CELL;
+      const ly = l.fy != null ? l.fy * canvas.height : (l.r + 0.5) * CELL;
+      const dist = Math.hypot(x - lx, y - ly);
+      const edge = (Number(l.radius)||1) * CELL;
+      return Math.abs(dist - edge) <= 8;
+    });
+    if (nearEdge) {
+      pushUndo();
+      _resizeDragLight   = nearEdge;
+      _resizeDragStarted = true;
+      return;
+    }
+    if (lightPlaceType === 'spotlight' && (lightPlaceShape || 'full') !== 'full') {
+      // Directional spotlight → freehand drag to set direction + radius
+      const cell = cellFromXY(x, y);
+      _spotDrag = { x, y, fx: x / canvas.width, fy: y / canvas.height, r: cell.r, c: cell.c };
     } else {
-      // Place new light exactly where the user clicked
+      // Torch or full-circle spotlight → place immediately
       const cell = cellFromXY(x, y);
       pushUndo();
       lights.push({
-        id:     lightIdSeq++,
-        r:      cell.r,
-        c:      cell.c,
-        fx:     x / canvas.width,
-        fy:     y / canvas.height,
-        radius: Math.max(1, Math.min(30, parseInt(lightPlaceRadius) || 5)),
-        name:   'Torch',
-        color:  '#FFA040',
+        id:        lightIdSeq++,
+        r:         cell.r,
+        c:         cell.c,
+        fx:        x / canvas.width,
+        fy:        y / canvas.height,
+        radius:    Math.max(1, Math.min(30, parseInt(lightPlaceRadius) || 5)),
+        dimRadius: Math.max(0, parseInt(lightPlaceDimRadius) || 0),
+        name:      lightPlaceType === 'spotlight' ? 'Spotlight' : 'Torch',
+        color:     lightPlaceColor || '#FFA040',
+        type:      lightPlaceType  || 'torch',
+        shape:     lightPlaceShape || 'full',
+        angle:     0,
+        enabled:   true,
+        intensity: 1.0,
+        opacity:   1.0,
+        locked:    false,
+        group:     '',
+        anim:      null,
+        animColor2: null,
       });
+      renderLightGroupManager();
     }
     return;
   }
@@ -2382,6 +2892,62 @@ function pointerDown(x,y) {
 }
 
 function pointerUp() {
+  // Darkness draw release — only swallow the event when a drag was actually in progress
+  if (_darknessDrag) { _darknessDrag = null; return; }
+
+  // Spotlight freehand drag release → place light
+  if (_spotDrag) {
+    const sd = _spotDrag;
+    _spotDrag = null;
+    canvas.style.cursor = 'none';
+    const dx = mouseX - sd.x, dy = mouseY - sd.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist > 8) {
+      const angle  = Math.round(Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
+      const radius = Math.max(1, Math.min(30, Math.round(dist / CELL)));
+      pushUndo();
+      lights.push({
+        id:        lightIdSeq++,
+        r:         sd.r,  c:  sd.c,
+        fx:        sd.fx, fy: sd.fy,
+        radius,
+        dimRadius: Math.max(0, parseInt(lightPlaceDimRadius) || 0),
+        name:      'Spotlight',
+        color:     lightPlaceColor || '#FFA040',
+        type:      'spotlight',
+        shape:     lightPlaceShape || 'half',
+        angle,
+        enabled:   true,
+        intensity: 1.0,
+        opacity:   1.0,
+        locked:    false,
+        group:     '',
+        anim:      null,
+        animColor2: null,
+      });
+      renderLightGroupManager();
+      if (window.__mpScheduleSync) window.__mpScheduleSync();
+    }
+    return;
+  }
+
+  // Light resize drag release
+  if (_resizeDragLight) {
+    _resizeDragLight = null;
+    _resizeDragStarted = false;
+    if (window.__mpScheduleSync) window.__mpScheduleSync();
+    return;
+  }
+
+  // Light rotation drag release
+  if (_rotatLight) {
+    const lit = _rotatLight;
+    const moved = _rotatMoved;
+    _rotatLight = null; _rotatMoved = false;
+    if (!moved) openLightModal(lit);  // pure click → open modal
+    else if (window.__mpScheduleSync) window.__mpScheduleSync();
+    return;
+  }
   if (losMode) { losStart=null; return; }
   if (rulerMode) { rulerStart=null; return; }
   if (boundsHandle) {
@@ -2776,7 +3342,13 @@ function updateHint() {
   if(coverMode){document.getElementById('hint').textContent='Click near a cell edge to cycle cover: ½ → ¾ → full → clear · Shift-click to erase immediately';return;}
   if(wallMode){document.getElementById('hint').textContent='Click & drag to draw a wall · Shift-drag to erase walls · Keys 1-8 switch effects';return;}
   if(labelMode){document.getElementById('hint').textContent='Click a cell to place a text label · Click existing label to edit or delete';return;}
-  if(lightMode){document.getElementById('hint').textContent='Click a cell to place a light source · Click existing light to edit · Shift-click to delete · Adjust radius with the slider above';return;}
+  if(lightMode){
+    const isDrawSpot = lightPlaceType==='spotlight' && lightPlaceShape!=='full';
+    document.getElementById('hint').textContent = isDrawSpot
+      ? 'Click & drag to draw a spotlight — drag direction sets the aim, drag distance sets the radius · Click existing light to edit · Shift-click to delete'
+      : 'Click to place a light source · Click existing light to edit · Shift-click to delete · Adjust radius with the slider above';
+    return;
+  }
   if(losMode){document.getElementById('hint').textContent='Click and drag to check line of sight · Walls that block are highlighted red';return;}
   if(trapMode){document.getElementById('hint').textContent='Click a cell to place a trap marker · Click again to reveal · Click revealed trap to remove';return;}
   if(teleportMode){document.getElementById('hint').textContent=teleportToken?'Click destination to teleport · Esc to cancel':'Click a token to select it · Click destination to teleport · Esc to cancel';return;}
@@ -2867,10 +3439,6 @@ document.getElementById('inspect-btn').addEventListener('click', () => {
   if (!inspectMode) _tooltip.classList.remove('visible');
   canvas.style.cursor = inspectMode ? 'crosshair' : 'none';
   updateHint();
-});
-
-document.getElementById('map-btn').addEventListener('click', () => {
-  document.getElementById('map-input').click();
 });
 
 document.getElementById('map-input').addEventListener('change', function() {
@@ -2973,7 +3541,9 @@ document.getElementById('col-slider').addEventListener('input',function(){cols=p
 document.getElementById('row-slider').addEventListener('input',function(){rows=parseInt(this.value);document.getElementById('row-val').textContent=rows;grid={};tokens=[];projBounds=null;walls=[];labels=[];fogReset();resize();});
 document.getElementById('clear-btn').addEventListener('click',()=>{
   pushUndo();
-  grid={};tokens=[];projBounds=null;walls=[];labels=[];
+  grid={};tokens=[];projBounds=null;walls=[];labels=[];lights=[];
+  darknessZones=[];darknessZoneIdSeq=1;
+  renderLightGroupManager();
   drawing=false;rawPts=[];strokeCells=new Set();prevCell=null;
   erasing=false;erasePrevCell=null;coneActive=false;coneOrigin=null;
   cctx.clearRect(0,0,cellCvs.width,cellCvs.height);
@@ -3022,26 +3592,29 @@ function getSaveData() {
     walls, labels, lights, presets,
     covers: {...covers},
     traps: {...traps},
+    ambientLight,
+    darknessZones: darknessZones.map(dz => ({...dz, cells: [...dz.cells]})),
   };
 }
 
 function saveGame() {
   const json = JSON.stringify(getSaveData(), null, 2);
-  // Prefer the native Swift bridge (WKWebView ignores <a download>)
-  if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.saveFile) {
-    window.webkit.messageHandlers.saveFile.postMessage({
-      filename: 'battle-grid.json',
-      content:  json
-    });
-  } else {
-    // Browser fallback
-    const blob = new Blob([json], { type: 'application/json' });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement('a');
-    a.href = url; a.download = 'battle-grid.json'; a.click();
+  // Use blob download — WKWebView routes this through its download delegate
+  // which saves to ~/Downloads. (The named "save" / "saveFile" message handlers
+  // we tried aren't registered, so postMessage drops silently.)
+  const blob = new Blob([json], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url;
+  a.download = 'battle-grid.json';
+  document.body.appendChild(a);  // some WKWebView versions require the anchor be in the DOM
+  a.click();
+  setTimeout(() => {
+    document.body.removeChild(a);
     URL.revokeObjectURL(url);
-  }
+  }, 100);
   autoSave();
+  alert('Saved as battle-grid.json — check your Downloads folder.');
 }
 
 function loadGame(json) {
@@ -3060,8 +3633,13 @@ function loadGame(json) {
     walls=s.walls||[]; wallIdSeq=walls.length?Math.max(...walls.map(w=>w.id))+1:1;
     labels=s.labels||[]; labelIdSeq=labels.length?Math.max(...labels.map(l=>l.id))+1:1;
     lights=s.lights||[]; lightIdSeq=lights.length?Math.max(...lights.map(l=>l.id))+1:1;
+    ambientLight = s.ambientLight ?? 0;
+    _setAmbient(ambientLight);
+    darknessZones = (s.darknessZones||[]).map(dz => ({...dz, cells: [...(dz.cells||[])]}));
+    darknessZoneIdSeq = darknessZones.length ? Math.max(...darknessZones.map(dz=>dz.id))+1 : 1;
     covers=s.covers||{};
     traps=s.traps||{};
+    renderLightGroupManager();
     if(s.presets) presets=s.presets;
     const fb=document.getElementById('fog-btn');
     fb.classList.toggle('active',fogEnabled); fb.classList.toggle('fog-brush-active',fogMode);
@@ -3285,9 +3863,11 @@ function exitDrawModes(){
   wallMode=false; labelMode=false; lightMode=false;
   losMode=false; losStart=null; trapMode=false; teleportMode=false; teleportToken=null;
   wallActive=false; wallStart=null; wallErasing=false;
+  darknessMode=false; _darknessDrag=null;
   ['wall-btn','label-btn','light-btn','los-btn','trap-btn','teleport-btn'].forEach(id=>{
     const el=document.getElementById(id); if(el) el.classList.remove('active');
   });
+  const db=document.getElementById('darkness-mode-btn'); if(db) db.classList.remove('active');
   const lp=document.getElementById('light-panel'); if(lp) lp.style.display='none';
 }
 
@@ -3322,6 +3902,27 @@ document.getElementById('light-btn').addEventListener('click',()=>{
   if (valIn)  valIn.addEventListener('input',  () => setRadius(valIn.value));
 })();
 
+// Show/hide the direction compass based on shape
+function _updateLightDirWrap(shape) {
+  const wrap = document.getElementById('light-dir-wrap');
+  if (wrap) wrap.style.display = (shape === 'full') ? 'none' : '';
+}
+// Update the visual arrow in the compass centre + sync all angle inputs
+function _updateLightDirFace(angleDeg) {
+  const a = ((angleDeg % 360) + 360) % 360;
+  const face = document.getElementById('light-dir-face');
+  if (face) { face.style.transform = `rotate(${a}deg)`; face.title = `${a}°`; }
+  const inp = document.getElementById('light-edit-angle');
+  if (inp) inp.value = a;
+  const num = document.getElementById('light-edit-angle-num');
+  if (num && document.activeElement !== num) num.value = a;
+  // Highlight the nearest compass button (snap to 45° increments for display)
+  const snap = Math.round(a / 45) * 45 % 360;
+  document.querySelectorAll('#light-dir-compass .light-dir-btn').forEach(b => {
+    b.classList.toggle('active', parseInt(b.dataset.angle) === snap);
+  });
+}
+
 // Open the light-edit modal pre-filled with the given light's values
 function openLightModal(light) {
   editingLightId = light.id;
@@ -3330,22 +3931,100 @@ function openLightModal(light) {
   document.getElementById('light-edit-radius').value  = light.radius || 5;
   document.getElementById('light-preset').value       = '';
   document.getElementById('light-delete').style.display = '';
+  // Type
+  const type = light.type || 'torch';
+  document.querySelectorAll('#light-edit-type-btns .light-type-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.type === type);
+  });
+  // Color
+  const col = light.color || '#FFA040';
+  document.getElementById('light-edit-color').value = col;
+  const lbl = document.getElementById('light-color-label');
+  if (lbl) lbl.textContent = col;
+  // Shape
+  const shape = light.shape || 'full';
+  document.querySelectorAll('#light-edit-shape-btns .light-shape-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.shape === shape);
+  });
+  _updateLightDirWrap(shape);
+  _updateLightDirFace(light.angle || 0);
+  // New fields
+  const dimREl = document.getElementById('light-edit-dimradius');
+  if (dimREl) dimREl.value = light.dimRadius || 0;
+  const enabledEl = document.getElementById('light-edit-enabled');
+  if (enabledEl) enabledEl.checked = light.enabled !== false;
+  const intEl = document.getElementById('light-edit-intensity');
+  if (intEl) { intEl.value = Math.round((light.intensity ?? 1) * 100); document.getElementById('light-edit-intensity-val').textContent = intEl.value + '%'; }
+  const opEl = document.getElementById('light-edit-opacity');
+  if (opEl) opEl.value = Math.round((light.opacity ?? 1) * 100);
+  const lockEl = document.getElementById('light-edit-lock');
+  if (lockEl) { lockEl.classList.toggle('active', !!light.locked); lockEl.textContent = light.locked ? '🔒 LOCKED' : '🔓 LOCK'; }
+  const grpEl = document.getElementById('light-edit-group');
+  if (grpEl) grpEl.value = light.group || '';
+  // Animation
+  const anim = light.anim || 'none';
+  document.querySelectorAll('#light-edit-anim-btns .light-anim-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.anim === anim);
+  });
+  const c2wrap = document.getElementById('light-anim-color2-wrap');
+  if (c2wrap) c2wrap.style.display = anim === 'cycle' ? '' : 'none';
+  const c2el = document.getElementById('light-edit-animcolor2');
+  if (c2el) c2el.value = light.animColor2 || '#FF4040';
+  // Attach-to-token dropdown
+  const attachSel = document.getElementById('light-attach-token');
+  if (attachSel) {
+    attachSel.innerHTML = '<option value="">— none —</option>';
+    tokens.forEach(tok => {
+      const opt = document.createElement('option');
+      opt.value = tok.id;
+      opt.textContent = tok.name || ('Token ' + tok.id);
+      if (tok.attachedLightPreset && tok.attachedLightPreset._srcId === light.id) opt.selected = true;
+      attachSel.appendChild(opt);
+    });
+  }
   modal.classList.add('open');
   setTimeout(()=>document.getElementById('light-name-in').focus(), 50);
 }
-// Light preset → fills name + radius
+// Light preset → fills name, radius, color (and optionally shape)
+const LIGHT_PRESETS = {
+  // Fire & Flame
+  candle:          { name:'Candle',           r:2,  color:'#FFE090' },
+  torch:           { name:'Torch',            r:5,  color:'#FFA040' },
+  campfire:        { name:'Campfire',         r:6,  color:'#FF7020' },
+  lantern:         { name:'Hooded Lantern',   r:6,  color:'#FFD060' },
+  bullseye:        { name:'Bullseye Lantern', r:8,  color:'#FFEE80', shape:'half' },
+  oillantern:      { name:'Oil Lantern',      r:8,  color:'#FFC050' },
+  bonfire:         { name:'Bonfire',          r:10, color:'#FF5010' },
+  brazier:         { name:'Brazier',          r:8,  color:'#FF8030' },
+  // Magical
+  sunrod:          { name:'Sunrod',           r:12, color:'#FFFDE0' },
+  daylight:        { name:'Daylight Spell',   r:20, color:'#E8F4FF' },
+  faeriefire:      { name:'Faerie Fire',      r:4,  color:'#CC44FF' },
+  eldritchflame:   { name:'Eldritch Flame',   r:6,  color:'#8844FF' },
+  dancinglight:    { name:'Dancing Light',    r:4,  color:'#44AAFF' },
+  moonlight:       { name:'Moonlight',        r:15, color:'#99CCFF' },
+  coldfire:        { name:'Coldfire',         r:5,  color:'#44DDFF' },
+  ghostlight:      { name:'Ghost Light',      r:5,  color:'#88FFCC' },
+  // Natural
+  bioluminescence: { name:'Bioluminescence',  r:3,  color:'#40FF80' },
+  glowshroom:      { name:'Glowshroom',       r:2,  color:'#AAFFAA' },
+};
 document.getElementById('light-preset').addEventListener('change', e => {
-  const map = {
-    candle:   { name:'Candle',         r:2  },
-    torch:    { name:'Torch',          r:5  },
-    lantern:  { name:'Lantern',        r:8  },
-    sunrod:   { name:'Sunrod',         r:12 },
-    daylight: { name:'Daylight Spell', r:20 },
-  };
-  const p = map[e.target.value];
+  const p = LIGHT_PRESETS[e.target.value];
   if (!p) return;
   document.getElementById('light-name-in').value     = p.name;
   document.getElementById('light-edit-radius').value = p.r;
+  if (p.color) {
+    document.getElementById('light-edit-color').value = p.color;
+    const lbl = document.getElementById('light-color-label');
+    if (lbl) lbl.textContent = p.color;
+  }
+  if (p.shape) {
+    document.querySelectorAll('#light-edit-shape-btns .light-shape-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.shape === p.shape);
+    });
+    _updateLightDirWrap(p.shape);
+  }
 });
 document.getElementById('light-save').addEventListener('click', () => {
   const lit = lights.find(l => l.id === editingLightId);
@@ -3353,14 +4032,136 @@ document.getElementById('light-save').addEventListener('click', () => {
   pushUndo();
   lit.name   = (document.getElementById('light-name-in').value || '').trim().slice(0, 32) || 'Light';
   lit.radius = Math.max(1, Math.min(30, parseInt(document.getElementById('light-edit-radius').value) || 5));
+  const activeTypeBtn = document.querySelector('#light-edit-type-btns .light-type-btn.active');
+  lit.type   = activeTypeBtn ? activeTypeBtn.dataset.type : 'torch';
+  lit.color  = document.getElementById('light-edit-color')?.value || '#FFA040';
+  const activeShapeBtn = document.querySelector('#light-edit-shape-btns .light-shape-btn.active');
+  lit.shape  = activeShapeBtn ? activeShapeBtn.dataset.shape : 'full';
+  lit.angle  = parseInt(document.getElementById('light-edit-angle')?.value || '0') || 0;
+  // New fields
+  const dimREl2 = document.getElementById('light-edit-dimradius');
+  if (dimREl2) lit.dimRadius = Math.max(0, parseInt(dimREl2.value) || 0);
+  const enEl = document.getElementById('light-edit-enabled');
+  if (enEl) lit.enabled = enEl.checked;
+  const intEl2 = document.getElementById('light-edit-intensity');
+  if (intEl2) lit.intensity = Math.max(0, Math.min(2, parseInt(intEl2.value) / 100));
+  const opEl2 = document.getElementById('light-edit-opacity');
+  if (opEl2) lit.opacity = Math.max(0, Math.min(1, parseInt(opEl2.value) / 100));
+  const lockEl2 = document.getElementById('light-edit-lock');
+  if (lockEl2) lit.locked = lockEl2.classList.contains('active');
+  const grpEl2 = document.getElementById('light-edit-group');
+  if (grpEl2) { lit.group = (grpEl2.value || '').trim().slice(0, 32); }
+  const activeAnimBtn = document.querySelector('#light-edit-anim-btns .light-anim-btn.active');
+  const animVal = activeAnimBtn ? activeAnimBtn.dataset.anim : 'none';
+  lit.anim = animVal === 'none' ? null : animVal;
+  if (lit.anim === 'fade') lit._fadeStart = null; // reset fade timer on save
+  const c2el2 = document.getElementById('light-edit-animcolor2');
+  if (c2el2) lit.animColor2 = (lit.anim === 'cycle') ? c2el2.value : null;
+  // Token attachment
+  const attachSel2 = document.getElementById('light-attach-token');
+  if (attachSel2 && attachSel2.value) {
+    const tokId = parseInt(attachSel2.value);
+    const tok = tokens.find(t => t.id === tokId);
+    if (tok) tok.attachedLightPreset = { ...lit, _srcId: lit.id };
+  } else if (attachSel2 && attachSel2.value === '') {
+    // Remove attachment to any token that had this light
+    tokens.forEach(tok => { if (tok.attachedLightPreset && tok.attachedLightPreset._srcId === lit.id) tok.attachedLightPreset = null; });
+  }
+  renderLightGroupManager();
   document.getElementById('light-modal').classList.remove('open');
   editingLightId = null;
 });
+
+// ── Light modal: shape buttons
+document.querySelectorAll('#light-edit-shape-btns .light-shape-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#light-edit-shape-btns .light-shape-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    _updateLightDirWrap(btn.dataset.shape);
+  });
+});
+// ── Light modal: compass direction buttons
+document.querySelectorAll('#light-dir-compass .light-dir-btn').forEach(btn => {
+  btn.addEventListener('click', () => _updateLightDirFace(parseInt(btn.dataset.angle)));
+});
+// ── Light modal: free angle number input
+const _angleNumIn = document.getElementById('light-edit-angle-num');
+if (_angleNumIn) {
+  _angleNumIn.addEventListener('input', () => {
+    const v = parseInt(_angleNumIn.value);
+    if (!isNaN(v)) _updateLightDirFace(((v % 360) + 360) % 360);
+  });
+}
+
+// ── Light panel (placement): type buttons
+document.querySelectorAll('#light-place-type-btns .light-type-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    lightPlaceType = btn.dataset.type;
+    document.querySelectorAll('#light-place-type-btns .light-type-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    // Spotlight defaults to half-circle; torch defaults to full circle
+    if (lightPlaceType === 'spotlight' && lightPlaceShape === 'full') {
+      lightPlaceShape = 'half';
+      document.querySelectorAll('#light-place-shape-btns .light-shape-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.shape === 'half');
+      });
+    } else if (lightPlaceType === 'torch' && lightPlaceShape !== 'full') {
+      lightPlaceShape = 'full';
+      document.querySelectorAll('#light-place-shape-btns .light-shape-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.shape === 'full');
+      });
+    }
+  });
+});
+// ── Light modal: type buttons
+document.querySelectorAll('#light-edit-type-btns .light-type-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#light-edit-type-btns .light-type-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    // Auto-suggest shape when switching type
+    const isSL = btn.dataset.type === 'spotlight';
+    const curShape = document.querySelector('#light-edit-shape-btns .light-shape-btn.active')?.dataset.shape || 'full';
+    if (isSL && curShape === 'full') {
+      document.querySelectorAll('#light-edit-shape-btns .light-shape-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.shape === 'half');
+      });
+      _updateLightDirWrap('half');
+    } else if (!isSL && curShape !== 'full') {
+      document.querySelectorAll('#light-edit-shape-btns .light-shape-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.shape === 'full');
+      });
+      _updateLightDirWrap('full');
+    }
+  });
+});
+// ── Light panel (placement): shape buttons
+document.querySelectorAll('#light-place-shape-btns .light-shape-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    lightPlaceShape = btn.dataset.shape;
+    document.querySelectorAll('#light-place-shape-btns .light-shape-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+});
+// ── Light panel (placement): color picker
+const _lightPlaceColorIn = document.getElementById('light-place-color');
+if (_lightPlaceColorIn) {
+  _lightPlaceColorIn.addEventListener('input', () => { lightPlaceColor = _lightPlaceColorIn.value; });
+}
+// ── Light modal: live color label update
+const _lightEditColorIn = document.getElementById('light-edit-color');
+if (_lightEditColorIn) {
+  _lightEditColorIn.addEventListener('input', () => {
+    const lbl = document.getElementById('light-color-label');
+    if (lbl) lbl.textContent = _lightEditColorIn.value;
+  });
+}
 document.getElementById('light-delete').addEventListener('click', () => {
   if (!editingLightId) return;
   if (!confirm('Delete this light source?')) return;
   pushUndo();
   lights = lights.filter(l => l.id !== editingLightId);
+  tokens.forEach(tok => { if (tok.attachedLightPreset && tok.attachedLightPreset._srcId === editingLightId) tok.attachedLightPreset = null; });
+  renderLightGroupManager();
   document.getElementById('light-modal').classList.remove('open');
   editingLightId = null;
 });
@@ -3368,6 +4169,140 @@ document.getElementById('light-cancel').addEventListener('click', () => {
   document.getElementById('light-modal').classList.remove('open');
   editingLightId = null;
 });
+
+// ── Light modal: duplicate button ────────────────────────────
+const _lightDupBtn = document.getElementById('light-duplicate');
+if (_lightDupBtn) {
+  _lightDupBtn.addEventListener('click', () => {
+    const lit = lights.find(l => l.id === editingLightId);
+    if (!lit) return;
+    pushUndo();
+    const copy = { ...lit, id: lightIdSeq++, c: lit.c + 1,
+      fx: lit.fx != null ? Math.min(1, lit.fx + 1 / cols) : null,
+      locked: false };
+    lights.push(copy);
+    renderLightGroupManager();
+    document.getElementById('light-modal').classList.remove('open');
+    editingLightId = null;
+  });
+}
+
+// ── Light modal: animation buttons ───────────────────────────
+document.querySelectorAll('#light-edit-anim-btns .light-anim-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#light-edit-anim-btns .light-anim-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const c2wrap = document.getElementById('light-anim-color2-wrap');
+    if (c2wrap) c2wrap.style.display = btn.dataset.anim === 'cycle' ? '' : 'none';
+  });
+});
+
+// ── Light modal: intensity live preview ──────────────────────
+const _intSlider = document.getElementById('light-edit-intensity');
+const _intVal    = document.getElementById('light-edit-intensity-val');
+if (_intSlider && _intVal) {
+  _intSlider.addEventListener('input', () => { _intVal.textContent = _intSlider.value + '%'; });
+}
+
+// ── Light modal: lock toggle ─────────────────────────────────
+const _lockBtn = document.getElementById('light-edit-lock');
+if (_lockBtn) {
+  _lockBtn.addEventListener('click', () => {
+    _lockBtn.classList.toggle('active');
+    _lockBtn.textContent = _lockBtn.classList.contains('active') ? '🔒 LOCKED' : '🔓 LOCK';
+  });
+}
+
+// ── Light panel: DIM radius sync ─────────────────────────────
+const _dimRIn = document.getElementById('light-place-dimradius');
+if (_dimRIn) _dimRIn.addEventListener('input', () => { lightPlaceDimRadius = parseInt(_dimRIn.value) || 0; });
+
+// ── Darkness mode button ──────────────────────────────────────
+const _darkBtn = document.getElementById('darkness-mode-btn');
+if (_darkBtn) {
+  _darkBtn.addEventListener('click', () => {
+    darknessMode = !darknessMode;
+    _darkBtn.classList.toggle('active', darknessMode);
+    // Clear darkness mode on Shift-click: remove all zones
+    if (darknessMode) canvas.style.cursor = 'crosshair';
+  });
+}
+
+// ── Ambient light slider + time-of-day buttons ───────────────
+function _setAmbient(v) {
+  ambientLight = Math.max(0, Math.min(1, v));
+  const sl = document.getElementById('ambient-light-slider');
+  const lbl = document.getElementById('ambient-light-val');
+  if (sl)  sl.value = Math.round(ambientLight * 100);
+  if (lbl) lbl.textContent = Math.round(ambientLight * 100) + '%';
+}
+const _ambSlider = document.getElementById('ambient-light-slider');
+if (_ambSlider) _ambSlider.addEventListener('input', () => _setAmbient(parseInt(_ambSlider.value) / 100));
+['tod-day','tod-dusk','tod-night','tod-midnight'].forEach(id => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const vals = { 'tod-day': 1.0, 'tod-dusk': 0.35, 'tod-night': 0.08, 'tod-midnight': 0 };
+  el.addEventListener('click', () => _setAmbient(vals[id]));
+});
+
+// ── Encounter lighting presets ───────────────────────────────
+function renderEncounterPresets() {
+  const sel = document.getElementById('encounter-preset-select');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">— encounter presets —</option>';
+  encounterLightPresets.forEach((ep, i) => {
+    const opt = document.createElement('option');
+    opt.value = i; opt.textContent = ep.name;
+    sel.appendChild(opt);
+  });
+}
+renderEncounterPresets();
+const _encSaveBtn = document.getElementById('encounter-preset-save');
+const _encLoadBtn = document.getElementById('encounter-preset-load');
+if (_encSaveBtn) {
+  _encSaveBtn.addEventListener('click', () => {
+    const name = prompt('Preset name:');
+    if (!name) return;
+    encounterLightPresets.push({ name, lights: JSON.parse(JSON.stringify(lights)) });
+    try { localStorage['arcane_lightPresets'] = JSON.stringify(encounterLightPresets); } catch(e) {}
+    renderEncounterPresets();
+  });
+}
+if (_encLoadBtn) {
+  _encLoadBtn.addEventListener('click', () => {
+    const sel2 = document.getElementById('encounter-preset-select');
+    if (!sel2 || sel2.value === '') return;
+    const ep = encounterLightPresets[parseInt(sel2.value)];
+    if (!ep) return;
+    pushUndo();
+    lights = JSON.parse(JSON.stringify(ep.lights));
+    lightIdSeq = lights.length ? Math.max(...lights.map(l => l.id)) + 1 : 1;
+    renderLightGroupManager();
+  });
+}
+
+// ── Group manager render ──────────────────────────────────────
+function renderLightGroupManager() {
+  const container = document.getElementById('light-group-manager');
+  if (!container) return;
+  const groups = [...new Set(lights.map(l => l.group || '').filter(Boolean))];
+  if (!groups.length) { container.innerHTML = ''; return; }
+  container.innerHTML = groups.map(g => {
+    const on = lightGroupManager[g] !== false;
+    return `<div class="light-group-row">
+      <span class="light-group-name">${g}</span>
+      <button class="icon-btn light-group-toggle ${on ? 'active' : ''}" data-group="${g}" title="Toggle all lights in group '${g}'">${on ? '💡 ON' : '💡 OFF'}</button>
+    </div>`;
+  }).join('');
+  container.querySelectorAll('.light-group-toggle').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const g = btn.dataset.group;
+      lightGroupManager[g] = lightGroupManager[g] === false ? true : false;
+      lights.forEach(l => { if ((l.group||'') === g) l.enabled = lightGroupManager[g] !== false; });
+      renderLightGroupManager();
+    });
+  });
+}
 
 // ── Label modal ───────────────────────────────────────────────
 document.getElementById('label-ok').addEventListener('click',()=>{
@@ -3395,10 +4330,29 @@ document.getElementById('label-modal').addEventListener('click',e=>{if(e.target=
 
 // ── Save / Load buttons ───────────────────────────────────────
 document.getElementById('save-btn').addEventListener('click', saveGame);
-document.getElementById('load-btn').addEventListener('click',()=>document.getElementById('load-input').click());
 document.getElementById('load-input').addEventListener('change',function(){
   const f=this.files[0]; if(!f)return;
-  const r=new FileReader(); r.onload=e=>loadGame(e.target.result); r.readAsText(f); this.value='';
+  const r=new FileReader();
+  r.onload=e=>{
+    try {
+      const buf=e.target.result;
+      const b=new Uint8Array(buf);
+      // Reject obvious non-JSON files (PNG, JPEG, GIF, PDF, etc.)
+      if((b[0]===0x89&&b[1]===0x50)||(b[0]===0xFF&&b[1]===0xD8)||
+         (b[0]===0x47&&b[1]===0x49)||(b[0]===0x25&&b[1]===0x50)){
+        alert('That looks like an image or PDF — please select the battle-grid.json file saved by the SAVE button.');
+        return;
+      }
+      let text;
+      if(b[0]===0xFF&&b[1]===0xFE)      text=new TextDecoder('utf-16le').decode(buf);
+      else if(b[0]===0xFE&&b[1]===0xFF) text=new TextDecoder('utf-16be').decode(buf);
+      else                               text=new TextDecoder('utf-8').decode(buf);
+      if(text.charCodeAt(0)===0xFEFF)    text=text.slice(1);
+      loadGame(text);
+    } catch(err){ alert('Could not read file: '+err.message); }
+  };
+  r.onerror=()=>alert('Could not read file.');
+  r.readAsArrayBuffer(f); this.value='';
 });
 
 // ── Presets ───────────────────────────────────────────────────
@@ -3895,6 +4849,13 @@ requestAnimationFrame(render);
         if (res && res.skill === 'Initiative' && typeof res.total === 'number') {
           const charName = res.name || entry.from || 'Unknown';
           window.__arcaneAddToInitiative(charName, res.total);
+          // Flash the initiative button so the DM notices the update
+          const initBtn = document.getElementById('init-btn');
+          if (initBtn) {
+            initBtn.style.outline = '2px solid #7C6FF7';
+            initBtn.title = `Initiative updated: ${charName} rolled ${res.total}`;
+            setTimeout(() => { initBtn.style.outline = ''; }, 3000);
+          }
         }
       } catch (e) {}
     }
@@ -4783,7 +5744,7 @@ requestAnimationFrame(render);
       d20, mod,
       total: d20 + mod,
       breakdown: `d20[${d20}] + ${ability}(${modOf(s.abilities[ability]||10)}) + ½lvl(${halfLevel(s)})${s.trained.includes(skillName) ? ' + trained(5)' : ''} = ${d20+mod}`,
-      name: s.name || 'Unknown',
+      name: s.name || '',
     };
   }
   window.arcaneRollSkill = (skillName) => rollSkill(mpActiveSheet(), skillName);

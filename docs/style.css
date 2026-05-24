@@ -381,6 +381,22 @@ canvas { display: block; }
   width: 290px;
   box-shadow: 0 20px 60px rgba(0,0,0,0.8);
 }
+#light-modal .modal {
+  max-height: 88vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,180,60,0.4) transparent;
+}
+#light-modal .modal::-webkit-scrollbar { width: 5px; }
+#light-modal .modal::-webkit-scrollbar-track { background: transparent; }
+#light-modal .modal::-webkit-scrollbar-thumb {
+  background: rgba(255,180,60,0.35);
+  border-radius: 3px;
+}
+#light-modal .modal::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,180,60,0.6);
+}
 .modal h3 { font-size: 14px; font-weight: 700; letter-spacing: .06em; color: rgba(255,255,255,0.85); margin-bottom: 16px; }
 .modal label { display: block; font-size: 11px; font-weight: 700; letter-spacing: .05em; color: rgba(255,255,255,0.5); margin-bottom: 5px; margin-top: 12px; }
 .modal input[type=text],
@@ -2581,6 +2597,185 @@ body.player-restricted label[for="row-slider"] { display: none !important; }
   font-size: 11px; font-family: inherit; outline: none;
 }
 #light-panel input[type=number]:focus { border-color: #FFA040; }
+
+/* ── Light type buttons (Torch / Spotlight) ───────────────────── */
+.light-type-btns {
+  display: flex; gap: 3px;
+}
+.light-type-btn {
+  background: rgba(255,255,255,0.07);
+  border: 1px solid rgba(255,180,60,0.25);
+  border-radius: 6px;
+  color: rgba(255,255,255,0.65);
+  cursor: pointer;
+  font-size: 11px; font-weight: 700; letter-spacing: .03em;
+  padding: 4px 9px;
+  white-space: nowrap;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.light-type-btn:hover {
+  background: rgba(255,160,40,0.18);
+  border-color: rgba(255,180,60,0.6);
+  color: #FFD080;
+}
+.light-type-btn.active {
+  background: rgba(255,160,40,0.28);
+  border-color: #FFA040;
+  color: #FFD080;
+  box-shadow: 0 0 8px rgba(255,160,40,0.35);
+}
+/* In the modal the buttons are wider */
+#light-edit-type-btns .light-type-btn { flex: 1; font-size: 12px; padding: 6px 10px; }
+
+/* ── Light color picker ───────────────────────────────────────── */
+.light-color-swatch {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 26px; height: 22px;
+  border: 1px solid rgba(255,180,60,0.4);
+  border-radius: 5px;
+  background: none;
+  cursor: pointer;
+  padding: 1px;
+  vertical-align: middle;
+}
+.light-color-swatch::-webkit-color-swatch-wrapper { padding: 0; border-radius: 4px; }
+.light-color-swatch::-webkit-color-swatch { border: none; border-radius: 3px; }
+.light-color-swatch-lg { width: 38px; height: 28px; }
+
+/* ── Light shape selector ─────────────────────────────────────── */
+.light-shape-btns {
+  display: flex; gap: 3px;
+}
+.light-shape-btn {
+  background: rgba(255,255,255,0.07);
+  border: 1px solid rgba(255,180,60,0.25);
+  border-radius: 5px;
+  color: rgba(255,255,255,0.7);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 3px 6px;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.light-shape-btn:hover {
+  background: rgba(255,160,40,0.18);
+  border-color: rgba(255,180,60,0.6);
+  color: #FFD080;
+}
+.light-shape-btn.active {
+  background: rgba(255,160,40,0.28);
+  border-color: #FFA040;
+  color: #FFD080;
+  box-shadow: 0 0 6px rgba(255,160,40,0.35);
+}
+/* Modal shape buttons are wider */
+#light-edit-shape-btns .light-shape-btn { padding: 5px 10px; font-size: 12px; flex: 1; }
+
+/* ── Direction compass ─────────────────────────────────────────── */
+#light-dir-wrap {
+  margin-top: 8px;
+}
+#light-dir-wrap > label {
+  display: block;
+  font-size: 10px; font-weight: 700; letter-spacing: .08em;
+  color: rgba(255,255,255,0.45);
+  margin-bottom: 5px;
+}
+.light-dir-compass {
+  display: grid;
+  grid-template-columns: repeat(3, 34px);
+  grid-template-rows: repeat(3, 34px);
+  gap: 3px;
+  width: fit-content;
+  margin: 0 auto;
+}
+.light-dir-btn {
+  background: rgba(255,255,255,0.07);
+  border: 1px solid rgba(255,180,60,0.25);
+  border-radius: 5px;
+  color: rgba(255,255,255,0.65);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  transition: background .12s, color .12s;
+  display: flex; align-items: center; justify-content: center;
+}
+.light-dir-btn:hover {
+  background: rgba(255,160,40,0.22);
+  border-color: rgba(255,180,60,0.6);
+  color: #FFD080;
+}
+.light-dir-btn.active {
+  background: rgba(255,160,40,0.32);
+  border-color: #FFA040;
+  color: #FFD080;
+  box-shadow: 0 0 6px rgba(255,160,40,0.4);
+}
+.light-dir-face {
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px;
+  color: #FFA040;
+  transition: transform .2s ease;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* ── Light animation buttons ───────────────────────────────────── */
+.light-anim-btn {
+  background: rgba(255,255,255,0.07);
+  border: 1px solid rgba(160,100,255,0.25);
+  border-radius: 5px;
+  color: rgba(255,255,255,0.7);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 4px 8px;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.light-anim-btn:hover {
+  background: rgba(140,80,255,0.18);
+  border-color: rgba(160,100,255,0.6);
+  color: #C8A0FF;
+}
+.light-anim-btn.active {
+  background: rgba(120,60,220,0.32);
+  border-color: #9060E0;
+  color: #C8A0FF;
+  box-shadow: 0 0 6px rgba(140,80,255,0.35);
+}
+
+/* ── Light group manager ───────────────────────────────────────── */
+.light-group-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+}
+.light-group-name {
+  font-size: 11px;
+  color: rgba(255,255,255,0.6);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.light-group-toggle {
+  font-size: 10px;
+  padding: 2px 7px;
+}
+.light-group-toggle.active {
+  background: rgba(255,160,40,0.22);
+  border-color: #FFA040;
+  color: #FFD080;
+}
+
+/* ── Darkness mode button active state ─────────────────────────── */
+#darkness-mode-btn.active {
+  background: rgba(80,0,120,0.4);
+  border-color: rgba(160,0,220,0.7);
+  color: #CC80FF;
+  box-shadow: 0 0 8px rgba(120,0,180,0.5);
+}
 
 /* ── Floating "Pick Up" prompt ─────────────────────────────────── */
 #pickup-light-btn {

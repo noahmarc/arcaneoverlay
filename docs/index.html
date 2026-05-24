@@ -216,10 +216,41 @@
               </div>
               <button class="icon-btn cat-icon-btn" id="light-btn" title="Place light sources (torch, lantern, daylight) — uncover fog inside their radius"><span class="icon">🔦</span>LIGHT</button>
               <div id="light-panel" style="display:none">
-                <label for="light-radius-input">RADIUS</label>
+                <div class="light-type-btns" id="light-place-type-btns">
+                  <button class="light-type-btn active" data-type="torch"     title="Torchlight — soft organic glow, radiates in all directions">🔦 Torch</button>
+                  <button class="light-type-btn"         data-type="spotlight" title="Spotlight — sharp focused beam with hard edges">💡 Spotlight</button>
+                </div>
+                <label for="light-radius-input" style="margin-left:6px">RADIUS</label>
                 <input type="range" id="light-radius-input" min="1" max="20" value="5" step="1" aria-label="Light radius in squares">
                 <input type="number" id="light-radius-val" value="5" min="1" max="20" step="1" aria-label="Light radius exact value" style="width:38px">
                 <span class="radius-note">sq</span>
+                <span class="radius-note" style="margin-left:6px">SHAPE</span>
+                <div class="light-shape-btns" id="light-place-shape-btns">
+                  <button class="light-shape-btn active" data-shape="full"    title="Full circle (360°)">⬤</button>
+                  <button class="light-shape-btn"         data-shape="half"    title="Half circle (180°)">◑</button>
+                  <button class="light-shape-btn"         data-shape="quarter" title="Quarter circle (90°)">◔</button>
+                </div>
+                <span class="radius-note" style="margin-left:6px">DIM</span>
+                <input type="number" id="light-place-dimradius" value="0" min="0" max="20" step="1" style="width:38px" title="Dim light outer radius (0 = no dim zone)">
+                <span class="radius-note">sq</span>
+                <span class="radius-note" style="margin-left:6px">COLOR</span>
+                <input type="color" id="light-place-color" value="#FFA040" title="Light color" class="light-color-swatch">
+                <button class="icon-btn" id="darkness-mode-btn" title="Draw Magical Darkness — click/drag to paint, Shift to erase. Suppresses all light." style="margin-left:6px">🌑 DARK</button>
+                <div style="display:flex;align-items:center;gap:6px;margin-top:6px;flex-wrap:wrap">
+                  <span class="radius-note">AMBIENT</span>
+                  <input type="range" id="ambient-light-slider" min="0" max="100" value="0" step="1" style="width:80px">
+                  <span id="ambient-light-val" style="min-width:34px;font-size:11px">0%</span>
+                  <button class="icon-btn" id="tod-day"      title="Daytime — full daylight">☀️</button>
+                  <button class="icon-btn" id="tod-dusk"     title="Dusk — dim ambient">🌅</button>
+                  <button class="icon-btn" id="tod-night"    title="Night — very low ambient">🌙</button>
+                  <button class="icon-btn" id="tod-midnight" title="Midnight — no ambient light">⬛</button>
+                </div>
+                <div id="light-group-manager" style="margin-top:4px"></div>
+                <div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">
+                  <select id="encounter-preset-select" style="font-size:11px"><option value="">— encounter presets —</option></select>
+                  <button class="icon-btn" id="encounter-preset-save" title="Save current lights as a named preset">💾 Save</button>
+                  <button class="icon-btn" id="encounter-preset-load" title="Load selected preset">📂 Load</button>
+                </div>
               </div>
               <button class="icon-btn cat-icon-btn" id="grid-overlay-btn" title="Cycle grid display: Off → Coords (A1, B2…) → 1″ physical overlay → Off"><span class="icon">📏</span><span id="grid-overlay-label">GRID</span></button>
               <div id="grid-scale-panel" style="display:none">
@@ -229,11 +260,10 @@
                 <span class="radius-note">px</span>
               </div>
               <button class="icon-btn cat-icon-btn" id="dm-ref-btn" title="Toggle DM reference view — full map without fog"><span class="icon">👁️</span>DM REF</button>
-              <button class="icon-btn cat-icon-btn" id="map-btn" title="Import background map image"><span class="icon">🗺️</span>MAP</button>
+              <label class="icon-btn cat-icon-btn" id="map-btn" title="Import background map image"><span class="icon">🗺️</span>MAP<input type="file" id="map-input" accept="image/*" style="position:absolute;opacity:0;pointer-events:none;width:0;height:0;overflow:hidden"></label>
               <div id="map-panel" style="display:none">
                 <button class="icon-btn" id="map-clear-btn" title="Remove background image">✕ CLEAR</button>
               </div>
-              <input type="file" id="map-input" accept="image/*" style="display:none">
               <button class="icon-btn cat-icon-btn" id="label-btn" title="Place text labels on the map · click cell to place or edit"><span class="icon">🏷️</span>LABEL</button>
               <button class="icon-btn cat-icon-btn" id="los-btn" title="Line of sight checker — drag to check LoS"><span class="icon">👁️</span>LOS</button>
               <button class="icon-btn cat-icon-btn" id="trap-btn" title="Place DM-only trap markers · visible in DM Ref, hidden on projector"><span class="icon">⚠️</span>TRAPS</button>
@@ -255,8 +285,7 @@
         <button class="icon-btn" id="undo-btn" title="Undo (Ctrl+Z)"><span class="icon">↩️</span>UNDO</button>
         <button class="icon-btn" id="redo-btn" title="Redo (Ctrl+Shift+Z)"><span class="icon">↪️</span>REDO</button>
         <button class="icon-btn" id="save-btn" title="Save current battle state to a JSON file">💾 SAVE</button>
-        <button class="icon-btn" id="load-btn" title="Load a battle state from a JSON file">📂 LOAD</button>
-        <input type="file" id="load-input" accept=".json" style="display:none">
+        <label class="icon-btn" id="load-btn" title="Load a battle state from a JSON file">📂 LOAD<input type="file" id="load-input" style="position:absolute;opacity:0;pointer-events:none;width:0;height:0;overflow:hidden"></label>
         <button class="icon-btn" id="preset-btn" title="Save and restore named encounter presets">📋 PRESETS</button>
         <div id="preset-panel" style="display:none">
           <div id="preset-list"></div>
@@ -353,19 +382,112 @@
     <h3 id="light-modal-title">EDIT LIGHT SOURCE</h3>
     <label for="light-name-in">NAME</label>
     <input type="text" id="light-name-in" placeholder="Torch, Lantern, Sunrod…" maxlength="32" autocomplete="off">
-    <label for="light-edit-radius">RADIUS (squares)</label>
-    <input type="number" id="light-edit-radius" min="1" max="30" value="5">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+      <label><input type="checkbox" id="light-edit-enabled" checked> ENABLED</label>
+      <button class="icon-btn" id="light-edit-lock" style="font-size:11px;padding:3px 8px">🔓 LOCK</button>
+    </div>
+    <div style="display:flex;gap:12px;align-items:flex-end">
+      <div><label for="light-edit-radius">BRIGHT RADIUS</label>
+      <input type="number" id="light-edit-radius" min="1" max="30" value="5" style="width:54px"></div>
+      <div><label for="light-edit-dimradius">DIM RADIUS</label>
+      <input type="number" id="light-edit-dimradius" min="0" max="30" value="0" style="width:54px"></div>
+    </div>
     <label for="light-preset">PRESET</label>
     <select id="light-preset">
       <option value="">— pick a preset —</option>
-      <option value="candle">🕯 Candle (2 sq)</option>
-      <option value="torch">🔦 Torch (5 sq)</option>
-      <option value="lantern">🏮 Lantern (8 sq)</option>
-      <option value="sunrod">🌟 Sunrod (12 sq)</option>
-      <option value="daylight">☀️ Daylight Spell (20 sq)</option>
+      <optgroup label="🔥 Fire &amp; Flame">
+        <option value="candle">🕯 Candle (2 sq)</option>
+        <option value="torch">🔦 Torch (5 sq)</option>
+        <option value="campfire">🔥 Campfire (6 sq)</option>
+        <option value="lantern">🏮 Hooded Lantern (6 sq)</option>
+        <option value="bullseye">🔦 Bullseye Lantern (8 sq, directional)</option>
+        <option value="oillantern">🪔 Oil Lantern (8 sq)</option>
+        <option value="bonfire">🔥 Bonfire (10 sq)</option>
+        <option value="brazier">🔥 Brazier (8 sq)</option>
+      </optgroup>
+      <optgroup label="✨ Magical">
+        <option value="sunrod">🌟 Sunrod (12 sq)</option>
+        <option value="daylight">☀️ Daylight Spell (20 sq)</option>
+        <option value="faeriefire">💜 Faerie Fire (4 sq)</option>
+        <option value="eldritchflame">🟣 Eldritch Flame (6 sq)</option>
+        <option value="dancinglight">🔵 Dancing Light (4 sq)</option>
+        <option value="moonlight">🌙 Moonlight (15 sq)</option>
+        <option value="coldfire">❄️ Coldfire (5 sq)</option>
+        <option value="ghostlight">👻 Ghost Light (5 sq)</option>
+      </optgroup>
+      <optgroup label="🌿 Natural">
+        <option value="bioluminescence">🟢 Bioluminescence (3 sq)</option>
+        <option value="glowshroom">🍄 Glowshroom (2 sq)</option>
+      </optgroup>
     </select>
+    <label>COLOR</label>
+    <div style="display:flex;align-items:center;gap:8px">
+      <input type="color" id="light-edit-color" value="#FFA040" class="light-color-swatch light-color-swatch-lg">
+      <span id="light-color-label" style="font-size:11px;color:rgba(255,255,255,0.45)">#FFA040</span>
+    </div>
+    <label>TYPE</label>
+    <div class="light-type-btns" id="light-edit-type-btns">
+      <button class="light-type-btn" data-type="torch"     title="Soft organic glow that radiates outward — warm and natural">🔦 Torchlight</button>
+      <button class="light-type-btn" data-type="spotlight" title="Sharp focused beam with hard edges — like a theater spotlight or lantern beam">💡 Spotlight</button>
+    </div>
+    <label>SHAPE</label>
+    <div class="light-shape-btns" id="light-edit-shape-btns">
+      <button class="light-shape-btn" data-shape="full"    title="Full circle — illuminates all directions">⬤ Full</button>
+      <button class="light-shape-btn" data-shape="half"    title="Half circle — illuminates a 180° arc">◑ Half</button>
+      <button class="light-shape-btn" data-shape="quarter" title="Quarter circle — illuminates a 90° cone">◔ Quarter</button>
+    </div>
+    <div id="light-dir-wrap" style="display:none">
+      <label>DIRECTION</label>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <div class="light-dir-compass" id="light-dir-compass">
+          <button class="light-dir-btn" data-angle="225" title="Northwest">↖</button>
+          <button class="light-dir-btn" data-angle="270" title="North (up)">↑</button>
+          <button class="light-dir-btn" data-angle="315" title="Northeast">↗</button>
+          <button class="light-dir-btn" data-angle="180" title="West (left)">←</button>
+          <div class="light-dir-face" id="light-dir-face">→</div>
+          <button class="light-dir-btn" data-angle="0"   title="East (right)">→</button>
+          <button class="light-dir-btn" data-angle="135" title="Southwest">↙</button>
+          <button class="light-dir-btn" data-angle="90"  title="South (down)">↓</button>
+          <button class="light-dir-btn" data-angle="45"  title="Southeast">↘</button>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
+          <label style="font-size:9px;color:rgba(255,255,255,0.4);letter-spacing:.06em">ANGLE</label>
+          <input type="number" id="light-edit-angle-num" min="0" max="359" value="0" step="1"
+                 style="width:52px;text-align:center" title="Exact angle in degrees (0–359)">
+          <span style="font-size:9px;color:rgba(255,255,255,0.35)">degrees</span>
+        </div>
+      </div>
+      <input type="hidden" id="light-edit-angle" value="0">
+    </div>
+    <label>INTENSITY</label>
+    <div style="display:flex;gap:8px;align-items:center">
+      <input type="range" id="light-edit-intensity" min="0" max="200" value="100" style="flex:1">
+      <span id="light-edit-intensity-val" style="min-width:38px;font-size:11px">100%</span>
+    </div>
+    <label>OPACITY</label>
+    <input type="range" id="light-edit-opacity" min="0" max="100" value="100">
+    <label>GROUP</label>
+    <input type="text" id="light-edit-group" placeholder="e.g. room-1, dungeon, exterior" maxlength="32" autocomplete="off">
+    <label>ANIMATION</label>
+    <div class="light-type-btns" id="light-edit-anim-btns">
+      <button class="light-anim-btn active" data-anim="none">None</button>
+      <button class="light-anim-btn" data-anim="pulse">🌊 Pulse</button>
+      <button class="light-anim-btn" data-anim="strobe">⚡ Strobe</button>
+      <button class="light-anim-btn" data-anim="fade">🕯 Fade</button>
+      <button class="light-anim-btn" data-anim="cycle">🎨 Cycle</button>
+    </div>
+    <div id="light-anim-color2-wrap" style="display:none">
+      <label>CYCLE TO COLOR</label>
+      <div style="display:flex;align-items:center;gap:8px">
+        <input type="color" id="light-edit-animcolor2" value="#FF4040" class="light-color-swatch light-color-swatch-lg">
+        <span style="font-size:11px;color:rgba(255,255,255,0.45)">second color for cycle animation</span>
+      </div>
+    </div>
+    <label>ATTACH TO TOKEN</label>
+    <select id="light-attach-token" style="font-size:12px"><option value="">— none —</option></select>
     <div class="modal-btns">
       <button class="modal-btn primary" id="light-save">Save</button>
+      <button class="modal-btn secondary" id="light-duplicate">⎘ Duplicate</button>
       <button class="modal-btn danger" id="light-delete" style="display:none">Delete</button>
       <button class="modal-btn secondary" id="light-cancel">Cancel</button>
     </div>
@@ -404,6 +526,13 @@
           <input type="number" id="tok-hp" placeholder="—" min="0" aria-label="Current HP">
           <span style="opacity:.4">/</span>
           <input type="number" id="tok-maxhp" placeholder="—" min="1" aria-label="Max HP">
+        </div>
+      </div>
+      <div class="tok-field">
+        <label for="tok-initiative">INITIATIVE</label>
+        <div style="display:flex;align-items:center;gap:4px">
+          <input type="number" id="tok-initiative" placeholder="—" style="width:54px" aria-label="Initiative bonus">
+          <span class="radius-note">mod</span>
         </div>
       </div>
     </div>
@@ -630,7 +759,7 @@
     </div>
     <div id="rollreq-footer">
       <button id="rollreq-roll-btn">🎲 ROLL</button>
-      <div id="rollreq-send-row" style="display:none">
+      <div id="rollreq-send-row">
         <button id="rollreq-send-party" title="Share the roll with everyone in the party">📢 Send to Party</button>
         <button id="rollreq-send-dm"    title="Whisper the roll to just the DM">🔒 Send to DM Only</button>
       </div>
@@ -680,6 +809,12 @@
         <label>HP</label><input id="sh-hp" type="number" value="0" style="width:60px">
         <label>/ Max</label><input id="sh-maxhp" type="number" value="0" style="width:60px">
         <label>Surges</label><input id="sh-surges" type="number" value="0" style="width:50px">
+      </div>
+      <div class="sheet-row" style="align-items:center">
+        <label>Initiative</label>
+        <span id="sh-init-display" style="font-size:18px;font-weight:800;color:#FFD700;min-width:36px;text-align:center;letter-spacing:.02em">+0</span>
+        <label style="font-size:11px;color:rgba(255,255,255,0.5);margin-left:8px" for="sh-init-misc">Misc bonus</label>
+        <input id="sh-init-misc" type="number" value="0" style="width:46px" placeholder="0" title="Extra initiative bonus (feats, items, etc.)">
       </div>
 
       <div class="sheet-section-title">SENSES  <span class="sh-hint">controls how many squares of fog your token reveals around it</span></div>
@@ -921,6 +1056,6 @@
     </div>
   </div>
 </div>
-<script src="grid.js?v=21"></script>
+<script src="grid.js?v=28"></script>
 </body>
 </html>
