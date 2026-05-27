@@ -12,10 +12,25 @@ const EFFECTS = {
   erase:     { r:220, g:60,  b:60,  glow:'#FF4040', inkR:'220,70,70'   },
   water:     { r:30,  g:110, b:200, glow:'#1090FF', inkR:'40,130,220'  },
   grass:     { r:60,  g:160, b:40,  glow:'#50CC28', inkR:'70,180,45'   },
+  grass_tall:    { r:40,  g:110, b:20,  glow:'#3aA010', inkR:'50,130,25'   },
+  grass_dead:    { r:160, g:140, b:55,  glow:'#A09030', inkR:'170,150,65'  },
+  grass_jungle:  { r:20,  g:110, b:40,  glow:'#28B040', inkR:'25,130,50'   },
+  grass_snow:    { r:200, g:220, b:235, glow:'#C0D8F0', inkR:'190,215,230' },
+  grass_flowers: { r:65,  g:165, b:42,  glow:'#55CC28', inkR:'75,185,48'   },
+  grass_mushrooms:{ r:85, g:115, b:48,  glow:'#688030', inkR:'95,135,58'   },
+  grass_autumn:  { r:175, g:98,  b:28,  glow:'#C07020', inkR:'185,118,38'  },
   lava:      { r:255, g:80,  b:10,  glow:'#FF5500', inkR:'255,90,20'   },
-  stone:     { r:120, g:110, b:100, glow:'#C8B896', inkR:'140,130,115' },
+  stone:         { r:120, g:110, b:100, glow:'#C8B896', inkR:'140,130,115' },
+  stone_cracked: { r:108, g:104, b:98,  glow:'#B8B0A0', inkR:'130,124,116' },
+  stone_mossy:   { r:90,  g:130, b:70,  glow:'#80C060', inkR:'120,180,90'  },
+  stone_dark:    { r:55,  g:60,  b:75,  glow:'#6A7388', inkR:'80,90,108'   },
+  stone_sand:    { r:200, g:154, b:94,  glow:'#E0B270', inkR:'220,170,100' },
+  stone_brick:   { r:155, g:58,  b:36,  glow:'#E07A52', inkR:'180,80,52'   },
   difficult: { r:200, g:180, b:60,  glow:'#D4B820', inkR:'200,180,60'  },
   blood:     { r:160, g:20,  b:30,  glow:'#A01020', inkR:'160,25,35'   },
+  mud:       { r:80,  g:55,  b:30,  glow:'#8B5E2A', inkR:'100,75,40'   },
+  web:       { r:200, g:195, b:210, glow:'#D8D0E8', inkR:'210,205,220' },
+  swamp:     { r:60,  g:90,  b:30,  glow:'#608020', inkR:'75,110,35'   },
 };
 
 const TOKEN_COLORS = [
@@ -151,6 +166,9 @@ function cloneState() {
     lights: lights.map(l => ({ ...l })),
     covers: Object.fromEntries(Object.entries(covers)),
     traps: Object.fromEntries(Object.entries(traps).map(([k,v])=>[k,{...v}])),
+    fogVis:    { ...fogVis },
+    fogTarget: { ...fogTarget },
+    darknessZones: darknessZones.map(dz => ({ ...dz, cells: [...dz.cells] })),
   };
 }
 function pushUndo()   {
@@ -175,6 +193,9 @@ function applyState(s) {
   lights = s.lights ? s.lights.map(l => ({ ...l })) : [];
   covers = s.covers ? {...s.covers} : {};
   traps = s.traps ? Object.fromEntries(Object.entries(s.traps).map(([k,v])=>[k,{...v}])) : {};
+  if (s.fogVis)    { for (const k in fogVis)    delete fogVis[k];    Object.assign(fogVis,    s.fogVis); }
+  if (s.fogTarget) { for (const k in fogTarget) delete fogTarget[k]; Object.assign(fogTarget, s.fogTarget); }
+  if (s.darknessZones) darknessZones = s.darknessZones.map(dz => ({ ...dz, cells: [...dz.cells] }));
   rebuildCells();
   // Push the new state to mirrored players (undo/redo by the DM).
   if (window.__mpScheduleSync) window.__mpScheduleSync();
@@ -193,6 +214,10 @@ function resize() {
   const W = cols * CELL, H = rows * CELL;
   canvas.width = W;  canvas.height = H;
   cellCvs.width = W; cellCvs.height = H;
+  // Setting width/height on a canvas resets its context in WebKit, which
+  // also invalidates every CanvasPattern previously created from it.
+  // Drop the cached patterns so they're re-built against the fresh context.
+  if (typeof _invalidatePatternCaches === 'function') _invalidatePatternCaches();
   rebuildCells();
 }
 
@@ -319,6 +344,7 @@ const _effectSpeeds = {fire:120, poison:140, ice:160, lightning:60, holy:130};
 const _effectBg = {fire:[30,5,0], poison:[5,15,3], ice:[3,8,20], lightning:[4,2,18], holy:[8,4,18]};
 _effectBg['difficult'] = [18,16,4];
 _effectBg['blood'] = [20,2,3];
+_effectBg['web']   = [8, 6, 12];
 const _borderColors = {fire:'#E85020',poison:'#50A010',ice:'#3080C0',lightning:'#7050EE',holy:'#C0A020'};
 _borderColors['difficult'] = '#C8A000';
 _borderColors['blood'] = '#801020';
@@ -330,7 +356,7 @@ function drawCell(c2, r, c, eff, ts) {
   c2.save(); c2.beginPath(); c2.rect(x,y,CELL,CELL); c2.clip();
 
   // ── Separate terrain (floor) from status (overlay) effects ──────
-  const _TERRAIN_SET = new Set(['water','grass','lava','stone']);
+  const _TERRAIN_SET = new Set(['water','grass','grass_tall','grass_dead','grass_jungle','grass_snow','grass_flowers','grass_mushrooms','grass_autumn','lava','stone','stone_cracked','stone_mossy','stone_dark','stone_sand','stone_brick','mud','swamp']);
   const terrainEffs = effs.filter(e => _TERRAIN_SET.has(e));
   const statusEffs  = effs.filter(e => !_TERRAIN_SET.has(e));
   const hasTerrain  = terrainEffs.length > 0;
@@ -339,57 +365,104 @@ function drawCell(c2, r, c, eff, ts) {
   // ── Layer 1: Terrain (always drawn first as the floor) ───────────
   if (hasTerrain) {
     const te = terrainEffs[0]; // only one terrain at a time
+    const _tAlpha = getTerrainAlpha(te);
+    if (_tAlpha < 1) c2.globalAlpha = _tAlpha;
     if (te === 'water') {
+      // Per-cell direction overrides the global setting
+      const cellKey = r + ',' + c;
+      const flowAngle = (waterCellFlow[cellKey] !== undefined) ? waterCellFlow[cellKey] : waterFlowAngle;
       const pat = getWaterPattern();
       if (pat) {
-        const scrollY = ts ? (ts * 0.025) % CELL : 0;
-        if (pat.setTransform) pat.setTransform(new DOMMatrix().translate(0, scrollY));
+        if (flowAngle < 0) {
+          if (pat.setTransform) pat.setTransform(new DOMMatrix());
+        } else {
+          const scrollT = ts ? (ts * 0.025) % CELL : 0;
+          if (pat.setTransform) pat.setTransform(new DOMMatrix().rotate(flowAngle - 90).translate(0, scrollT));
+        }
         c2.fillStyle = pat;
         c2.fillRect(x, y, CELL, CELL);
       } else {
         c2.fillStyle = '#0d2d50'; c2.fillRect(x, y, CELL, CELL);
         c2.globalAlpha = .5; c2.strokeStyle = '#42b8f8'; c2.lineWidth = .8;
-        const wOff = ts ? (ts * 0.025) % CELL : 0;
+        const wOff = ts ? (flowAngle < 0 ? 0 : (ts * 0.025) % CELL) : 0;
         for (let i = 0; i < 3; i++) {
           const wy = y + ((i * CELL / 3 + wOff) % CELL);
           c2.beginPath(); c2.moveTo(x + 1, wy); c2.lineTo(x + CELL - 1, wy); c2.stroke();
         }
         c2.globalAlpha = 1;
       }
-    } else if (te === 'grass') {
-      const pat = getGrassPattern();
-      if (pat) {
-        c2.fillStyle = pat;
-        c2.fillRect(x, y, CELL, CELL);
-      } else {
-        c2.fillStyle = '#2d6e14'; c2.fillRect(x, y, CELL, CELL);
+    } else if (te === 'grass' || (typeof te === 'string' && te.startsWith('grass_'))) {
+      let gpat = null;
+      switch (te) {
+        case 'grass':           gpat = getGrassPattern();         break;
+        case 'grass_tall':      gpat = getGrassTallPattern();     break;
+        case 'grass_dead':      gpat = getGrassDeadPattern();     break;
+        case 'grass_jungle':    gpat = getGrassJunglePattern();   break;
+        case 'grass_snow':      gpat = getGrassSnowPattern();     break;
+        case 'grass_flowers':   gpat = getGrassFlowersPattern();  break;
+        case 'grass_mushrooms': gpat = getGrassMushroomsPattern();break;
+        case 'grass_autumn':    gpat = getGrassAutumnPattern();   break;
+        default:                gpat = getGrassPattern();         break;
       }
+      if (gpat) { c2.fillStyle = gpat; c2.fillRect(x, y, CELL, CELL); }
+      else { c2.fillStyle = '#2d6e14'; c2.fillRect(x, y, CELL, CELL); }
     } else if (te === 'lava') {
+      const cellKey = r + ',' + c;
+      const flowAngle = (lavaCellFlow[cellKey] !== undefined) ? lavaCellFlow[cellKey] : lavaFlowAngle;
       const pat = getLavaPattern();
       if (pat) {
-        const scrollY = ts ? (ts * 0.018) % CELL : 0;
-        if (pat.setTransform) pat.setTransform(new DOMMatrix().translate(0, scrollY));
+        if (flowAngle < 0) {
+          if (pat.setTransform) pat.setTransform(new DOMMatrix());
+        } else {
+          const scrollT = ts ? (ts * 0.018) % CELL : 0;
+          if (pat.setTransform) pat.setTransform(new DOMMatrix().rotate(flowAngle - 90).translate(0, scrollT));
+        }
         c2.fillStyle = pat;
         c2.fillRect(x, y, CELL, CELL);
       } else {
         c2.fillStyle = '#3d0800'; c2.fillRect(x, y, CELL, CELL);
         c2.globalAlpha = .5; c2.strokeStyle = '#ff5500'; c2.lineWidth = .8;
-        const lOff = ts ? (ts * 0.018) % CELL : 0;
+        const lOff = ts ? (flowAngle < 0 ? 0 : (ts * 0.018) % CELL) : 0;
         for (let i = 0; i < 3; i++) {
           const ly = y + ((i * CELL / 3 + lOff) % CELL);
           c2.beginPath(); c2.moveTo(x + 1, ly); c2.lineTo(x + CELL - 1, ly); c2.stroke();
         }
         c2.globalAlpha = 1;
       }
-    } else if (te === 'stone') {
-      const pat = getStoneFloorPattern();
+    } else if (te === 'stone' || (typeof te === 'string' && te.startsWith('stone_'))) {
+      // Dispatch by stone variant — each has its own pattern function and cache.
+      let pat = null;
+      switch (te) {
+        case 'stone':         pat = getStoneFloorPattern();   break;
+        case 'stone_cracked': pat = getStoneCrackedPattern(); break;
+        case 'stone_mossy':   pat = getStoneMossyPattern();   break;
+        case 'stone_dark':    pat = getStoneDarkPattern();    break;
+        case 'stone_sand':    pat = getStoneSandPattern();    break;
+        case 'stone_brick':   pat = getStoneBrickPattern();   break;
+        default:              pat = getStoneFloorPattern();   break;
+      }
       if (pat) {
         c2.fillStyle = pat;
         c2.fillRect(x, y, CELL, CELL);
       } else {
         c2.fillStyle = '#4e4640'; c2.fillRect(x, y, CELL, CELL);
       }
+    } else if (te === 'mud') {
+      const pat = getMudPattern();
+      if (pat) {
+        c2.fillStyle = pat; c2.fillRect(x, y, CELL, CELL);
+      } else {
+        c2.fillStyle = '#1e0e06'; c2.fillRect(x, y, CELL, CELL);
+      }
+    } else if (te === 'swamp') {
+      const pat = getSwampPattern();
+      if (pat) {
+        c2.fillStyle = pat; c2.fillRect(x, y, CELL, CELL);
+      } else {
+        c2.fillStyle = '#0a1208'; c2.fillRect(x, y, CELL, CELL);
+      }
     }
+    c2.globalAlpha = 1; // restore after terrain alpha
   }
 
   // ── Layer 2: Status effects (overlaid on terrain if present) ─────
@@ -462,51 +535,43 @@ function drawCell(c2, r, c, eff, ts) {
       // ── Single status effect ────────────────────────────────────
       const se = statusEffs[0];
       if (se==='fire') {
-        c2.fillStyle=`rgba(30,5,0,${bgA})`; c2.fillRect(x,y,CELL,CELL);
-        const fIdx = ts ? (Math.floor(ts/120) + phOff) % 8 : phOff % 8;
-        if (!drawSprite(c2, 'fire', fIdx, x, y)) {
-          const fl=ts?0.75+0.25*Math.sin(ts*.006+ph):1;
-          const g=c2.createLinearGradient(x,y+CELL,x,y);
-          g.addColorStop(0,`rgba(255,60,0,${.85*fl})`); g.addColorStop(.4,`rgba(255,140,10,${.6*fl})`);
-          g.addColorStop(.75,`rgba(255,220,40,${.28*fl})`); g.addColorStop(1,`rgba(255,255,180,${.06*fl})`);
-          c2.fillStyle=g; c2.fillRect(x,y,CELL,CELL);
-        }
+        if (!hasTerrain) { c2.fillStyle=`rgba(30,5,0,${bgA})`; c2.fillRect(x,y,CELL,CELL); }
+        // Adjacent fire cells merge — pass neighbour flags so the draw
+        // can sum heat contributions across cell boundaries.
+        const _hasFire = (rr, cc) => {
+          const k = rr + ',' + cc;
+          return !!(grid[k] && grid[k].includes('fire'));
+        };
+        const N = {
+          n:  _hasFire(r - 1, c),     s:  _hasFire(r + 1, c),
+          e:  _hasFire(r, c + 1),     w:  _hasFire(r, c - 1),
+          ne: _hasFire(r - 1, c + 1), nw: _hasFire(r - 1, c - 1),
+          se: _hasFire(r + 1, c + 1), sw: _hasFire(r + 1, c - 1),
+        };
+        _drawFireStatus(c2, x, y, ts, ph, N);
       } else if (se==='poison') {
-        c2.fillStyle=`rgba(5,15,3,${bgA})`; c2.fillRect(x,y,CELL,CELL);
-        const fIdx2 = ts ? (Math.floor(ts/140) + phOff) % 8 : phOff % 8;
-        if (!drawSprite(c2, 'poison', fIdx2, x, y)) {
-          const p=ts?0.7+0.3*Math.sin(ts*.004+ph):1;
-          const g=c2.createRadialGradient(x+CELL/2,y+CELL/2,0,x+CELL/2,y+CELL/2,CELL*.7);
-          g.addColorStop(0,`rgba(120,230,20,${.5*p})`); g.addColorStop(.5,`rgba(50,140,10,${.38*p})`); g.addColorStop(1,'rgba(10,40,0,0)');
-          c2.fillStyle=g; c2.fillRect(x,y,CELL,CELL);
-          c2.globalAlpha=.22; c2.strokeStyle='rgba(80,200,10,0.8)'; c2.lineWidth=1;
-          for(let i=0;i<3;i++){const ci=x+CELL*(.25+i*.25);c2.beginPath();c2.moveTo(ci,y+2);c2.lineTo(ci,y+CELL*.6+Math.sin(ph+i)*CELL*.2);c2.stroke();}
-          c2.globalAlpha=1;
-        }
+        if (!hasTerrain) { c2.fillStyle=`rgba(5,18,4,${bgA})`; c2.fillRect(x,y,CELL,CELL); }
+        // Adjacent poison tiles merge into one larger cloud — same
+        // additive blending approach as fire.
+        const _hasPoison = (rr, cc) => {
+          const k = rr + ',' + cc;
+          return !!(grid[k] && grid[k].includes('poison'));
+        };
+        const N = {
+          n:  _hasPoison(r - 1, c),     s:  _hasPoison(r + 1, c),
+          e:  _hasPoison(r, c + 1),     w:  _hasPoison(r, c - 1),
+          ne: _hasPoison(r - 1, c + 1), nw: _hasPoison(r - 1, c - 1),
+          se: _hasPoison(r + 1, c + 1), sw: _hasPoison(r + 1, c - 1),
+        };
+        _drawPoisonStatus(c2, x, y, ts, ph, N);
       } else if (se==='ice') {
-        c2.fillStyle=`rgba(3,8,20,${bgA})`; c2.fillRect(x,y,CELL,CELL);
-        const fIdx3 = ts ? (Math.floor(ts/160) + phOff) % 8 : phOff % 8;
-        if (!drawSprite(c2, 'ice', fIdx3, x, y)) {
-          const g=c2.createLinearGradient(x,y,x+CELL,y+CELL);
-          g.addColorStop(0,'rgba(150,210,255,0.55)'); g.addColorStop(.5,'rgba(60,130,220,0.4)'); g.addColorStop(1,'rgba(20,60,160,0.6)');
-          c2.fillStyle=g; c2.fillRect(x,y,CELL,CELL);
-          c2.globalAlpha=.2; c2.strokeStyle='rgba(200,240,255,0.9)'; c2.lineWidth=.8;
-          const cx2=x+CELL/2, cy2=y+CELL/2, s=CELL*.36;
-          c2.beginPath();c2.moveTo(cx2,cy2-s);c2.lineTo(cx2+s,cy2);c2.lineTo(cx2,cy2+s);c2.lineTo(cx2-s,cy2);c2.closePath();c2.stroke();
-          c2.beginPath();c2.moveTo(cx2-s*.58,cy2-s*.58);c2.lineTo(cx2+s*.58,cy2+s*.58);c2.stroke();
-          c2.beginPath();c2.moveTo(cx2+s*.58,cy2-s*.58);c2.lineTo(cx2-s*.58,cy2+s*.58);c2.stroke();
-          c2.globalAlpha=1;
-          const sh=c2.createLinearGradient(x,y,x+CELL*.4,y+CELL*.4);sh.addColorStop(0,'rgba(255,255,255,0.16)');sh.addColorStop(1,'rgba(255,255,255,0)');c2.fillStyle=sh;c2.fillRect(x,y,CELL,CELL);
-        }
+        if (!hasTerrain) { c2.fillStyle=`rgba(8,16,38,${bgA})`; c2.fillRect(x,y,CELL,CELL); }
+        _drawIceStatus(c2, x, y, ts, r, c);
       } else if (se==='lightning') {
-        c2.fillStyle=`rgba(4,2,18,${bgA})`; c2.fillRect(x,y,CELL,CELL);
-        const fIdx5 = ts ? (Math.floor(ts/60) + phOff) % 8 : phOff % 8;
-        if (!drawSprite(c2, 'lightning', fIdx5, x, y)) {
-          const fl=ts?0.5+0.5*Math.sin(ts*.012+ph):1;
-          const g=c2.createRadialGradient(x+CELL/2,y+CELL/2,0,x+CELL/2,y+CELL/2,CELL*.65);
-          g.addColorStop(0,`rgba(200,230,255,${.5*fl})`); g.addColorStop(.4,`rgba(100,160,255,${.28*fl})`); g.addColorStop(1,'rgba(30,50,150,0)');
-          c2.fillStyle=g; c2.fillRect(x,y,CELL,CELL);
-        }
+        if (!hasTerrain) { c2.fillStyle=`rgba(4,2,18,${bgA})`; c2.fillRect(x,y,CELL,CELL); }
+        const cellKey = r + ',' + c;
+        const lAng = (lightningCellFlow[cellKey] !== undefined) ? lightningCellFlow[cellKey] : lightningFlowAngle;
+        _drawLightningStatus(c2, x, y, ts, ph, lAng);
       } else if (se==='holy') {
         c2.fillStyle=`rgba(8,4,18,${bgA})`; c2.fillRect(x,y,CELL,CELL);
         const fIdx4 = ts ? (Math.floor(ts/130) + phOff) % 8 : phOff % 8;
@@ -532,22 +597,42 @@ function drawCell(c2, r, c, eff, ts) {
         }
         c2.restore();
       } else if (se==='blood') {
-        if (!hasTerrain) { c2.fillStyle=`rgba(20,2,5,${bgA})`; c2.fillRect(x,y,CELL,CELL); }
-        const _bpx=Math.max(1,Math.round(CELL/12));
-        const bpositions=[[0.2,0.3],[0.5,0.18],[0.72,0.5],[0.3,0.65],[0.62,0.75],[0.15,0.52],[0.82,0.28]];
-        for(const [fx,fy] of bpositions){
-          const bx=x+Math.floor(fx*CELL/_bpx)*_bpx, by=y+Math.floor(fy*CELL/_bpx)*_bpx;
-          c2.fillStyle='#6b0e18'; c2.fillRect(bx, by, 3*_bpx, 2*_bpx);
-          c2.fillStyle='#c01828'; c2.fillRect(bx+_bpx, by+_bpx, _bpx, _bpx);
+        const bpat = getBloodPattern();
+        if (bpat) {
+          const cellKey = r + ',' + c;
+          const flowAngle = (bloodCellFlow[cellKey] !== undefined) ? bloodCellFlow[cellKey] : bloodFlowAngle;
+          c2.save();
+          c2.globalAlpha = hasTerrain ? 0.68 : 0.95;
+          if (bpat.setTransform) {
+            if (flowAngle < 0) {
+              bpat.setTransform(new DOMMatrix());
+            } else {
+              const scrollT = ts ? (ts * 0.012) % CELL : 0;   // slow, viscous flow
+              bpat.setTransform(new DOMMatrix().rotate(flowAngle - 90).translate(0, scrollT));
+            }
+          }
+          c2.fillStyle = bpat; c2.fillRect(x, y, CELL, CELL);
+          c2.restore();
+        }
+      } else if (se==='web') {
+        if (!hasTerrain) { c2.fillStyle=`rgba(6,3,12,${bgA})`; c2.fillRect(x,y,CELL,CELL); }
+        const pat = getWebPattern();
+        if (pat) {
+          c2.save();
+          c2.globalAlpha = hasTerrain ? 0.72 : 0.95;
+          c2.fillStyle = pat; c2.fillRect(x, y, CELL, CELL);
+          c2.restore();
         }
       }
     }
   }
 
   // ── Border: status colour takes priority; fall back to terrain ───
-  const _bcMap = {fire:'#E85020',poison:'#50A010',ice:'#3080C0',lightning:'#7050EE',holy:'#C0A020',erase:'#A02020',water:'#1870C0',grass:'#3a8818',lava:'#CC3300',stone:'#8a7a6a',difficult:'#C8A000',blood:'#801020'};
+  const _bcMap = {fire:'#E85020',poison:'#50A010',ice:'#3080C0',lightning:'#7050EE',holy:'#C0A020',erase:'#A02020',water:'#1870C0',grass:'#3a8818',grass_tall:'#1e5c0a',grass_dead:'#8a6a18',grass_jungle:'#0a6820',grass_snow:'#90b8d0',grass_flowers:'#48a820',grass_mushrooms:'#5a6828',grass_autumn:'#a05c18',lava:'#CC3300',stone:'#8a7a6a',stone_cracked:'#7a7068',stone_mossy:'#3a8a26',stone_dark:'#3a4054',stone_sand:'#a8804a',stone_brick:'#c25a3a',difficult:'#C8A000',blood:'#801020',mud:'#5a3218',web:'#8870a0',swamp:'#3a5018'};
   const borderEff = hasStatus ? statusEffs[0] : (hasTerrain ? terrainEffs[0] : null);
-  if (borderEff) {
+  // Lightning, fire, and poison render their own visuals that fill the cell;
+  // a perimeter stroke just adds a distracting colored frame.
+  if (borderEff && borderEff !== 'lightning' && borderEff !== 'fire' && borderEff !== 'poison') {
     c2.globalAlpha=.5; c2.strokeStyle=_bcMap[borderEff]||'#888'; c2.lineWidth=1.2;
     c2.strokeRect(x+.6,y+.6,CELL-1.2,CELL-1.2);
   }
@@ -563,20 +648,30 @@ function rebuildCells() {
 
 // Terrain effects are mutually exclusive with each other (only one terrain per cell),
 // but they can coexist with status effects (fire/ice/etc.) which layer on top.
-const TERRAIN_EFFECTS = new Set(['water', 'grass', 'lava', 'stone']);
+const TERRAIN_EFFECTS = new Set(['water', 'grass', 'grass_tall', 'grass_dead', 'grass_jungle', 'grass_snow', 'grass_flowers', 'grass_mushrooms', 'grass_autumn', 'lava', 'stone', 'stone_cracked', 'stone_mossy', 'stone_dark', 'stone_sand', 'stone_brick', 'mud', 'swamp']);
 
 function putCells(cells, eff) {
   pushUndo();
+  // When the user paints 'stone', substitute the currently-selected variant so
+  // each cell records exactly which NES tile it should render with on reload.
+  if (eff === 'stone') eff = currentStoneVariant || 'stone';
+  if (eff === 'grass') eff = currentGrassVariant || 'grass';
   for (const k of cells) {
     const [r,c]=k.split(',').map(Number);
     if (eff==='erase') {
-      delete grid[k]; cctx.clearRect(c*CELL,r*CELL,CELL,CELL);
+      delete grid[k]; delete waterCellFlow[k]; delete lavaCellFlow[k]; delete bloodCellFlow[k]; delete lightningCellFlow[k];
+      cctx.clearRect(c*CELL,r*CELL,CELL,CELL);
       const ti=tokens.findIndex(t=>t.r===r&&t.c===c); if(ti!==-1) tokens.splice(ti,1);
     } else {
       if (!grid[k]) grid[k] = [];
       // Terrain effects are mutually exclusive — remove any other terrain effect first
       if (TERRAIN_EFFECTS.has(eff)) grid[k] = grid[k].filter(e => !TERRAIN_EFFECTS.has(e));
       if (!grid[k].includes(eff)) grid[k].push(eff);
+      // Record per-cell flow direction when painting water
+      if (eff === 'water') waterCellFlow[k] = waterFlowAngle;
+      if (eff === 'lava')  lavaCellFlow[k]  = lavaFlowAngle;
+      if (eff === 'blood') bloodCellFlow[k] = bloodFlowAngle;
+      if (eff === 'lightning') lightningCellFlow[k] = lightningFlowAngle;
       cctx.clearRect(c*CELL,r*CELL,CELL,CELL);
       drawCell(cctx,r,c,grid[k],0);
     }
@@ -632,6 +727,7 @@ function fogSetCells(cells, reveal) {
 }
 
 function fogFill(reveal) {
+  pushUndo();
   for (let r = 0; r < rows; r++)
     for (let c = 0; c < cols; c++) {
       const k = r+','+c;
@@ -668,7 +764,8 @@ function getMoveCells(tok) {
 
 function drawToken(tok) {
   const s=tok.size||1;
-  const x=tok.c*CELL+s*CELL/2, y=tok.r*CELL+s*CELL/2, rad=s*CELL*.38;
+  const dr=_tokenDispR(tok), dc=_tokenDispC(tok);
+  const x=dc*CELL+s*CELL/2, y=dr*CELL+s*CELL/2, rad=s*CELL*.38;
   ctx.save();
   // Shadow
   ctx.globalAlpha=.32; ctx.fillStyle='rgba(0,0,0,0.8)';
@@ -791,6 +888,43 @@ function drawToken(tok) {
     }
     ctx.restore();
   }
+  // ── Death / unconscious overlay (drawn last so it sits above everything) ──
+  // Token is at 0 HP (with a max HP defined) OR marked dying  → skull
+  // Token has the 'uncon' condition (and isn't already dead)  → "Z" snore badge
+  const dead = (hp!=null && maxHp!=null && maxHp>0 && hp<=0) || (conds && conds.includes('dying'));
+  const uncon = (conds && conds.includes('uncon')) && !dead;
+  if (dead) {
+    // Dim the body so the skull stands out
+    ctx.save();
+    ctx.globalAlpha = 0.55;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.beginPath(); ctx.arc(x,y,rad,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+    // Skull glyph, sized to the token. Stroke first for legibility on any background.
+    const fs = Math.max(10, Math.floor(rad * 1.05));
+    ctx.save();
+    ctx.font = `${fs}px "Apple Color Emoji","Segoe UI Emoji",system-ui`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.shadowColor = 'rgba(0,0,0,0.9)';
+    ctx.shadowBlur = 4;
+    ctx.fillText('💀', x, y);
+    ctx.restore();
+  } else if (uncon) {
+    // Pulsing "Zzz" floating above the token
+    const pulse = 0.7 + 0.3 * Math.sin((typeof t === 'number' ? t : 0) * 0.004);
+    ctx.save();
+    ctx.globalAlpha = pulse;
+    ctx.fillStyle = 'rgba(180, 210, 255, 0.95)';
+    ctx.strokeStyle = 'rgba(20, 30, 60, 0.95)';
+    ctx.lineWidth = 2;
+    const fs = Math.max(9, Math.floor(rad * 0.7));
+    ctx.font = `bold italic ${fs}px system-ui`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const zx = x + rad * 0.55, zy = y - rad * 0.95;
+    ctx.strokeText('Zzz', zx, zy);
+    ctx.fillText('Zzz', zx, zy);
+    ctx.restore();
+  }
   ctx.restore();
 }
 
@@ -869,155 +1003,64 @@ function getCobblestonePattern() {
   return _cobblePattern;
 }
 
-// ── 8-bit top-down flowing water (1"×1" tile = exactly CELL×CELL) ──
+// ── Minecraft-style top-down water tile ──────────────────────
 function getWaterPattern() {
   if (_waterPattern && _waterCELL === CELL) return _waterPattern;
   _waterCELL = CELL;
-
-  const S  = Math.max(8, CELL);                  // tile = 1 grid cell
-  const px = Math.max(1, Math.round(S / 14));    // pixel block size
-
-  const tc = document.createElement('canvas');
-  tc.width = S; tc.height = S;
-  const tx = tc.getContext('2d');
-
-  // ── Palette ──────────────────────────────────────────────────
-  const DEEP  = '#071828';   // deep trough
-  const DARK  = '#0d2d50';   // dark transition
-  const MID   = '#1460a8';   // main water body
-  const LIGHT = '#1e88d8';   // lighter downstream face
-  const CREST = '#42b8f8';   // wave crest highlight
-  const FOAM  = '#b0e4ff';   // foam sparkle
-
-  // ── Base fill ────────────────────────────────────────────────
-  tx.fillStyle = MID;
-  tx.fillRect(0, 0, S, S);
-
-  // ── 2 wave cycles per tile (seamless vertical repeat) ────────
-  const numWaves = 2;
-  const wH = S / numWaves;
-
-  for (let wi = 0; wi < numWaves; wi++) {
-    const wy = wi * wH;
-
-    // Trough: deep dark band at the bottom of each cycle
-    const troughH = Math.max(px, Math.round(wH * 0.28));
-    tx.fillStyle = DEEP;
-    tx.fillRect(0, wy + wH - troughH, S, troughH);
-
-    // Dark transition just above trough
-    const darkH = Math.max(px, Math.round(wH * 0.26));
-    tx.fillStyle = DARK;
-    tx.fillRect(0, wy + wH - troughH - darkH, S, darkH);
-
-    // Crest: bright undulating band near the top of each cycle
-    const crestY = wy + Math.round(wH * 0.08);
-    const crestH = Math.max(px * 2, Math.round(wH * 0.26));
-
-    for (let bx = 0; bx < S; bx += px) {
-      // Sine undulation — 2 humps across the tile width
-      const sine = Math.sin((bx / S) * Math.PI * 4);
-      const off  = Math.round(sine * px);
-
-      // Lighter body of crest
-      tx.fillStyle = LIGHT;
-      tx.fillRect(bx, crestY + off, px, crestH);
-
-      // Bright leading edge of crest
-      tx.fillStyle = CREST;
-      tx.fillRect(bx, crestY + off, px, Math.max(px, Math.round(crestH * 0.38)));
-    }
-
-    // Foam sparkle pixels at the very peak of the crest
-    tx.fillStyle = FOAM;
-    for (let bx = 0; bx < S; bx += px * 5) {
-      const sine = Math.sin((bx / S) * Math.PI * 4);
-      const off  = Math.round(sine * px);
-      tx.fillRect(bx + px, crestY + off - px, px, px);
-    }
-  }
-
+  const { tc } = _mcGrassTile([
+    '#071828','#071828',
+    '#0d2a4c','#0d2a4c','#0d2a4c',
+    '#1248a0','#1248a0','#1248a0',
+    '#1a60bc','#1a60bc',
+    '#2878d4','#2878d4',
+    '#3898ec',
+    '#0d2a4c',
+  ], 0x1a2b3c4d);
   _waterPattern = cctx.createPattern(tc, 'repeat');
   return _waterPattern;
 }
 
-// ── 8-bit top-down grass tile (1"×1" = CELL×CELL) ───────────
+// ── Minecraft-style top-down grass tile ──────────────────────
+// Each cell is a small pixel block; colors chosen from a green
+// palette via deterministic LCG noise — matches the blocky look
+// of a Minecraft grass-block top face.
 function getGrassPattern() {
   if (_grassPattern && _grassCELL === CELL) return _grassPattern;
   _grassCELL = CELL;
 
-  const S  = Math.max(8, CELL);
-  const px = Math.max(1, Math.round(S / 14));  // pixel block size
+  const TG = 16; // pixel grid (16×16 "Minecraft pixels" per tile)
+  const px = Math.max(1, Math.round(Math.max(16, CELL) / TG));
+  const S  = px * TG;
 
   const tc = document.createElement('canvas');
   tc.width = S; tc.height = S;
   const tx = tc.getContext('2d');
 
-  // ── Palette ──────────────────────────────────────────────────
-  const BASE   = '#2d6e14';   // main grass body
-  const DARK   = '#1e4a0c';   // shadow / depth
-  const MID    = '#3d9020';   // lighter patch
-  const LIGHT  = '#56b82c';   // bright face
-  const TIP    = '#7ed43e';   // blade tip highlight
-  const BRIGHT = '#a0e860';   // sunlit specks
-
-  // ── Base fill ────────────────────────────────────────────────
-  tx.fillStyle = BASE;
-  tx.fillRect(0, 0, S, S);
-
-  // ── Checkerboard shadow patches for depth variation ──────────
-  const ck = px * 3;
-  for (let ry = 0; ry < S; ry += ck) {
-    for (let cx = 0; cx < S; cx += ck) {
-      if (((ry / ck | 0) + (cx / ck | 0)) % 2 === 0) {
-        tx.fillStyle = DARK;
-        tx.fillRect(cx, ry, px * 2, px * 2);
-      }
-    }
-  }
-
-  // ── Mid-tone patches (light areas between blades) ────────────
-  tx.fillStyle = MID;
-  for (let ry = px; ry < S; ry += px * 4) {
-    for (let cx = px * 2; cx < S; cx += px * 4) {
-      tx.fillRect(cx, ry, px, px);
-    }
-  }
-
-  // ── Grass blade clusters ─────────────────────────────────────
-  // Pseudo-random positions anchored by pixel math (no Math.random — deterministic)
-  const blades = [
-    [0.08, 0.04], [0.32, 0.07], [0.62, 0.02], [0.84, 0.11],
-    [0.18, 0.30], [0.50, 0.25], [0.76, 0.38], [0.06, 0.52],
-    [0.42, 0.58], [0.68, 0.62], [0.28, 0.74], [0.90, 0.70],
-    [0.14, 0.86], [0.58, 0.90], [0.80, 0.95],
+  // Minecraft grass top palette — 7 weighted shades
+  const PAL = [
+    '#1e5c0a', // 0 very dark
+    '#2d7a14', // 1 dark
+    '#3a9020', // 2 medium-dark
+    '#3a9020', // 2 (double weight — most common dark-mid)
+    '#4eb02e', // 3 medium
+    '#4eb02e', // 3 (double weight)
+    '#62c438', // 4 medium-light
+    '#62c438', // 4 (double weight)
+    '#74d448', // 5 light
+    '#74d448', // 5 (double weight)
+    '#88e05c', // 6 highlight
+    '#4eb02e', // filler to round to 12
   ];
 
-  for (const [fx, fy] of blades) {
-    const bx = Math.floor(fx * S / px) * px;
-    const by = Math.floor(fy * S / px) * px;
-    const h  = Math.max(px * 2, Math.round(px * (2 + Math.abs(Math.sin(bx * 1.3)) * 2)));
+  // LCG seeded noise — deterministic, no Math.random
+  let s = 0x3f7a9b2c;
+  const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) | 0; return (s >>> 0) / 0x100000000; };
 
-    // Blade body — light face
-    tx.fillStyle = LIGHT;
-    tx.fillRect(bx, by, px, h);
-
-    // Bright tip (top pixel)
-    tx.fillStyle = TIP;
-    tx.fillRect(bx, by, px, px);
-
-    // Shadow pixel to the right of blade
-    if (bx + px < S) {
-      tx.fillStyle = DARK;
-      tx.fillRect(bx + px, by + px, px, Math.max(px, h - px));
-    }
-  }
-
-  // ── Sunlit bright specks ─────────────────────────────────────
-  tx.fillStyle = BRIGHT;
-  for (let ry = 0; ry < S; ry += px * 7) {
-    for (let cx = px * 3; cx < S; cx += px * 6) {
-      tx.fillRect(cx, ry, px, px);
+  for (let row = 0; row < TG; row++) {
+    for (let col = 0; col < TG; col++) {
+      const idx = Math.floor(rnd() * PAL.length);
+      tx.fillStyle = PAL[idx];
+      tx.fillRect(col * px, row * px, px, px);
     }
   }
 
@@ -1025,80 +1068,861 @@ function getGrassPattern() {
   return _grassPattern;
 }
 
-// ── 8-bit top-down lava tile (1"×1" = CELL×CELL) ────────────
-function getLavaPattern() {
-  if (_lavaPattern && _lavaCELL === CELL) return _lavaPattern;
-  _lavaCELL = CELL;
-
-  const S  = Math.max(8, CELL);
-  const px = Math.max(1, Math.round(S / 14));
-
+// ── Shared helper: Minecraft-style pixel-noise grass tile ────
+// Fills a TG×TG grid with colors chosen from `pal` using a seeded
+// LCG — deterministic every render, no Math.random.
+// Tile size is exactly CELL×CELL so scrolling animations
+// (water/lava setTransform) wrap seamlessly at the cell boundary.
+function _mcGrassTile(pal, seed) {
+  const TG = 16;
+  const S  = Math.max(16, CELL);          // tile = CELL exactly → seamless scroll
   const tc = document.createElement('canvas');
   tc.width = S; tc.height = S;
   const tx = tc.getContext('2d');
+  let s = seed | 0;
+  const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) | 0; return (s >>> 0) / 0x100000000; };
+  // Pixel rects sized so column/row boundaries divide S evenly (±1px).
+  // This keeps blocks crisp without leaving gaps when S isn't a multiple of TG.
+  for (let row = 0; row < TG; row++) {
+    const y0 = Math.floor(row * S / TG);
+    const y1 = Math.floor((row + 1) * S / TG);
+    for (let col = 0; col < TG; col++) {
+      const x0 = Math.floor(col * S / TG);
+      const x1 = Math.floor((col + 1) * S / TG);
+      tx.fillStyle = pal[Math.floor(rnd() * pal.length)];
+      tx.fillRect(x0, y0, x1 - x0, y1 - y0);
+    }
+  }
+  const px = Math.max(1, Math.round(S / TG));   // for callers that still need a pixel unit
+  return { tc, tx, px, S, TG };
+}
 
-  const DEEP   = '#1a0400';
-  const DARK   = '#3d0800';
-  const MID    = '#8b1800';
-  const HOT    = '#cc3000';
-  const CREST  = '#ff5500';
-  const BRIGHT = '#ff9900';
+// ── Procedural pixel-art status animations ───────────────────
+// Each draws an original animated shape (not a scrolling pattern):
+// flame tongues, snow crystal, lightning bolts, bubbling ooze.
+// Pixel coords are 0..15 on a 16×16 grid; helpers below map them
+// to canvas pixels for any CELL size, keeping blocks crisp.
 
-  // Base fill
-  tx.fillStyle = DEEP;
-  tx.fillRect(0, 0, S, S);
+function _pixHelpers(c2, x, y) {
+  const TG = 16;
+  const pc = (col) => Math.floor(col * CELL / TG);
+  const pr = (row) => Math.floor(row * CELL / TG);
+  // Fills a 1-pixel block. (col,row) are integer grid coords.
+  const px1 = (col, row) => {
+    c2.fillRect(x + pc(col), y + pr(row), pc(col + 1) - pc(col), pr(row + 1) - pr(row));
+  };
+  // Fills a w×h block of grid cells starting at (col,row).
+  const pxR = (col, row, w, h) => {
+    c2.fillRect(x + pc(col), y + pr(row), pc(col + w) - pc(col), pr(row + h) - pr(row));
+  };
+  return { TG, px1, pxR };
+}
 
-  // Dark crust patches
-  tx.fillStyle = DARK;
-  for (let ry = 0; ry < S; ry += px * 4) {
-    for (let cx = 0; cx < S; cx += px * 5) {
-      if (((ry / (px*4) | 0) + (cx / (px*5) | 0)) % 3 !== 0) {
-        tx.fillRect(cx, ry, px * 3, px * 2);
+// FIRE — top-down view: hot blob with concentric heat rings, edges lick
+// outward via a wobble, plus floating embers around the perimeter.
+// When fire cells touch, each pixel sums "heat intensity" from its own
+// centre plus every adjacent fire cell's centre — so a group of fire
+// tiles fuses into one larger blob with the seams becoming white-hot
+// instead of fading to dark.
+function _drawFireStatus(c2, x, y, ts, ph, neighbors) {
+  const { TG, px1 } = _pixHelpers(c2, x, y);
+  const frame = ts ? Math.floor(ts / 80) : 0;
+  const f     = frame * 0.55;       // global wobble phase (synced across cells)
+  const N     = neighbors || {};
+
+  const cx = 7.5, cy = 7.5;
+  const corePulse = Math.sin(f * 0.7) * 0.04;   // small intensity pulse
+
+  // Linear-falloff "heat" function: intensity(0) = 1, intensity(16) = 0.
+  // Two cells' contributions sum to ~1.0 at their shared boundary,
+  // matching the brightness at a single cell's centre — that's what
+  // makes the seam vanish.
+  const heat = (dx, dy) => {
+    const d = Math.sqrt(dx * dx + dy * dy);
+    return d < 16 ? 1 - d / 16 : 0;
+  };
+
+  for (let row = 0; row < TG; row++) {
+    for (let col = 0; col < TG; col++) {
+      const dx = col - cx;
+      const dy = row - cy;
+      // Own-centre intensity with angular wobble (flames lick outward).
+      const ang = Math.atan2(dy, dx);
+      const wobble = Math.sin(ang * 4 + f) * 0.7 + Math.sin(ang * 7 - f * 0.6) * 0.45;
+      // Near edges that face a neighbour, fade wobble to zero so boundary
+      // pixels rely on the symmetric heat() falloff — prevents the seam
+      // that was previously hidden by the border stroke.
+      const edgeDist = Math.min(
+        N.e ? (TG - 1 - col) : 99, N.w ? col          : 99,
+        N.s ? (TG - 1 - row) : 99, N.n ? row          : 99
+      );
+      const wobbleFactor = edgeDist < 3 ? edgeDist / 3 : 1;
+      let total = Math.max(0, 1 - (Math.sqrt(dx * dx + dy * dy) + wobble * wobbleFactor) / 16) + corePulse;
+
+      // Each adjacent fire cell adds its own heat at this pixel.
+      // Offsets are ±TG (16) in col/row because that's one cell over
+      // in the local 0..15 pixel grid.
+      if (N.e)  total += heat(dx - TG, dy);
+      if (N.w)  total += heat(dx + TG, dy);
+      if (N.s)  total += heat(dx,      dy - TG);
+      if (N.n)  total += heat(dx,      dy + TG);
+      if (N.se) total += heat(dx - TG, dy - TG);
+      if (N.sw) total += heat(dx + TG, dy - TG);
+      if (N.ne) total += heat(dx - TG, dy + TG);
+      if (N.nw) total += heat(dx + TG, dy + TG);
+
+      // Map summed intensity to colour. Calibrated so a single isolated
+      // cell renders the same as before (centre ≈ 0.96 → white).
+      let color = null;
+      if      (total > 0.93) color = '#ffffff';
+      else if (total > 0.85) color = '#ffe060';
+      else if (total > 0.77) color = '#ffb020';
+      else if (total > 0.68) color = '#ff7800';
+      else if (total > 0.60) color = '#e04000';
+      else if (total > 0.51) color = '#a02000';
+      else if (total > 0.43) {
+        // Outermost — flickering scorched pixels
+        const hash = (col * 0x9E37 + row * 0x85EB + frame * 0xC2B2) >>> 0;
+        if ((hash % 100) < 38) color = '#5a1400';
+      }
+      if (color) {
+        c2.fillStyle = color;
+        px1(col, row);
       }
     }
   }
 
-  // Two horizontal lava river bands
-  const numBands = 2;
-  const bH = S / numBands;
-  for (let bi = 0; bi < numBands; bi++) {
-    const by = bi * bH;
-    const riverH = Math.max(px, Math.round(bH * 0.35));
-    const riverY = by + Math.round(bH * 0.3);
-    // MID outer
-    tx.fillStyle = MID;
-    tx.fillRect(0, riverY, S, riverH);
-    // HOT inner
-    const innerH = Math.max(px, Math.round(riverH * 0.55));
-    tx.fillStyle = HOT;
-    tx.fillRect(0, riverY + Math.round(riverH * 0.22), S, innerH);
-    // CREST center line
-    tx.fillStyle = CREST;
-    tx.fillRect(0, riverY + Math.round(riverH * 0.44), S, Math.max(px, Math.round(riverH * 0.18)));
+  // Floating embers — only on sides that face open space (no neighbouring
+  // fire), so the combined blob has embers around its outer perimeter
+  // but none at internal seams. Corner embers hide if EITHER adjacent
+  // side has a neighbour (the corner pixel is then inside the hot zone).
+  const emberPos = [
+    // Mid-edge embers — single side dependency
+    [[8, 2],   ['n']],
+    [[14, 8],  ['e']],
+    [[8, 14],  ['s']],
+    [[1, 8],   ['w']],
+    // Corner embers — hide if either adjacent side has a neighbour
+    [[3, 3],   ['n','w']],
+    [[13, 3],  ['n','e']],
+    [[3, 13],  ['s','w']],
+    [[13, 13], ['s','e']],
+  ];
+  for (let i = 0; i < emberPos.length; i++) {
+    const [pos, sides] = emberPos[i];
+    if (sides.some(s => N[s])) continue;
+    const phase = (frame + i * 3 + Math.floor(ph * 8)) % 8;
+    if (phase < 2) {
+      c2.fillStyle = phase === 0 ? '#ffd840' : '#ff7800';
+      px1(pos[0], pos[1]);
+    }
   }
+}
 
-  // BRIGHT hotspot pixels
-  tx.fillStyle = BRIGHT;
-  for (let ry = px; ry < S; ry += px * 7) {
-    for (let cx = px * 2; cx < S; cx += px * 5) {
-      tx.fillRect(cx, ry, px, px);
+// ICE — top-down sheet of ice: variated pale-blue surface, dark cracks,
+// a sweeping diagonal glint, and occasional sparkles.
+// gr/gc are the cell's grid row/col so adjacent tiles share one continuous glint.
+function _drawIceStatus(c2, x, y, ts, gr, gc) {
+  const { TG, px1 } = _pixHelpers(c2, x, y);
+  const frame = ts ? Math.floor(ts / 120) : 0;
+
+  // ── Base layer: pale ice with deterministic pixel-noise variation ──
+  for (let row = 0; row < TG; row++) {
+    for (let col = 0; col < TG; col++) {
+      const hash = (col * 0x9E37 + row * 0x85EB) >>> 0;
+      const v = hash % 100;
+      let color;
+      if      (v < 18) color = '#80b0c8';  // darker patch
+      else if (v < 50) color = '#a8ccdc';  // base ice
+      else if (v < 82) color = '#c0d8e4';  // lighter
+      else             color = '#dceaf4';  // frost spot
+      c2.fillStyle = color;
+      px1(col, row);
     }
   }
 
-  // Small dark crater squares with CREST rim
-  const craters = [[0.15,0.12],[0.6,0.08],[0.35,0.55],[0.78,0.62],[0.08,0.72]];
-  for (const [fx, fy] of craters) {
-    const crx = Math.floor(fx * S / px) * px;
-    const cry = Math.floor(fy * S / px) * px;
-    tx.fillStyle = DEEP;
-    tx.fillRect(crx, cry, px*2, px*2);
-    tx.fillStyle = CREST;
-    tx.fillRect(crx - px, cry, px, px);
-    tx.fillRect(crx, cry - px, px, px);
+  // ── Cracks (hand-traced paths give the iconic ice-block look) ──
+  c2.fillStyle = '#3868a0';
+  const cracks = [
+    // Main diagonal crack — top edge down through middle
+    [5,0],[5,1],[6,2],[6,3],[7,4],[8,5],[8,6],[9,7],[10,8],[10,9],[11,10],[11,11],
+    // Left branch off the main crack
+    [5,3],[4,3],[3,4],[2,4],[1,5],
+    // Right branch
+    [9,7],[10,7],[11,7],[12,7],
+    // Top-right short crack
+    [13,1],[14,2],[14,3],
+    // Bottom-left short crack
+    [2,12],[3,13],[3,14],[4,15],
+    // Small bottom-right detail
+    [13,12],[14,13],
+  ];
+  for (const [cc, cr] of cracks) px1(cc, cr);
+  // Crack shadow pixels (darker tone on one side adds depth)
+  c2.fillStyle = '#1e4070';
+  const shadows = [[7,1],[8,2],[9,3],[6,15]];
+  for (const [cc, cr] of shadows) px1(cc, cr);
+
+  // ── Sweeping diagonal glint — travels NW→SE across the whole ice sheet ──
+  // globalGlint advances on a shared clock; each tile subtracts its own
+  // diagonal offset (TG*(gr+gc)) so the bright stripe appears to sweep
+  // continuously across a group of adjacent tiles rather than resetting
+  // per-cell.  Cycle=260 keeps ~1.5 s of darkness between sweeps.
+  const globalGlint = (frame * 2) % 260;
+  const localGlint  = globalGlint - TG * (gr + gc);  // glint pos in tile-local coords
+  if (localGlint > -3 && localGlint < TG * 2 + 3) {
+    for (let row = 0; row < TG; row++) {
+      for (let col = 0; col < TG; col++) {
+        const dist = Math.abs((col + row) - localGlint);
+        if (dist < 0.6) {
+          c2.fillStyle = '#ffffff';
+          px1(col, row);
+        } else if (dist < 1.6) {
+          c2.fillStyle = '#eef4f8';
+          px1(col, row);
+        }
+      }
+    }
   }
 
+  // ── Sparkles — global clock so an ice sheet twinkles in unison ──
+  const sparkles = [[13, 5], [4, 11], [12, 14]];
+  for (let si = 0; si < sparkles.length; si++) {
+    const [sc, sr] = sparkles[si];
+    const phase = (frame + si * 7) % 16;           // no per-cell phS
+    if (phase === 0) {
+      c2.fillStyle = '#ffffff';
+      px1(sc, sr);
+      c2.fillStyle = '#b0d8f4';
+      if (sc > 0)      px1(sc - 1, sr);
+      if (sc < TG - 1) px1(sc + 1, sr);
+    } else if (phase === 1) {
+      c2.fillStyle = '#dceaf4';
+      px1(sc, sr);
+    }
+  }
+}
+
+// LIGHTNING — pre-baked zigzag bolts that flash on a cycle. The bolt
+// rotates to follow `flowAngle` (same convention as water/lava/blood),
+// so it can shoot in any of 8 cardinal/diagonal directions, or be still.
+// Same-direction cells share a phase so a chain of bolts looks like one
+// continuous lightning strike instead of disjoint flashes.
+function _drawLightningStatus(c2, x, y, ts, ph, flowAngle) {
+  const { TG, px1 } = _pixHelpers(c2, x, y);
+  const frame  = ts ? Math.floor(ts / 70) : 0;
+  if (flowAngle === undefined) flowAngle = 90;
+  // Phase derived from flowAngle alone (NOT per-cell `ph`), so every
+  // cell sharing this direction flashes in unison and selects the same
+  // bolt shape on each cycle.
+  const phS = ((flowAngle + 360) % 360) * 17;
+
+  // 4 pre-traced bolt shapes — all enter at column 7 row 0 and exit at
+  // column 7 row 15, so the entry/exit points line up across stacked
+  // cells. Middle zigzags differ for variety.
+  const bolts = [
+    [[7,0],[7,1],[6,2],[6,3],[7,4],[8,5],[8,6],[7,7],[7,8],[6,9],[6,10],[7,11],[8,12],[8,13],[7,14],[7,15]],
+    [[7,0],[8,1],[8,2],[7,3],[6,4],[7,5],[8,6],[9,7],[8,8],[7,9],[6,10],[7,11],[8,12],[8,13],[7,14],[7,15]],
+    [[7,0],[6,1],[5,2],[6,3],[7,4],[8,5],[9,6],[8,7],[7,8],[6,9],[7,10],[8,11],[9,12],[8,13],[7,14],[7,15]],
+    [[7,0],[7,1],[8,2],[9,3],[8,4],[7,5],[6,6],[7,7],[8,8],[7,9],[6,10],[7,11],[8,12],[7,13],[6,14],[7,15]],
+  ];
+
+  // Map a (col,row) drawn in the default down orientation to the
+  // orientation requested by flowAngle. Uses an integer rotation around
+  // the grid center for 90° increments (crisp pixel art) and a generic
+  // sin/cos rotation for the diagonals (45°, 135°, …).
+  const N = TG - 1;
+  const cx = N / 2, cy = N / 2;
+  const rotPx = (col, row) => {
+    // Treat -1 (still) and 90 (default) as identity.
+    if (flowAngle < 0 || flowAngle === 90) return [col, row];
+    if (flowAngle === 0)   return [row, N - col];           // → right
+    if (flowAngle === 180) return [N - row, col];           // ← left
+    if (flowAngle === 270) return [N - col, N - row];       // ↑ up
+    // Diagonal angles — generic rotation. Default is down (90°), so
+    // additional rotation is (flowAngle − 90) clockwise in screen space.
+    const a = (flowAngle - 90) * Math.PI / 180;
+    const ca = Math.cos(a), sa = Math.sin(a);
+    const dx = col - cx, dy = row - cy;
+    const nx = dx * ca - dy * sa;
+    const ny = dx * sa + dy * ca;
+    return [Math.round(nx + cx), Math.round(ny + cy)];
+  };
+  // Cache rotated bolts so we don't repeat work for each pixel of the
+  // glow draw. Each source bolt pixel contributes TWO pixels — itself
+  // plus a partner one step to the right in default down orientation —
+  // giving a 2-pixel-thick bolt. The partner rotates with the bolt, so
+  // for horizontal flow it sits below the main pixel (still 2-thick).
+  const rotBolt = [];
+  const seen   = new Set();
+  const boltIdx = Math.floor((frame + phS) / 22) % bolts.length;
+  const tryAdd = (cc, rr) => {
+    if (cc < 0 || cc >= TG || rr < 0 || rr >= TG) return;
+    const key = cc + ',' + rr;
+    if (seen.has(key)) return;
+    seen.add(key); rotBolt.push([cc, rr]);
+  };
+  for (const [bc, br] of bolts[boltIdx]) {
+    const [nc, nr] = rotPx(bc, br);
+    tryAdd(nc, nr);
+    const [pc, pr] = rotPx(bc + 1, br);   // thickness partner
+    tryAdd(pc, pr);
+  }
+
+  // Cycle: ~22 frames (~1.5sec). Flash for first 3 frames, then quiet.
+  const cycleLen = 22;
+  const cyclePos = (frame + phS) % cycleLen;
+
+  // Glow direction perpendicular to the bolt: when the bolt runs
+  // vertically (90°/270°/-1) the glow paints columns left/right; when
+  // it runs horizontally (0°/180°) the glow paints rows above/below.
+  // For diagonals we sample both axes so the bolt always gets a halo.
+  const isHorizontal = (flowAngle === 0 || flowAngle === 180);
+  const drawGlow = (color) => {
+    c2.fillStyle = color;
+    for (const [nc, nr] of rotBolt) {
+      if (isHorizontal) {
+        if (nr > 0)        px1(nc, nr - 1);
+        if (nr < TG - 1)   px1(nc, nr + 1);
+      } else if (flowAngle === 90 || flowAngle === 270 || flowAngle < 0) {
+        if (nc > 0)        px1(nc - 1, nr);
+        if (nc < TG - 1)   px1(nc + 1, nr);
+      } else {
+        // diagonal — glow on all 4 neighbours
+        if (nc > 0)        px1(nc - 1, nr);
+        if (nc < TG - 1)   px1(nc + 1, nr);
+        if (nr > 0)        px1(nc, nr - 1);
+        if (nr < TG - 1)   px1(nc, nr + 1);
+      }
+    }
+  };
+
+  if (cyclePos === 0) {
+    // Peak flash — bright halo + white bolt
+    c2.fillStyle = 'rgba(200,200,255,0.32)';
+    c2.fillRect(x, y, CELL, CELL);
+    drawGlow('#9898e8');
+    c2.fillStyle = '#ffffff';
+    for (const [nc, nr] of rotBolt) px1(nc, nr);
+  } else if (cyclePos === 1) {
+    c2.fillStyle = 'rgba(180,180,255,0.18)';
+    c2.fillRect(x, y, CELL, CELL);
+    c2.fillStyle = '#e0e0ff';
+    for (const [nc, nr] of rotBolt) px1(nc, nr);
+  } else if (cyclePos === 2) {
+    // Fading after-image
+    c2.fillStyle = '#6868c8';
+    for (const [nc, nr] of rotBolt) px1(nc, nr);
+  } else {
+    // Quiet phase — tiny corner sparks rotate
+    const sparkSlots = [[1,1],[14,1],[1,14],[14,14]];
+    const sIdx = Math.floor(cyclePos / 4) % sparkSlots.length;
+    if (cyclePos % 4 === 0) {
+      const [sc, sr] = sparkSlots[sIdx];
+      c2.fillStyle = '#c8c8f8';
+      px1(sc, sr);
+    }
+  }
+}
+
+// POISON — bubbling cloud of toxic gas. The cloud body uses the same
+// additive-intensity blending as fire, so adjacent poison tiles merge
+// into one big cloud with no dark seams between them. Bubbles pop at
+// fixed interior positions on independent cycles.
+function _drawPoisonStatus(c2, x, y, ts, ph, neighbors) {
+  const { TG, px1, pxR } = _pixHelpers(c2, x, y);
+  const frame = ts ? Math.floor(ts / 90) : 0;
+  const f     = frame * 0.35;        // slow, gassy wobble (synced across cells)
+  const N     = neighbors || {};
+
+  const cx = 7.5, cy = 7.5;
+  const breathe = Math.sin(f * 0.4) * 0.04;   // slow cloud breathing
+
+  // Linear-falloff gas density — two cells' contributions sum to ~1.0
+  // at their shared boundary, so the seam vanishes inside a merged cloud.
+  const density = (dx, dy) => {
+    const d = Math.sqrt(dx * dx + dy * dy);
+    return d < 16 ? 1 - d / 16 : 0;
+  };
+
+  // ── Cloud body ────────────────────────────────────────────────
+  for (let row = 0; row < TG; row++) {
+    for (let col = 0; col < TG; col++) {
+      const dx = col - cx;
+      const dy = row - cy;
+      // Gassy wobble — lower frequency than fire (2 & 4 harmonics) with
+      // bigger amplitude, so edges billow in slow rolling lobes instead
+      // of crackling like flame.
+      const ang = Math.atan2(dy, dx);
+      const wobble = Math.sin(ang * 2 + f * 0.7) * 1.1 + Math.sin(ang * 4 - f * 0.4) * 0.6;
+      // Taper wobble to zero at edges facing a neighbour so the symmetric
+      // density() falloff takes over — prevents the visible seam.
+      const edgeDist = Math.min(
+        N.e ? (TG - 1 - col) : 99, N.w ? col          : 99,
+        N.s ? (TG - 1 - row) : 99, N.n ? row          : 99
+      );
+      const wobbleFactor = edgeDist < 3 ? edgeDist / 3 : 1;
+      let total = Math.max(0, 1 - (Math.sqrt(dx * dx + dy * dy) + wobble * wobbleFactor) / 16) + breathe;
+
+      if (N.e)  total += density(dx - TG, dy);
+      if (N.w)  total += density(dx + TG, dy);
+      if (N.s)  total += density(dx,      dy - TG);
+      if (N.n)  total += density(dx,      dy + TG);
+      if (N.se) total += density(dx - TG, dy - TG);
+      if (N.sw) total += density(dx + TG, dy - TG);
+      if (N.ne) total += density(dx - TG, dy + TG);
+      if (N.nw) total += density(dx + TG, dy + TG);
+
+      let color = null;
+      if      (total > 0.93) color = '#d8e860';  // brightest toxic core
+      else if (total > 0.85) color = '#a0d050';  // light toxic green
+      else if (total > 0.77) color = '#78b840';  // medium green
+      else if (total > 0.68) color = '#509030';  // darker green
+      else if (total > 0.60) color = '#306820';  // dark green
+      else if (total > 0.51) color = '#184010';  // very dark green
+      else if (total > 0.43) {
+        // Wispy outer fringe — sparse pixels, flickers each frame
+        const hash = (col * 0x9E37 + row * 0x85EB + frame * 0xC2B2) >>> 0;
+        if ((hash % 100) < 38) color = '#0a2208';
+      }
+      if (color) {
+        c2.fillStyle = color;
+        px1(col, row);
+      }
+    }
+  }
+
+  // ── Bubbles popping inside the cloud ──────────────────────────
+  // 5 bubbles at fixed interior positions, each with its own period
+  // and phase offset (seeded by ph for per-cell variety).
+  const bubbles = [
+    { col: 4,  row: 5,  period: 18 },
+    { col: 11, row: 4,  period: 22 },
+    { col: 6,  row: 10, period: 20 },
+    { col: 12, row: 11, period: 26 },
+    { col: 8,  row: 7,  period: 24 },
+  ];
+  const phS = Math.floor(ph * 16);
+  for (let bi = 0; bi < bubbles.length; bi++) {
+    const b = bubbles[bi];
+    const phase = (frame + bi * 4 + phS) % b.period;
+    if (phase < 2) {
+      // Forming — single bright dot
+      c2.fillStyle = '#c8e860';
+      px1(b.col, b.row);
+    } else if (phase < 5) {
+      // Small bubble (2×2) with bright spot
+      c2.fillStyle = '#a0d050';
+      pxR(b.col, b.row, 2, 2);
+      c2.fillStyle = '#ffffff';
+      px1(b.col, b.row);
+    } else if (phase < 9) {
+      // Full bubble (3×3) with shadow + bright highlight
+      c2.fillStyle = '#a0d050';
+      pxR(b.col - 1, b.row - 1, 3, 3);
+      c2.fillStyle = '#509030';
+      px1(b.col + 1, b.row + 1);
+      c2.fillStyle = '#ffffff';
+      px1(b.col - 1, b.row - 1);
+    } else if (phase < 11) {
+      // POP — bright cross splash
+      c2.fillStyle = '#c8e860';
+      px1(b.col, b.row);
+      if (b.row >= 2)        px1(b.col, b.row - 2);
+      if (b.col >= 2)        px1(b.col - 2, b.row);
+      if (b.col <= TG - 3)   px1(b.col + 2, b.row);
+      if (b.row <= TG - 3)   px1(b.col, b.row + 2);
+    }
+    // else: bubble dispersed (gas remains)
+  }
+}
+
+function getGrassTallPattern() {
+  if (_grassTallPattern && _grassTallCELL === CELL) return _grassTallPattern;
+  _grassTallCELL = CELL;
+  // Darker, denser — more deep greens, fewer highlights
+  const { tc } = _mcGrassTile([
+    '#0e2c06','#0e2c06',
+    '#1a4a0c','#1a4a0c','#1a4a0c',
+    '#2a6e16','#2a6e16','#2a6e16',
+    '#3a8820','#3a8820',
+    '#50a02c','#50a02c',
+    '#68bc3a',
+    '#1a4a0c',
+  ], 0x1b2c3d4e);
+  _grassTallPattern = cctx.createPattern(tc, 'repeat'); return _grassTallPattern;
+}
+
+function getGrassDeadPattern() {
+  if (_grassDeadPattern && _grassDeadCELL === CELL) return _grassDeadPattern;
+  _grassDeadCELL = CELL;
+  // Straw yellows and dry browns
+  const { tc } = _mcGrassTile([
+    '#4a3810','#4a3810',
+    '#6a5420','#6a5420','#6a5420',
+    '#8a7030','#8a7030','#8a7030',
+    '#a88840','#a88840',
+    '#c0a050','#c0a050',
+    '#d4b860',
+    '#5a4818',
+  ], 0x2c3d4e5f);
+  _grassDeadPattern = cctx.createPattern(tc, 'repeat'); return _grassDeadPattern;
+}
+
+function getGrassJunglePattern() {
+  if (_grassJunglePattern && _grassJungleCELL === CELL) return _grassJunglePattern;
+  _grassJungleCELL = CELL;
+  // Very deep emerald — heavy on darks, vivid mid-greens
+  const { tc } = _mcGrassTile([
+    '#021206','#021206',
+    '#062208','#062208','#062208',
+    '#0e3c14','#0e3c14','#0e3c14',
+    '#1a6020','#1a6020',
+    '#2a8830','#2a8830',
+    '#3ab040',
+    '#0a2c0e',
+  ], 0x3d4e5f6a);
+  _grassJunglePattern = cctx.createPattern(tc, 'repeat'); return _grassJunglePattern;
+}
+
+function getGrassSnowPattern() {
+  if (_grassSnowPattern && _grassSnowCELL === CELL) return _grassSnowPattern;
+  _grassSnowCELL = CELL;
+  // Mostly whites/pale blues with occasional muted green peeking through
+  const { tc } = _mcGrassTile([
+    '#a0b8c8','#a0b8c8',
+    '#b8ccd8','#b8ccd8','#b8ccd8',
+    '#ccdce8','#ccdce8','#ccdce8',
+    '#dceaf4','#dceaf4',
+    '#eef4f8','#eef4f8',
+    '#5a7858',    // frozen grass tuft
+    '#c8d8e4',
+  ], 0x4e5f6a7b);
+  _grassSnowPattern = cctx.createPattern(tc, 'repeat'); return _grassSnowPattern;
+}
+
+function getGrassFlowersPattern() {
+  if (_grassFlowersPattern && _grassFlowersCELL === CELL) return _grassFlowersPattern;
+  _grassFlowersCELL = CELL;
+  // Bright grass base + colourful flower pixels scattered in
+  const { tc, tx, px, S, TG } = _mcGrassTile([
+    '#1e5c0a','#2d7a14','#3a9020','#3a9020',
+    '#4eb02e','#4eb02e','#62c438','#62c438',
+    '#74d448','#88e05c','#4eb02e','#3a9020',
+  ], 0x5f6a7b8c);
+  // Scatter flower pixels on top of the noise base
+  const FLOWERS = ['#e03030','#d4c020','#f0f0e8','#c040c0','#f07020','#ff8040'];
+  let s2 = 0xabcdef12;
+  const r2 = () => { s2=(Math.imul(s2,1664525)+1013904223)|0; return (s2>>>0)/0x100000000; };
+  for (let i = 0; i < 10; i++) {
+    const col = Math.floor(r2() * TG), row = Math.floor(r2() * TG);
+    tx.fillStyle = FLOWERS[Math.floor(r2() * FLOWERS.length)];
+    tx.fillRect(col * px, row * px, px, px);
+  }
+  _grassFlowersPattern = cctx.createPattern(tc, 'repeat'); return _grassFlowersPattern;
+}
+
+function getGrassMushroomsPattern() {
+  if (_grassMushroomsPattern && _grassMushroomsCELL === CELL) return _grassMushroomsPattern;
+  _grassMushroomsCELL = CELL;
+  // Dark mossy green base
+  const { tc, tx, px, S, TG } = _mcGrassTile([
+    '#0e2808','#0e2808',
+    '#1a3c10','#1a3c10','#1a3c10',
+    '#285818','#285818','#285818',
+    '#387020','#387020',
+    '#4a8828',
+    '#204810',
+    '#1a3c10',
+  ], 0x6a7b8c9d);
+  // Draw 3 small mushrooms: stalk + cap pixels
+  const MUSH = [[2,4],[9,10],[13,3]];
+  for (const [mc,mr] of MUSH) {
+    const x = mc*px, y = mr*px;
+    tx.fillStyle='#d8c8a0'; tx.fillRect(x, y, px, px*2);     // stalk
+    tx.fillStyle='#c83020';                                    // red cap
+    if(x-px>=0) tx.fillRect(x-px, y-px, px*3, px);
+    tx.fillStyle='#f8f8f0';                                    // white dot
+    tx.fillRect(x, y-px, px, px);
+  }
+  _grassMushroomsPattern = cctx.createPattern(tc, 'repeat'); return _grassMushroomsPattern;
+}
+
+function getGrassAutumnPattern() {
+  if (_grassAutumnPattern && _grassAutumnCELL === CELL) return _grassAutumnPattern;
+  _grassAutumnCELL = CELL;
+  // Brown/orange/olive ground mix
+  const { tc, tx, px, S, TG } = _mcGrassTile([
+    '#3c2808','#3c2808',
+    '#5a4018','#5a4018','#5a4018',
+    '#7a5c28','#7a5c28','#7a5c28',
+    '#9a7838','#9a7838',
+    '#b89048',
+    '#c8a050',
+    '#5a4018',
+  ], 0x7b8c9dae);
+  // Scatter autumn leaf pixels
+  const LEAVES = ['#c84010','#e07020','#d0a010','#a03010','#e8b820'];
+  let s3 = 0xdeadbeef;
+  const r3 = () => { s3=(Math.imul(s3,1664525)+1013904223)|0; return (s3>>>0)/0x100000000; };
+  for (let i = 0; i < 12; i++) {
+    const col = Math.floor(r3() * TG), row = Math.floor(r3() * TG);
+    tx.fillStyle = LEAVES[Math.floor(r3() * LEAVES.length)];
+    tx.fillRect(col * px, row * px, px, px);
+  }
+  _grassAutumnPattern = cctx.createPattern(tc, 'repeat'); return _grassAutumnPattern;
+}
+
+// ── Minecraft-style top-down lava tile ───────────────────────
+// Heavy on dark crust with bright hot channels cutting through
+function getLavaPattern() {
+  if (_lavaPattern && _lavaCELL === CELL) return _lavaPattern;
+  _lavaCELL = CELL;
+  const { tc } = _mcGrassTile([
+    '#080100','#080100','#080100',
+    '#1a0300','#1a0300','#1a0300',
+    '#3c0700','#3c0700',
+    '#7a1200',
+    '#c02800',
+    '#ee5000',
+    '#ff8800',
+    '#ffaa00',
+    '#1a0300',
+  ], 0x9b0c1d2e);
   _lavaPattern = cctx.createPattern(tc, 'repeat');
   return _lavaPattern;
+}
+
+// ── Mud — NES 8-bit muddy earth ──────────────────────────────
+function getMudPattern() {
+  if (_mudPattern && _mudCELL === CELL) return _mudPattern;
+  _mudCELL = CELL;
+  const TG = 8; // 8x8 NES pixel grid
+  const px = Math.max(1, Math.round(Math.max(8, CELL) / TG));
+  const tc = document.createElement('canvas'); tc.width = px*TG; tc.height = px*TG;
+  const tx = tc.getContext('2d');
+
+  // 5-color NES mud palette
+  const C = [
+    '#0f0700', // 0 near-black base
+    '#3a1808', // 1 dark mud
+    '#5c2c12', // 2 mid mud
+    '#7a4020', // 3 highlight mud
+    '#090400', // 4 wet/puddle
+  ];
+
+  // Hand-crafted 8x8 NES pixel tile — dark clumpy earth with wet pockets
+  // 0=base,1=dark,2=mid,3=hi,4=wet
+  const T = [
+    [1,2,2,3,2,1,2,1],
+    [2,3,1,2,1,2,3,2],
+    [2,1,4,4,2,3,2,2],
+    [1,2,4,4,1,2,1,3],
+    [2,2,1,2,2,4,4,2],
+    [3,1,2,3,2,4,4,1],
+    [2,2,3,1,2,1,2,2],
+    [1,3,2,2,3,2,1,2],
+  ];
+  for (let r = 0; r < TG; r++)
+    for (let c = 0; c < TG; c++) {
+      tx.fillStyle = C[T[r][c]];
+      tx.fillRect(c*px, r*px, px, px);
+    }
+
+  _mudPattern = cctx.createPattern(tc, 'repeat');
+  return _mudPattern;
+}
+
+// ── Minecraft-style blood splatter overlay ───────────────────
+// Deep crimson pixel noise — dark background with bright red spots,
+// drawn at reduced opacity over terrain just like web overlay.
+function getBloodPattern() {
+  if (_bloodPattern && _bloodCELL === CELL) return _bloodPattern;
+  _bloodCELL = CELL;
+  const { tc } = _mcGrassTile([
+    '#040001','#040001','#040001',
+    '#0e0204','#0e0204','#0e0204',
+    '#200408','#200408',
+    '#480a10',
+    '#780e18',
+    '#a81420',
+    '#c01c28',
+    '#d42030',
+    '#0e0204',
+  ], 0xb100d911);
+  _bloodPattern = cctx.createPattern(tc, 'repeat');
+  return _bloodPattern;
+}
+
+// ── Minecraft-style fire (scrolls upward — flame rises) ─────
+function getFirePattern() {
+  if (_firePattern && _fireCELL === CELL) return _firePattern;
+  _fireCELL = CELL;
+  const { tc } = _mcGrassTile([
+    '#1a0500','#1a0500',
+    '#3a0d00','#3a0d00',
+    '#7a1c00','#7a1c00',
+    '#c83000','#c83000',
+    '#ee5000',
+    '#ff7c00','#ff7c00',
+    '#ffaa00',
+    '#ffd840',
+    '#3a0d00',
+  ], 0xf1e2d3c4);
+  _firePattern = cctx.createPattern(tc, 'repeat');
+  return _firePattern;
+}
+
+// ── Minecraft-style ice (slow shimmer scroll) ───────────────
+function getIcePattern() {
+  if (_icePattern && _iceCELL === CELL) return _icePattern;
+  _iceCELL = CELL;
+  const { tc } = _mcGrassTile([
+    '#0e2440','#0e2440',
+    '#1a3a68','#1a3a68',
+    '#2858a0','#2858a0',
+    '#3878d0','#3878d0',
+    '#5098e0',
+    '#80b8ee','#80b8ee',
+    '#b0d8f4',
+    '#dceaf4',
+    '#1a3a68',
+  ], 0x1ce1ce1c);
+  _icePattern = cctx.createPattern(tc, 'repeat');
+  return _icePattern;
+}
+
+// ── Minecraft-style lightning (fast electric scroll) ────────
+function getLightningPattern() {
+  if (_lightningPattern && _lightningCELL === CELL) return _lightningPattern;
+  _lightningCELL = CELL;
+  const { tc } = _mcGrassTile([
+    '#080418','#080418','#080418',
+    '#100828','#100828','#100828',
+    '#201848','#201848',
+    '#403888','#403888',
+    '#6868c8',
+    '#9898e8',
+    '#c8c8f8',
+    '#f0f0ff',
+    '#100828',
+  ], 0xb01710e7);
+  _lightningPattern = cctx.createPattern(tc, 'repeat');
+  return _lightningPattern;
+}
+
+// ── Minecraft-style poison (slow toxic drift) ───────────────
+function getPoisonPattern() {
+  if (_poisonPattern && _poisonCELL === CELL) return _poisonPattern;
+  _poisonCELL = CELL;
+  const { tc } = _mcGrassTile([
+    '#041204','#041204',
+    '#0a2208','#0a2208',
+    '#184010','#184010',
+    '#306820','#306820',
+    '#509030','#509030',
+    '#78b840',
+    '#a0d050',
+    '#c8e860',
+    '#0a2208',
+  ], 0x9015015a);
+  _poisonPattern = cctx.createPattern(tc, 'repeat');
+  return _poisonPattern;
+}
+
+// ── Web — NES 8-bit spider-web floor ─────────────────────────
+// 16-NES-pixel tile: 4 radial spokes (H, V, diag×2) + 2 rectangular
+// connecting rings.  Everything drawn with fillRect — no canvas curves.
+function getWebPattern() {
+  if (_webPattern && _webCELL === CELL) return _webPattern;
+  _webCELL = CELL;
+  const TG = 16;
+  const px = Math.max(1, Math.round(Math.max(16, CELL) / TG));
+  const tW = px * TG;
+  const tc = document.createElement('canvas'); tc.width = tW; tc.height = tW;
+  const tx = tc.getContext('2d');
+
+  const BG   = '#06030c';
+  const SILK  = '#c8b4e8'; // 1 — main strand
+  const SILK2 = '#7a6898'; // 2 — ring / shadow
+  const HUB   = '#f0ecff'; // 3 — centre knot
+
+  // pixel grid: 0=BG, 1=silk, 2=ring, 3=hub
+  const G = Array.from({length:TG}, ()=>new Array(TG).fill(0));
+  const set = (r,c,v) => { if(r>=0&&r<TG&&c>=0&&c<TG) G[r][c]=Math.max(G[r][c],v); };
+  const hln = (r,c0,c1,v=1) => { for(let c=c0;c<=c1;c++) set(r,c,v); };
+  const vln = (r0,r1,c,v=1) => { for(let r=r0;r<=r1;r++) set(r,c,v); };
+
+  // ── 4 radial spokes ─────────────────────────────────────────
+  hln(7,0,15);  hln(8,0,15);   // horizontal spoke (rows 7-8)
+  vln(0,15,7);  vln(0,15,8);   // vertical spoke   (cols 7-8)
+  for(let i=0;i<TG;i++){set(i,i,1); set(i,TG-1-i,1);}  // \ and / diagonals
+
+  // ── 2×2 hub ─────────────────────────────────────────────────
+  set(7,7,3); set(7,8,3); set(8,7,3); set(8,8,3);
+
+  // ── Inner ring (square at radius ~4, corners on diagonals) ──
+  hln(3, 3,12,2);   // top
+  hln(12,3,12,2);   // bottom
+  vln(3,12, 3,2);   // left
+  vln(3,12,12,2);   // right
+
+  // ── Outer ring (square close to tile edge) ───────────────────
+  hln(1, 1,14,2);   // top
+  hln(14,1,14,2);   // bottom
+  vln(2,13, 1,2);   // left
+  vln(2,13,14,2);   // right
+
+  // ── Render ──────────────────────────────────────────────────
+  const P = [BG, SILK, SILK2, HUB];
+  for(let r=0;r<TG;r++)
+    for(let c=0;c<TG;c++){
+      tx.fillStyle = P[G[r][c]];
+      tx.fillRect(c*px, r*px, px, px);
+    }
+
+  _webPattern = cctx.createPattern(tc, 'repeat');
+  return _webPattern;
+}
+
+// ── Swamp — NES 8-bit murky marsh ────────────────────────────
+function getSwampPattern() {
+  if (_swampPattern && _swampCELL === CELL) return _swampPattern;
+  _swampCELL = CELL;
+  const TG = 8;
+  const px = Math.max(1, Math.round(Math.max(8, CELL) / TG));
+  const tc = document.createElement('canvas'); tc.width = px*TG; tc.height = px*TG;
+  const tx = tc.getContext('2d');
+
+  // 5-color NES swamp palette
+  const C = [
+    '#070d03', // 0 stagnant black-green water
+    '#0e1a06', // 1 dark murk
+    '#182808', // 2 mid murk
+    '#243510', // 3 algae green
+    '#120a04', // 4 mud brown (corner patches)
+  ];
+
+  // Hand-crafted 8x8 NES pixel tile — murky water with algae & mud banks
+  // 0=water,1=dark,2=mid,3=algae,4=mud
+  const T = [
+    [4,4,1,2,1,2,1,4],
+    [1,2,2,3,2,2,2,1],
+    [1,2,3,3,2,3,2,1],
+    [4,2,2,2,3,2,2,1],
+    [1,1,2,2,2,2,4,4],
+    [1,2,2,3,2,2,2,1],
+    [1,3,2,2,2,3,2,1],
+    [4,2,1,2,1,2,1,4],
+  ];
+  for (let r = 0; r < TG; r++)
+    for (let c = 0; c < TG; c++) {
+      tx.fillStyle = C[T[r][c]];
+      tx.fillRect(c*px, r*px, px, px);
+    }
+
+  _swampPattern = cctx.createPattern(tc, 'repeat');
+  return _swampPattern;
 }
 
 // ── 8-bit cobblestone floor tile (static) ────────────────────
@@ -1160,6 +1984,302 @@ function getStoneFloorPattern() {
 
   _stoneFloorPattern = cctx.createPattern(tc, 'repeat');
   return _stoneFloorPattern;
+}
+
+// ── NES-style stone variant tile generators ──────────────────
+// Each variant is a CELL-sized tile drawn with a tight palette of 3–5 colours
+// and 1-pixel highlights/shadows for the chunky 8-bit feel. All patterns are
+// cached against the current CELL and bound to cctx so they survive the
+// resize invalidation rule above.
+
+// CRACKED — heavy stone slab with a star-pattern impact crack, chipped
+// corners exposing dark void beneath, and scattered pits/divots. One slab
+// per cell so the damage reads clearly at normal grid scale.
+function getStoneCrackedPattern() {
+  if (_stoneCrackedPattern && _stoneCrackedCELL === CELL) return _stoneCrackedPattern;
+  _stoneCrackedCELL = CELL;
+  const S = Math.max(8, CELL);
+  const px = Math.max(1, Math.round(S / 14));
+  const tc = document.createElement('canvas');
+  tc.width = S; tc.height = S;
+  const tx = tc.getContext('2d');
+
+  // ── Palette ────────────────────────────────────────────────
+  const BASE  = '#6d6862';    // weathered grey slab face
+  const FACE  = '#7c776f';    // slightly lighter inner face
+  const HI    = '#a09a90';    // top-left bright bevel
+  const SH    = '#3a3530';    // bottom-right shadow bevel
+  const RIM   = '#4a463f';    // dark groove between slab and bevel
+  const CRACK = '#241f1a';    // crack interior
+  const VOID  = '#0e0a08';    // exposed darkness where chunks fell out
+
+  // ── Slab + bevels ──────────────────────────────────────────
+  tx.fillStyle = BASE; tx.fillRect(0, 0, S, S);
+  // Top-left highlight (1px L-shape)
+  tx.fillStyle = HI;
+  tx.fillRect(0, 0, S, px);
+  tx.fillRect(0, 0, px, S);
+  // Bottom-right shadow (1px L-shape)
+  tx.fillStyle = SH;
+  tx.fillRect(0, S - px, S, px);
+  tx.fillRect(S - px, 0, px, S);
+  // Inner rim — thin darker square just inside the bevel for depth
+  tx.fillStyle = RIM;
+  tx.fillRect(px,      px,      S - px * 2, px);
+  tx.fillRect(px,      S - px * 2, S - px * 2, px);
+  tx.fillRect(px,      px,      px,         S - px * 2);
+  tx.fillRect(S - px * 2, px,   px,         S - px * 2);
+  // Re-paint the inner face slightly lighter than BASE for variation
+  tx.fillStyle = FACE;
+  tx.fillRect(px * 2, px * 2, S - px * 4, S - px * 4);
+
+  // ── Helpers (pixel-aligned drawing) ────────────────────────
+  function pix(fx, fy, color) {
+    tx.fillStyle = color;
+    tx.fillRect(Math.floor(fx * S / px) * px, Math.floor(fy * S / px) * px, px, px);
+  }
+  function line(path, color) {
+    tx.fillStyle = color;
+    for (let i = 0; i < path.length - 1; i++) {
+      const [x1, y1] = [path[i][0] * S, path[i][1] * S];
+      const [x2, y2] = [path[i+1][0] * S, path[i+1][1] * S];
+      const steps = Math.max(1, Math.round(Math.hypot(x2 - x1, y2 - y1) / px));
+      for (let s = 0; s <= steps; s++) {
+        const t = s / steps;
+        tx.fillRect(Math.floor((x1 + (x2 - x1) * t) / px) * px,
+                    Math.floor((y1 + (y2 - y1) * t) / px) * px, px, px);
+      }
+    }
+  }
+
+  // ── Star-pattern impact crack near the centre ──────────────
+  // A small dark pit at the impact point, plus four asymmetric cracks
+  // radiating out and a couple of short branches.
+  const cx = 0.46, cy = 0.52;        // impact point (slightly off-centre)
+  pix(cx, cy, VOID);
+  pix(cx + 0.04, cy, VOID);
+  pix(cx, cy + 0.04, VOID);
+  // Four primary radiating cracks (each kinked once for an organic look)
+  line([[cx, cy], [cx - 0.18, cy - 0.10], [cx - 0.36, cy - 0.22], [cx - 0.46, cy - 0.34]], CRACK); // NW
+  line([[cx, cy], [cx + 0.16, cy - 0.16], [cx + 0.30, cy - 0.30], [cx + 0.46, cy - 0.46]], CRACK); // NE
+  line([[cx, cy], [cx - 0.10, cy + 0.20], [cx - 0.20, cy + 0.38], [cx - 0.28, cy + 0.48]], CRACK); // SW
+  line([[cx, cy], [cx + 0.22, cy + 0.14], [cx + 0.38, cy + 0.30], [cx + 0.50, cy + 0.46]], CRACK); // SE
+  // Short branch offshoots from the radii
+  line([[cx + 0.16, cy - 0.16], [cx + 0.26, cy - 0.10]], CRACK);
+  line([[cx - 0.18, cy - 0.10], [cx - 0.26, cy - 0.04]], CRACK);
+  line([[cx + 0.30, cy + 0.22], [cx + 0.42, cy + 0.18]], CRACK);
+
+  // ── Chipped corners — chunks broken out showing the void below ─
+  // Bottom-left corner chip
+  tx.fillStyle = VOID;
+  tx.fillRect(0, S - px * 3, px * 4, px * 3);
+  tx.fillRect(0, S - px * 4, px * 2, px);
+  // Soft shadow around the chip
+  tx.fillStyle = SH;
+  tx.fillRect(px * 4, S - px * 3, px, px * 3);
+  tx.fillRect(px * 2, S - px * 4, px * 2, px);
+
+  // Top-right small chip
+  tx.fillStyle = VOID;
+  tx.fillRect(S - px * 3, 0, px * 3, px * 2);
+  tx.fillRect(S - px * 2, px * 2, px * 2, px);
+  tx.fillStyle = SH;
+  tx.fillRect(S - px * 4, 0, px, px * 2);
+  tx.fillRect(S - px * 4, px * 2, px * 2, px);
+
+  // ── Scattered pits and chip debris ─────────────────────────
+  pix(0.22, 0.22, CRACK);
+  pix(0.22, 0.26, SH);
+  pix(0.72, 0.18, CRACK);
+  pix(0.86, 0.42, CRACK);
+  pix(0.14, 0.62, CRACK);
+  pix(0.14, 0.66, SH);
+  pix(0.68, 0.84, CRACK);
+  pix(0.82, 0.72, SH);
+
+  _stoneCrackedPattern = cctx.createPattern(tc, 'repeat');
+  return _stoneCrackedPattern;
+}
+
+// MOSSY — flagstone with green moss patches along the mortar lines
+function getStoneMossyPattern() {
+  if (_stoneMossyPattern && _stoneMossyCELL === CELL) return _stoneMossyPattern;
+  _stoneMossyCELL = CELL;
+  const S = Math.max(8, CELL);
+  const px = Math.max(1, Math.round(S / 14));
+  // Same flagstone underpainting as getStoneFloorPattern — non-square tile
+  // (width=S, height=tileH) repeats both axes; sizing the canvas to match
+  // tileH avoids the "half rendered" mortar strip we'd get from an S×S tile.
+  const MORTAR='#1a1714', S2='#4e4640', S3='#625850', SH='#7a6e65', SS='#3c3630';
+  const bW = Math.max(4, Math.round(S * 0.52));
+  const bH = Math.max(3, Math.round(S * 0.28));
+  const mg = Math.max(1, px);
+  const tileW = S;
+  const tileH = (bH + mg) * 2;
+  const tc = document.createElement('canvas');
+  tc.width = tileW; tc.height = tileH;
+  const tx = tc.getContext('2d');
+  tx.fillStyle = MORTAR; tx.fillRect(0, 0, tileW, tileH);
+  for (let row = 0; row < 2; row++) {
+    const oy = row * (bH + mg);
+    const offsetX = row % 2 === 0 ? 0 : Math.round(bW / 2);
+    for (let bx = -bW; bx < tileW + bW; bx += bW + mg) {
+      const sx = bx + offsetX;
+      const ex = Math.min(sx + bW, tileW);
+      const startX = Math.max(sx, 0);
+      if (ex <= 0 || startX >= tileW) continue;
+      const w = ex - startX;
+      tx.fillStyle = S2; tx.fillRect(startX, oy, w, bH);
+      if (w > px*2 && bH > px*2) {
+        tx.fillStyle = S3; tx.fillRect(startX + px, oy + px, w - px*2, bH - px*2);
+      }
+      tx.fillStyle = SH;
+      tx.fillRect(startX, oy, w, px); tx.fillRect(startX, oy, px, bH);
+      tx.fillStyle = SS;
+      tx.fillRect(startX, oy + bH - px, w, px); tx.fillRect(startX + w - px, oy, px, bH);
+    }
+  }
+  // Moss patches anchored to the mortar lines. y-fractions are relative to
+  // the tile height (not the cell), so they always land on the joins.
+  const MOSS_DARK = '#1f4516', MOSS_MID = '#3a8a26', MOSS_LITE = '#67c043';
+  const mossSpots = [
+    // [x-fraction-of-tileW, y-fraction-of-tileH, has-highlight]
+    [0.04, 0.05, true],  [0.62, 0.08, false],
+    [0.28, 0.55, true],  [0.86, 0.52, false],
+    [0.12, 0.96, true],  [0.50, 0.97, false], [0.82, 0.96, true],
+  ];
+  for (const [fx, fy, hi] of mossSpots) {
+    const cx = Math.floor(fx * tileW / px) * px;
+    const cy = Math.floor(fy * tileH / px) * px;
+    tx.fillStyle = MOSS_DARK; tx.fillRect(cx, cy, px * 3, px);
+    tx.fillStyle = MOSS_MID;  tx.fillRect(cx + px, cy - px, px * 2, px);
+    if (hi) { tx.fillStyle = MOSS_LITE; tx.fillRect(cx + px * 2, cy, px, px); }
+  }
+  _stoneMossyPattern = cctx.createPattern(tc, 'repeat');
+  return _stoneMossyPattern;
+}
+
+// SLATE — dark blue-grey tile with subtle highlights and a visible split
+function getStoneDarkPattern() {
+  if (_stoneDarkPattern && _stoneDarkCELL === CELL) return _stoneDarkPattern;
+  _stoneDarkCELL = CELL;
+  const S = Math.max(8, CELL);
+  const px = Math.max(1, Math.round(S / 14));
+  const tc = document.createElement('canvas');
+  tc.width = S; tc.height = S;
+  const tx = tc.getContext('2d');
+  // Base
+  tx.fillStyle = '#1a1c24'; tx.fillRect(0, 0, S, S);
+  // Slightly lighter checker for depth
+  tx.fillStyle = '#22252e';
+  const ck = px * 3;
+  for (let y = 0; y < S; y += ck) for (let x = 0; x < S; x += ck) {
+    if (((y / ck | 0) + (x / ck | 0)) % 2 === 0) tx.fillRect(x, y, px * 2, px * 2);
+  }
+  // Two tile-split lines (cross) in near-black
+  tx.fillStyle = '#0a0c12';
+  tx.fillRect(0, Math.round(S * 0.48), S, px);
+  tx.fillRect(Math.round(S * 0.5), 0, px, S);
+  // Cool highlight along the top-left of each quadrant
+  tx.fillStyle = '#3a4054';
+  tx.fillRect(0, Math.round(S * 0.48) + px, Math.round(S * 0.5), px);
+  tx.fillRect(Math.round(S * 0.5) + px, 0, Math.round(S * 0.5), px);
+  tx.fillRect(0, 0, px, Math.round(S * 0.48));
+  tx.fillRect(Math.round(S * 0.5) + px, Math.round(S * 0.48) + px, px, Math.round(S * 0.5) - px);
+  // Specular sparkles for the slate sheen
+  tx.fillStyle = '#7a8298';
+  for (const [fx, fy] of [[0.22,0.18],[0.78,0.32],[0.18,0.74],[0.7,0.86]]) {
+    tx.fillRect(Math.floor(fx * S / px) * px, Math.floor(fy * S / px) * px, px, px);
+  }
+  _stoneDarkPattern = cctx.createPattern(tc, 'repeat');
+  return _stoneDarkPattern;
+}
+
+// SAND — warm sandstone with horizontal grain bands and speckles
+function getStoneSandPattern() {
+  if (_stoneSandPattern && _stoneSandCELL === CELL) return _stoneSandPattern;
+  _stoneSandCELL = CELL;
+  const S = Math.max(8, CELL);
+  const px = Math.max(1, Math.round(S / 14));
+  const tc = document.createElement('canvas');
+  tc.width = S; tc.height = S;
+  const tx = tc.getContext('2d');
+  // Base — warm sand
+  tx.fillStyle = '#c89a5e'; tx.fillRect(0, 0, S, S);
+  // Horizontal grain bands — alternate slightly darker rows
+  tx.fillStyle = '#a8804a';
+  for (let y = px * 2; y < S; y += px * 3) tx.fillRect(0, y, S, px);
+  // Wavy lighter highlight inside each band
+  tx.fillStyle = '#dab27a';
+  for (let y = 0; y < S; y += px * 3) {
+    for (let x = 0; x < S; x += px) {
+      if (Math.sin((x / S) * Math.PI * 4 + y) > 0.6) tx.fillRect(x, y, px, px);
+    }
+  }
+  // Dark speckles — pebbles in the sandstone
+  tx.fillStyle = '#6e5028';
+  for (const [fx, fy] of [[0.12,0.22],[0.38,0.42],[0.66,0.18],[0.84,0.55],[0.22,0.72],[0.5,0.85],[0.78,0.88]]) {
+    tx.fillRect(Math.floor(fx * S / px) * px, Math.floor(fy * S / px) * px, px, px);
+  }
+  // Bright sparkles — mineral flecks
+  tx.fillStyle = '#fff4d0';
+  for (const [fx, fy] of [[0.28,0.15],[0.55,0.5],[0.16,0.6]]) {
+    tx.fillRect(Math.floor(fx * S / px) * px, Math.floor(fy * S / px) * px, px, px);
+  }
+  _stoneSandPattern = cctx.createPattern(tc, 'repeat');
+  return _stoneSandPattern;
+}
+
+// BRICK — terracotta brick wall, larger bricks than flagstone.
+// Non-square tile (width=S, height=tileH) so it tiles cleanly without an
+// orphaned mortar strip from a too-tall canvas.
+function getStoneBrickPattern() {
+  if (_stoneBrickPattern && _stoneBrickCELL === CELL) return _stoneBrickPattern;
+  _stoneBrickCELL = CELL;
+  const S = Math.max(8, CELL);
+  const px = Math.max(1, Math.round(S / 14));
+  const MORTAR = '#1f1612';
+  const BRICK_BASE = '#9b3a24';
+  const BRICK_LITE = '#c25a3a';
+  const BRICK_DARK = '#5a1f12';
+  const BRICK_HI   = '#e07a52';
+  const bW = Math.max(6, Math.round(S * 0.6));
+  const bH = Math.max(4, Math.round(S * 0.34));
+  const mg = Math.max(1, px);
+  const tileW = S;
+  const tileH = (bH + mg) * 2;
+  const tc = document.createElement('canvas');
+  tc.width = tileW; tc.height = tileH;
+  const tx = tc.getContext('2d');
+  tx.fillStyle = MORTAR; tx.fillRect(0, 0, tileW, tileH);
+  for (let row = 0; row < 2; row++) {
+    const oy = row * (bH + mg);
+    const offsetX = row % 2 === 0 ? 0 : Math.round(bW / 2);
+    for (let bx = -bW; bx < tileW + bW; bx += bW + mg) {
+      const sx = bx + offsetX;
+      const ex = Math.min(sx + bW, tileW);
+      const startX = Math.max(sx, 0);
+      if (ex <= 0 || startX >= tileW) continue;
+      const w = ex - startX;
+      tx.fillStyle = BRICK_BASE; tx.fillRect(startX, oy, w, bH);
+      if (w > px*2 && bH > px*2) {
+        tx.fillStyle = BRICK_LITE; tx.fillRect(startX + px, oy + px, w - px*2, bH - px*2);
+      }
+      tx.fillStyle = BRICK_HI;
+      tx.fillRect(startX, oy, w, px);
+      tx.fillRect(startX, oy, px, bH);
+      tx.fillStyle = BRICK_DARK;
+      tx.fillRect(startX, oy + bH - px, w, px);
+      tx.fillRect(startX + w - px, oy, px, bH);
+      // Small chip / divot to break perfect repetition
+      if (w > px * 4 && bH > px * 3) {
+        tx.fillStyle = BRICK_DARK;
+        tx.fillRect(startX + w - px * 3, oy + px * 2, px, px);
+      }
+    }
+  }
+  _stoneBrickPattern = cctx.createPattern(tc, 'repeat');
+  return _stoneBrickPattern;
 }
 
 function drawWalls() {
@@ -1379,12 +2499,19 @@ function drawCursor() {
 }
 
 function previewCells(cells, eff, alpha) {
-  const fc={fire:'rgba(232,90,40,',poison:'rgba(80,160,20,',ice:'rgba(50,140,220,',lightning:'rgba(250,180,10,',holy:'rgba(170,160,245,',erase:'rgba(200,50,50,'};
-  const e=EFFECTS[eff];
-  ctx.save(); ctx.globalAlpha=alpha; ctx.fillStyle=fc[eff]+'0.38)';
-  for(const k of cells){const[r,c]=k.split(',').map(Number);ctx.fillRect(c*CELL,r*CELL,CELL,CELL);}
-  ctx.globalAlpha=alpha*.65; ctx.strokeStyle=e.glow; ctx.lineWidth=1;
-  for(const k of cells){const[r,c]=k.split(',').map(Number);ctx.strokeRect(c*CELL+1,r*CELL+1,CELL-2,CELL-2);}
+  const e = EFFECTS[eff];
+  if (!e) return;   // no effect selected — silently skip rather than throwing inside the rAF loop
+  // Derive fill color from the effect's RGB so terrain effects (water/grass/lava/stone)
+  // don't fall back to "undefinedNNN)" (which would be a silently-invalid fillStyle).
+  const fill = `rgba(${e.r},${e.g},${e.b},`;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = fill + '0.38)';
+  for (const k of cells) { const [r,c] = k.split(',').map(Number); ctx.fillRect(c*CELL, r*CELL, CELL, CELL); }
+  ctx.globalAlpha = alpha * 0.65;
+  ctx.strokeStyle = e.glow;
+  ctx.lineWidth = 1;
+  for (const k of cells) { const [r,c] = k.split(',').map(Number); ctx.strokeRect(c*CELL+1, r*CELL+1, CELL-2, CELL-2); }
   ctx.restore();
 }
 
@@ -1408,15 +2535,132 @@ function drawLiveStroke() {
   if(isClosed(strokeCells)) previewCells(floodFill(strokeCells),currentEffect,.26);
 }
 
+// ── Terrain particle overlays ────────────────────────────────
+// Drawn on the main canvas (ctx) after cellCvs blit so particles float
+// above the terrain but below tokens. Uses deterministic pseudo-random
+// per cell so no particle state is needed.
+const _PARTICLE_TERRAINS = new Set(['lava','swamp','mud','water']);
+function _ph2(n) { // fast 0..1 hash
+  const x2 = Math.sin(n * 127.1 + 311.7) * 43758.5453123;
+  return x2 - Math.floor(x2);
+}
+function drawTerrainParticles(ts) {
+  if (!ts) return;
+  for (const [k, effs] of Object.entries(grid)) {
+    const te = effs.find(e => _PARTICLE_TERRAINS.has(e));
+    if (!te) continue;
+    const [pr, pc] = k.split(',').map(Number);
+    const px = pc * CELL, py = pr * CELL;
+    const seed = pr * 997 + pc * 31;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(px, py, CELL, CELL); ctx.clip();
+
+    if (te === 'lava') {
+      // 3 drifting embers per cell — orange/red sparks rising
+      for (let i = 0; i < 3; i++) {
+        const h0 = _ph2(seed + i * 137);
+        const h1 = _ph2(seed + i * 271);
+        const period = 900 + h0 * 700;
+        const phase  = ((ts + h0 * period) % period) / period;
+        const ex = px + (h1 * 0.70 + 0.15) * CELL;
+        const ey = py + CELL * (0.93 - phase * 0.90);
+        const alpha = Math.min(phase * 8, 1) * Math.min((1 - phase) * 8, 1) * 0.88;
+        if (alpha < 0.02) continue;
+        const sz = Math.max(1, CELL * 0.055 * (1 - phase * 0.45));
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = phase < 0.45 ? '#FF9030' : '#FF4408';
+        ctx.fillRect(Math.round(ex - sz / 2), Math.round(ey - sz / 2), Math.ceil(sz), Math.ceil(sz));
+      }
+
+    } else if (te === 'swamp') {
+      // 2 slow-drifting mist wisps — pale grey-green, smooth sine oscillation
+      // (sine avoids the % 1 modulo wrap-around teleport bug)
+      for (let i = 0; i < 2; i++) {
+        const h0 = _ph2(seed + i * 157);
+        const h1 = _ph2(seed + i * 283);
+        const h2 = _ph2(seed + i * 401);
+        const speed = 0.00045 + h2 * 0.00025; // radians/ms
+        // Smooth oscillation — centre stays within [0.15, 0.85] of cell width
+        const mx = px + (0.5 + 0.35 * Math.sin(ts * speed + h1 * Math.PI * 2)) * CELL;
+        const my = py + (0.22 + h0 * 0.52) * CELL;
+        const rad = CELL * (0.19 + h2 * 0.11); // ellipse x-radius
+        const mh  = CELL * 0.10;
+        const pulseA = 0.14 + 0.07 * Math.sin(ts * 0.0009 + h0 * 6.28);
+        ctx.globalAlpha = pulseA;
+        // Gradient endpoints match ellipse x-radius exactly → smooth fade to transparent
+        const grd = ctx.createLinearGradient(mx - rad, my, mx + rad, my);
+        grd.addColorStop(0, 'rgba(80,120,50,0)');
+        grd.addColorStop(0.5, 'rgba(105,145,65,1)');
+        grd.addColorStop(1, 'rgba(80,120,50,0)');
+        ctx.fillStyle = grd;
+        ctx.beginPath(); ctx.ellipse(mx, my, rad, mh * 0.5, 0, 0, Math.PI * 2); ctx.fill();
+      }
+
+    } else if (te === 'mud') {
+      // 2 slow brown bubbles per cell — appear, swell, pop
+      for (let i = 0; i < 2; i++) {
+        const h0 = _ph2(seed + i * 223);
+        const h1 = _ph2(seed + i * 367);
+        const period = 2600 + h0 * 2000;
+        const phase  = ((ts + h0 * period) % period) / period;
+        if (phase < 0.58) continue;
+        const bx = px + (h1 * 0.65 + 0.17) * CELL;
+        const by = py + (0.3 + h0 * 0.38) * CELL;
+        const lp = phase - 0.58;
+        const alpha = Math.min(lp * 2.8, 1) * Math.min((1 - phase) * 9, 1) * 0.72;
+        if (alpha < 0.02) continue;
+        const br = Math.max(1, CELL * 0.068 * (1 - lp * 1.6));
+        ctx.globalAlpha = alpha;
+        ctx.strokeStyle = '#5a3218';
+        ctx.lineWidth = Math.max(0.5, CELL * 0.04);
+        ctx.beginPath(); ctx.arc(bx, by, Math.max(1, br), 0, Math.PI * 2); ctx.stroke();
+      }
+
+    } else if (te === 'water') {
+      // 1 subtle steam wisp per cell
+      const h0 = _ph2(seed * 179);
+      const h1 = _ph2(seed * 311);
+      const speed = 0.00035 + h0 * 0.00018;
+      const mx = px + (0.5 + 0.32 * Math.sin(ts * speed + h1 * Math.PI * 2)) * CELL;
+      const my = py + (0.12 + h0 * 0.38) * CELL;
+      const rad = CELL * 0.21;
+      const mh  = CELL * 0.07;
+      const pulseA = 0.07 + 0.035 * Math.sin(ts * 0.0007 + h0 * 6.28);
+      ctx.globalAlpha = pulseA;
+      ctx.fillStyle = 'rgba(205,232,255,1)';
+      ctx.beginPath(); ctx.ellipse(mx, my, rad, mh * 0.5, 0, 0, Math.PI * 2); ctx.fill();
+    }
+
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+}
+
 // ── Main render loop ──────────────────────────────────────────
 function render(ts) {
   t = ts;
+  _tickTokenAnimations(ts);
+  // Flowing terrain/status (water/lava/blood/fire/ice/lightning/poison) must
+  // update every frame for smooth scroll — the 55ms throttle below causes
+  // visible stutter on pattern.setTransform. Status overlays need the clear.
+  const _flowing = new Set(['water','lava','blood','fire','ice','lightning','poison']);
+  for (const [k,effs] of Object.entries(grid)) {
+    if (effs.some(e => _flowing.has(e))) {
+      const [r,c]=k.split(',').map(Number);
+      if (!effs.some(e => TERRAIN_EFFECTS.has(e))) cctx.clearRect(c*CELL,r*CELL,CELL,CELL);
+      drawCell(cctx,r,c,effs,ts);
+    }
+  }
+  // Other animated status effects (holy) — throttled to ~18fps because
+  // their sprite-based animation looks fine at that rate.
   if (ts - lastAnim > 55) {
     lastAnim = ts;
-    const animated = new Set(['fire','holy','lightning','poison','ice','water','lava']);
+    const animated = new Set(['holy']);
     for (const [k,effs] of Object.entries(grid)) {
-      if (effs.some(e => animated.has(e))) {
-        const [r,c]=k.split(',').map(Number); cctx.clearRect(c*CELL,r*CELL,CELL,CELL); drawCell(cctx,r,c,effs,ts);
+      if (effs.some(e => animated.has(e)) && !effs.some(e => _flowing.has(e))) {
+        const [r,c]=k.split(',').map(Number);
+        if (!effs.some(e => TERRAIN_EFFECTS.has(e))) cctx.clearRect(c*CELL,r*CELL,CELL,CELL);
+        drawCell(cctx,r,c,effs,ts);
       }
     }
   }
@@ -1445,6 +2689,9 @@ function render(ts) {
 
   ctx.drawImage(cellCvs,0,0);
 
+  // Terrain particle overlays (embers, bubbles, mist — drawn on main canvas)
+  drawTerrainParticles(ts);
+
   // Walls (below tokens)
   drawWalls();
 
@@ -1455,15 +2702,18 @@ function render(ts) {
   drawTokenLights();
 
   if (!tokenMode) {
-    if (currentShape==='draw' && currentEffect!=='erase') drawLiveStroke();
-    if (currentShape==='cone' && coneActive && coneOrigin) {
+    if (currentShape==='draw' && currentEffect && currentEffect!=='erase') drawLiveStroke();
+    if (currentShape==='cone' && coneActive && coneOrigin && currentEffect) {
       const tip=cellFromXY(mouseX,mouseY); previewCells(getConeCells(coneOrigin,tip),currentEffect,.45);
-      const e=EFFECTS[currentEffect], ox=coneOrigin.c*CELL+CELL/2, oy=coneOrigin.r*CELL+CELL/2;
-      ctx.save();ctx.globalAlpha=.9;ctx.strokeStyle=e.glow;ctx.lineWidth=2;ctx.beginPath();ctx.arc(ox,oy,CELL*.35,0,Math.PI*2);ctx.stroke();
-      ctx.globalAlpha=.22;ctx.setLineDash([3,3]);ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(ox,oy);ctx.lineTo(mouseX,mouseY);ctx.stroke();ctx.setLineDash([]);ctx.restore();
+      const e=EFFECTS[currentEffect];
+      if (e) {
+        const ox=coneOrigin.c*CELL+CELL/2, oy=coneOrigin.r*CELL+CELL/2;
+        ctx.save();ctx.globalAlpha=.9;ctx.strokeStyle=e.glow;ctx.lineWidth=2;ctx.beginPath();ctx.arc(ox,oy,CELL*.35,0,Math.PI*2);ctx.stroke();
+        ctx.globalAlpha=.22;ctx.setLineDash([3,3]);ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(ox,oy);ctx.lineTo(mouseX,mouseY);ctx.stroke();ctx.setLineDash([]);ctx.restore();
+      }
     }
-    if (currentShape==='circle' && mouseInside) previewCells(getCircleCells(cellFromXY(mouseX,mouseY),circleRadius),currentEffect,.45);
-    if (currentShape==='square' && mouseInside) previewCells(getSquareCells(cellFromXY(mouseX,mouseY),circleRadius),currentEffect,.45);
+    if (currentShape==='circle' && mouseInside && currentEffect) previewCells(getCircleCells(cellFromXY(mouseX,mouseY),circleRadius),currentEffect,.45);
+    if (currentShape==='square' && mouseInside && currentEffect) previewCells(getSquareCells(cellFromXY(mouseX,mouseY),circleRadius),currentEffect,.45);
   }
 
   // Tokens
@@ -1485,7 +2735,7 @@ function render(ts) {
   if (initCurrent>=0 && initCurrent<initiative.length) {
     const entry=initiative[initCurrent], tok=tokens.find(t=>t.id===entry.tokenId);
     if (tok) {
-      const x=tok.c*CELL+CELL/2, y=tok.r*CELL+CELL/2, rad=CELL*.44;
+      const x=_tokenDispC(tok)*CELL+CELL/2, y=_tokenDispR(tok)*CELL+CELL/2, rad=CELL*.44;
       ctx.save(); ctx.globalAlpha=.55+.45*Math.sin(t*.006); ctx.strokeStyle='#FFD700'; ctx.lineWidth=2;
       ctx.beginPath(); ctx.arc(x,y,rad,0,Math.PI*2); ctx.stroke(); ctx.restore();
     }
@@ -1651,11 +2901,27 @@ function render(ts) {
     // ── Torchlight pools (drawn BEFORE fog — fog naturally covers unexplored areas) ──
     _drawLightPools(ctx, t, 'torch');
 
+    // ── Per-player vision mask ──
+    // On player clients (not DM), if the player owns any tokens, restrict their
+    // view to the union of those tokens' vision/light reach. Outside that union,
+    // cells are forced to full fog (vis=0) regardless of the DM's painted fog.
+    // Returns null on the DM client or when no owned tokens — meaning no mask.
+    const playerVision = _buildPlayerVisionMask();
+
     ctx.save();
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
         const k = r+','+c;
         if (visionReveal.has(k)) continue;     // visible thanks to a token's vision
+        if (playerVision && !playerVision.has(k)) {
+          // Player can't see here → solid fog, ignoring DM's painted reveal
+          const fogAlpha = 1 - ambientLight;
+          if (fogAlpha > 0.005) {
+            ctx.fillStyle = `rgba(8,6,20,${fogAlpha})`;
+            ctx.fillRect(c*CELL, r*CELL, CELL, CELL);
+          }
+          continue;
+        }
         const vis = fogVis[k] ?? 0;
         const fogAlpha = (1 - vis) * (1 - ambientLight);
         if (fogAlpha > 0.005) {
@@ -1698,8 +2964,17 @@ function render(ts) {
     _drawDarknessZones(ctx);
 
   } else {
-    // Fog is OFF — draw all light pools together, then darkness zones on top.
-    // Ambient only meaningfully applies when fog is on (it reduces fog opacity).
+    // Fog is OFF — apply ambient dimming first (cool-blue night tint),
+    // then draw light pools on top with their additive 'screen' blend so
+    // torches and spotlights punch back through the dim. This makes ambient
+    // + weather work together without requiring fog-of-war to be enabled.
+    if (ambientLight < 0.995) {
+      ctx.save();
+      const dim = (1 - ambientLight) * 0.82;     // never fully opaque
+      ctx.fillStyle = `rgba(8, 6, 22, ${dim})`;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.restore();
+    }
     _drawLightPools(ctx, t);
     _drawDarknessZones(ctx);
   }
@@ -1893,6 +3168,9 @@ function render(ts) {
     }
   }
 
+  // ── Weather (atmospheric overlay — rain/snow/fog/ash) ──────────
+  drawWeather(ctx, ts);
+
   // Bright 1-inch grid lines — used by both the 1" overlay and the
   // coords overlay. Inch labels are drawn only in 1" overlay mode.
   if (gridOverlayVisible || gridCoordsVisible) drawGridOverlay();
@@ -2032,8 +3310,8 @@ function drawTokenLights() {
   for (const tok of tokens) {
     if (!tok.lightRadius || tok.lightRadius <= 0) continue;
     const s = tok.size || 1;
-    const cx = tok.c * CELL + s * CELL / 2;
-    const cy = tok.r * CELL + s * CELL / 2;
+    const cx = _tokenDispC(tok) * CELL + s * CELL / 2;
+    const cy = _tokenDispR(tok) * CELL + s * CELL / 2;
     const brightR = tok.lightRadius * CELL;
     const dimR = (tok.lightDim || 0) * CELL;
     ctx.save();
@@ -2154,12 +3432,349 @@ let labels = [], labelIdSeq = 1;
 let lights = [], lightIdSeq = 1;
 
 // ── Lighting system globals ───────────────────────────────────
-let ambientLight      = 0;          // 0 = pitch dark, 1 = full daylight
+let ambientLight      = 1;          // 0 = pitch dark, 1 = full daylight (default)
 let darknessZones     = [];         // [{id, cells:['r,c',...]}]
 let darknessZoneIdSeq = 1;
 let darknessMode      = false;      // darkness-draw tool active
 let _darknessDrag     = null;       // {id} of zone being drawn
 let encounterLightPresets = [];     // [{name, lights:[...]}] — localStorage-backed
+
+// ── Token movement animation ───────────────────────────────────
+// Keyed by token id so state survives token-array rebuilds (MP sync, load,
+// undo, etc). Each value is { dispR, dispC, fromR, fromC, toR, toC, start }.
+// dispR/dispC is always the position to render at; the *To/*From/start fields
+// are only set while a tween is in progress.
+const _tokenAnim = new Map();
+const TOKEN_ANIM_DUR = 220;   // ms
+const TOKEN_ANIM_MAX_CELLS = 30;  // teleports farther than this just snap
+
+function _tickTokenAnimations(ts) {
+  for (const tok of tokens) {
+    let a = _tokenAnim.get(tok.id);
+    if (!a) {
+      a = { dispR: tok.r, dispC: tok.c, start: 0 };
+      _tokenAnim.set(tok.id, a);
+      continue;
+    }
+    // Position changed? Decide animate vs snap.
+    // (Compare against the destination of the current/last anim, not the
+    //  current interpolated display, so re-sets mid-tween retarget cleanly.)
+    const lastTargetR = a.start ? a.toR : a.dispR;
+    const lastTargetC = a.start ? a.toC : a.dispC;
+    if (tok.r !== lastTargetR || tok.c !== lastTargetC) {
+      const dist = Math.hypot(tok.r - a.dispR, tok.c - a.dispC);
+      if (dist > 0.01 && dist < TOKEN_ANIM_MAX_CELLS) {
+        a.fromR = a.dispR;
+        a.fromC = a.dispC;
+        a.toR   = tok.r;
+        a.toC   = tok.c;
+        a.start = ts;
+      } else {
+        // Snap (teleport / first frame / out-of-range jump)
+        a.dispR = tok.r;
+        a.dispC = tok.c;
+        a.start = 0;
+      }
+    }
+    // Advance active tween
+    if (a.start) {
+      const t = Math.min(1, (ts - a.start) / TOKEN_ANIM_DUR);
+      const e = 1 - Math.pow(1 - t, 3);  // ease-out cubic
+      a.dispR = a.fromR + (a.toR - a.fromR) * e;
+      a.dispC = a.fromC + (a.toC - a.fromC) * e;
+      if (t >= 1) { a.dispR = a.toR; a.dispC = a.toC; a.start = 0; }
+    }
+  }
+  // Garbage-collect anim entries for tokens that no longer exist.
+  if (_tokenAnim.size > tokens.length + 8) {
+    const live = new Set(tokens.map(t => t.id));
+    for (const id of _tokenAnim.keys()) if (!live.has(id)) _tokenAnim.delete(id);
+  }
+}
+function _tokenDispR(tok) { const a = _tokenAnim.get(tok.id); return a ? a.dispR : tok.r; }
+function _tokenDispC(tok) { const a = _tokenAnim.get(tok.id); return a ? a.dispC : tok.c; }
+
+// ── Weather (atmospheric particle overlay) ─────────────────────
+let weatherType      = 'none';      // 'none' | 'rain' | 'snow' | 'fog' | 'ash'
+let weatherIntensity = 0.6;         // 0..1 — scales particle count and opacity
+let _weatherParticles = null;       // lazily allocated; reset on type change
+let _weatherLastT     = 0;          // last animation time for dt smoothing
+
+function _weatherCount() {
+  // Rain is now a pool of *impact slots*, each cycling through fall → splash → ripple.
+  // Fewer slots than the old falling-streak count because each one is far more visible.
+  if (weatherType === 'rain') return Math.round(60 + 180 * weatherIntensity);
+  if (weatherType === 'snow') return Math.round(80  + 200 * weatherIntensity);
+  if (weatherType === 'ash')  return Math.round(60  + 160 * weatherIntensity);
+  if (weatherType === 'fog')  return Math.round(4   + 8   * weatherIntensity);
+  return 0;
+}
+
+function _spawnWeatherParticle(p, w, h) {
+  if (weatherType === 'rain') {
+    // Top-down raindrop with size variation (small/medium/large) — real rain
+    // has occasional fat drops mixed in with many fine ones.
+    const roll = Math.random();
+    const size = roll < 0.62 ? 'small' : roll < 0.94 ? 'medium' : 'large';
+    p.size = size;
+    p.x = Math.random() * w;
+    p.y = Math.random() * h;
+    p.t = -Math.random() * 1.4;                         // pre-spawn delay so impacts stagger
+    p.fallDur   = 0.08 + Math.random() * 0.04;
+    if (size === 'small') {
+      p.rippleDur   = 0.45 + Math.random() * 0.25;
+      p.rMax        = Math.max(CELL * 0.18, 6) + Math.random() * Math.max(CELL * 0.12, 4);
+      p.streakLen   = 4 + Math.random() * 6;
+      p.streakWidth = 1.0;
+      p.flashR      = 1.2;
+      p.splashCount = 0;                                // small drops: pure ripple, no crown
+      p.rings       = 1;
+    } else if (size === 'medium') {
+      p.rippleDur   = 0.65 + Math.random() * 0.35;
+      p.rMax        = Math.max(CELL * 0.40, 12) + Math.random() * Math.max(CELL * 0.20, 6);
+      p.streakLen   = 8 + Math.random() * 8;
+      p.streakWidth = 1.3;
+      p.flashR      = 2.0;
+      p.splashCount = 5 + (Math.random() * 3 | 0);
+      p.rings       = 2;
+    } else {
+      p.rippleDur   = 0.95 + Math.random() * 0.5;
+      p.rMax        = Math.max(CELL * 0.75, 22) + Math.random() * Math.max(CELL * 0.35, 10);
+      p.streakLen   = 12 + Math.random() * 14;
+      p.streakWidth = 1.8;
+      p.flashR      = 3.2;
+      p.splashCount = 8 + (Math.random() * 4 | 0);
+      p.rings       = 3;
+    }
+    // Crown-shaped splash: angles distributed evenly around the impact with
+    // small jitter so it reads as a symmetric burst rather than random noise.
+    p.splashAng = [];
+    p.splashSpd = [];
+    p.splashLife = [];
+    for (let i = 0; i < p.splashCount; i++) {
+      const base = (i / p.splashCount) * Math.PI * 2;
+      p.splashAng.push(base + (Math.random() - 0.5) * 0.4);
+      p.splashSpd.push((size === 'large' ? 80 : 55) + Math.random() * 50);
+      p.splashLife.push(0.25 + Math.random() * 0.15);
+    }
+  } else if (weatherType === 'snow') {
+    p.x = Math.random() * w;  p.y = Math.random() * h - h;
+    p.vy = 30 + Math.random() * 50;     // slow drift
+    p.phase = Math.random() * Math.PI * 2;
+    p.swayAmp = 8 + Math.random() * 22;
+    p.swaySpeed = 0.6 + Math.random() * 1.4;
+    p.r = 1.2 + Math.random() * 2.4;
+  } else if (weatherType === 'ash') {
+    p.x = Math.random() * w;  p.y = Math.random() * h - h;
+    p.vy = 18 + Math.random() * 38;
+    p.phase = Math.random() * Math.PI * 2;
+    p.swayAmp = 12 + Math.random() * 28;
+    p.swaySpeed = 0.3 + Math.random() * 0.9;
+    p.r = 1.0 + Math.random() * 1.8;
+    p.ember = Math.random() < 0.18;     // ~18% of flecks glow orange
+  } else if (weatherType === 'fog') {
+    // Each "particle" is a big drifting fog blob
+    p.x  = Math.random() * w;
+    p.y  = Math.random() * h;
+    p.vx = (Math.random() - 0.5) * 14;
+    p.vy = (Math.random() - 0.5) * 6;
+    p.r  = 140 + Math.random() * 240;
+    p.a  = 0.05 + Math.random() * 0.07;
+  }
+}
+
+function _ensureWeatherParticles(w, h) {
+  const need = _weatherCount();
+  if (!_weatherParticles) _weatherParticles = [];
+  // Truncate or grow to match
+  while (_weatherParticles.length > need) _weatherParticles.pop();
+  while (_weatherParticles.length < need) {
+    const p = {};
+    _spawnWeatherParticle(p, w, h);
+    _weatherParticles.push(p);
+  }
+}
+
+function drawWeather(ctx, ts) {
+  if (weatherType === 'none' || weatherIntensity <= 0) return;
+  const w = canvas.width, h = canvas.height;
+  _ensureWeatherParticles(w, h);
+  const dt = Math.min(0.05, _weatherLastT ? (ts - _weatherLastT) / 1000 : 0.016);
+  _weatherLastT = ts;
+
+  // Dim particles when ambient light is high (less visible at noon)
+  // and brighten slightly at night so snow/ash still pop.
+  const ambientFade = 0.55 + 0.45 * (1 - ambientLight);
+  ctx.save();
+
+  if (weatherType === 'rain') {
+    const baseA = ambientFade;
+
+    // ── A. Wet-surface sheen — subtle blue tint over the whole canvas.
+    //    Scales with intensity, never opaque. Sells "this surface is wet".
+    ctx.fillStyle = `rgba(40, 70, 110, ${0.06 * weatherIntensity * baseA})`;
+    ctx.fillRect(0, 0, w, h);
+
+    // ── B. Multi-wave ripples (concentric rings expanding at different rates,
+    //    drawn first so splash flecks land on top).
+    for (const p of _weatherParticles) {
+      p.t += dt;
+      const total = p.fallDur + p.rippleDur;
+      if (p.t > total) { _spawnWeatherParticle(p, w, h); continue; }
+      if (p.t < p.fallDur) continue;
+      const rt = (p.t - p.fallDur) / p.rippleDur;     // 0..1
+      const easeOut = 1 - Math.pow(1 - rt, 2);
+
+      // Outer (primary) ring
+      const r1 = p.rMax * easeOut;
+      const a1 = (1 - rt) * 0.55 * baseA;
+      ctx.strokeStyle = `rgba(195,220,255,${a1})`;
+      ctx.lineWidth = p.size === 'large' ? 1.3 : 1.0;
+      ctx.beginPath(); ctx.arc(p.x, p.y, r1, 0, Math.PI * 2); ctx.stroke();
+
+      // Second ring — chases the first
+      if (p.rings >= 2 && rt > 0.18) {
+        const rt2 = (rt - 0.18) / (1 - 0.18);
+        const r2  = p.rMax * (1 - Math.pow(1 - rt2, 2)) * 0.62;
+        ctx.strokeStyle = `rgba(195,220,255,${(1 - rt2) * 0.42 * baseA})`;
+        ctx.lineWidth = 0.9;
+        ctx.beginPath(); ctx.arc(p.x, p.y, r2, 0, Math.PI * 2); ctx.stroke();
+      }
+      // Third ring (large drops only) — innermost echo
+      if (p.rings >= 3 && rt > 0.34) {
+        const rt3 = (rt - 0.34) / (1 - 0.34);
+        const r3  = p.rMax * (1 - Math.pow(1 - rt3, 2)) * 0.35;
+        ctx.strokeStyle = `rgba(195,220,255,${(1 - rt3) * 0.30 * baseA})`;
+        ctx.lineWidth = 0.8;
+        ctx.beginPath(); ctx.arc(p.x, p.y, r3, 0, Math.PI * 2); ctx.stroke();
+      }
+
+      // Slight darker disc inside the leading ring — suggests the
+      // water displacement / depression at the centre of a fresh ripple.
+      if (rt < 0.45 && p.size !== 'small') {
+        const innerR = r1 * 0.55;
+        const innerA = (1 - rt / 0.45) * 0.20 * baseA;
+        ctx.fillStyle = `rgba(20, 35, 65, ${innerA})`;
+        ctx.beginPath(); ctx.arc(p.x, p.y, innerR, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+
+    // ── C. Falling streaks, impact flashes, crown splashes
+    for (const p of _weatherParticles) {
+      if (p.t < 0) continue;
+      if (p.t < p.fallDur) {
+        // Incoming streak — thin tall line that shortens as it arrives.
+        const k = p.t / p.fallDur;
+        const len = p.streakLen * (1 - k * 0.45);
+        const alpha = (0.4 + 0.5 * k) * baseA;
+        ctx.strokeStyle = `rgba(205,225,255,${alpha})`;
+        ctx.lineWidth = p.streakWidth;
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y - len);
+        ctx.lineTo(p.x, p.y - 1);
+        ctx.stroke();
+      } else {
+        const rt = (p.t - p.fallDur) / p.rippleDur;
+
+        // Impact flash — short bright dot at centre
+        if (rt < 0.10) {
+          const flashA = (1 - rt / 0.10) * 0.95 * baseA;
+          ctx.fillStyle = `rgba(235,245,255,${flashA})`;
+          ctx.beginPath(); ctx.arc(p.x, p.y, p.flashR, 0, Math.PI * 2); ctx.fill();
+        }
+
+        // Crown splash — radial droplets fly outward, decelerate, fall back.
+        // Per-fleck lifetime so they don't all vanish on the same frame.
+        if (p.splashCount > 0) {
+          for (let i = 0; i < p.splashCount; i++) {
+            const life = p.splashLife[i];
+            if (rt > life) continue;
+            const flt = rt / life;                              // 0..1 fleck lifetime
+            // Decelerate as the fleck travels: ease-out distance curve
+            const dist = (1 - Math.pow(1 - flt, 2.2)) * p.splashSpd[i] * life;
+            // Tiny "lift" (read as slight brightness arch from above)
+            const lift = Math.sin(flt * Math.PI);
+            const a = p.splashAng[i];
+            const fx = p.x + Math.cos(a) * dist;
+            const fy = p.y + Math.sin(a) * dist;
+            const sAlpha = (1 - flt) * (0.55 + 0.35 * lift) * baseA;
+            const rDot   = (p.size === 'large' ? 1.4 : 1.0) * (0.6 + 0.4 * lift);
+            ctx.fillStyle = `rgba(215,230,255,${sAlpha})`;
+            ctx.beginPath(); ctx.arc(fx, fy, rDot, 0, Math.PI * 2); ctx.fill();
+          }
+        }
+      }
+    }
+
+    // ── D. Continuous fine patter — tiny ephemeral specks that flicker
+    //    each frame to give the sense of dense rainfall between the big
+    //    impact events. Stateless: spawned & drawn fresh per frame.
+    const pat = Math.round(28 * weatherIntensity * Math.min(1, w * h / 600000));
+    ctx.fillStyle = `rgba(210, 225, 255, ${0.55 * baseA})`;
+    for (let i = 0; i < pat; i++) {
+      const fx = Math.random() * w, fy = Math.random() * h;
+      ctx.beginPath(); ctx.arc(fx, fy, 0.7, 0, Math.PI * 2); ctx.fill();
+    }
+
+  } else if (weatherType === 'snow') {
+    ctx.fillStyle = `rgba(255,255,255,${0.85 * ambientFade})`;
+    for (const p of _weatherParticles) {
+      p.phase += p.swaySpeed * dt;
+      p.y += p.vy * dt;
+      p.x += Math.sin(p.phase) * p.swayAmp * dt;
+      if (p.y > h + 8) _spawnWeatherParticle(p, w, h);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+  } else if (weatherType === 'ash') {
+    for (const p of _weatherParticles) {
+      p.phase += p.swaySpeed * dt;
+      p.y += p.vy * dt;
+      p.x += Math.sin(p.phase) * p.swayAmp * dt;
+      if (p.y > h + 8) _spawnWeatherParticle(p, w, h);
+      if (p.ember) {
+        const glow = 0.65 + 0.35 * Math.sin(p.phase * 3);
+        ctx.fillStyle = `rgba(255,${110 + 60 * glow | 0},40,${0.85 * ambientFade})`;
+      } else {
+        ctx.fillStyle = `rgba(70,60,55,${0.75 * ambientFade})`;
+      }
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+  } else if (weatherType === 'fog') {
+    // Soft drifting blobs using radial gradients
+    ctx.globalCompositeOperation = 'lighter';
+    for (const p of _weatherParticles) {
+      p.x += p.vx * dt;  p.y += p.vy * dt;
+      // wrap around the screen instead of respawning so the layer stays continuous
+      if (p.x < -p.r) p.x = w + p.r;
+      if (p.x > w + p.r) p.x = -p.r;
+      if (p.y < -p.r) p.y = h + p.r;
+      if (p.y > h + p.r) p.y = -p.r;
+      const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r);
+      const a = p.a * ambientFade * weatherIntensity;
+      g.addColorStop(0,  `rgba(220,225,235,${a})`);
+      g.addColorStop(1,  'rgba(220,225,235,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(p.x - p.r, p.y - p.r, p.r * 2, p.r * 2);
+    }
+  }
+
+  ctx.restore();
+}
+
+function setWeather(type, intensity) {
+  const t = (type || 'none').toLowerCase();
+  if (t !== weatherType) {
+    weatherType = t;
+    _weatherParticles = null;   // force re-allocation on next draw
+  }
+  if (intensity != null) weatherIntensity = Math.max(0, Math.min(1, intensity));
+}
 let lightGroupManager = {};         // {groupName: true|false}
 let lightPlaceDimRadius = 0;        // placement panel dim radius
 let _resizeDragLight  = null;       // drag-to-resize state {light}
@@ -2186,6 +3801,49 @@ function _buildDarknessSet() {
   const s = new Set();
   for (const dz of darknessZones) for (const k of dz.cells) s.add(k);
   return s;
+}
+
+// Per-player vision mask. Returns the set of cells visible to the current
+// MP player's owned tokens (LOS + light/vision radius, wall-blocked). Returns
+// null on the DM client or when no tokens are owned (no mask = standard fog).
+function _buildPlayerVisionMask() {
+  let me = null, dm = null;
+  try {
+    if (typeof window.mpPlayers === 'function') {
+      const r = window.mpPlayers();
+      me = r && r.myId; dm = r && r.dmId;
+    }
+  } catch(e) {}
+  if (!me || me === dm) return null;             // no MP session, or I'm the DM
+  const owned = tokens.filter(t => t.ownerPlayerId === me);
+  if (!owned.length) return null;                // player owns no tokens — see DM state
+  const VISION_RADIUS = { normal: 4, lowlight: 6, darkvision: 12 };  // player default ≥1 so own square + adjacent always visible
+  const mask = new Set();
+  for (const tok of owned) {
+    const visionR = VISION_RADIUS[tok.vision] ?? 4;
+    const equipR  = (tok.equippedLight && Number(tok.equippedLight.radius)) || 0;
+    const lightR  = Math.max(Number(tok.lightRadius) || 0, Number(tok.lightDim) || 0);
+    const R = Math.max(visionR, equipR, lightR, 1);
+    const sz = tok.size || 1;
+    const srcC = tok.c + sz * 0.5;
+    const srcR = tok.r + sz * 0.5;
+    for (let rr = tok.r - R; rr <= tok.r + R + sz - 1; rr++) {
+      if (rr < 0 || rr >= rows) continue;
+      for (let cc = tok.c - R; cc <= tok.c + R + sz - 1; cc++) {
+        if (cc < 0 || cc >= cols) continue;
+        // Chebyshev distance from the token's footprint
+        const dr = Math.max(0, Math.max(tok.r - rr, rr - (tok.r + sz - 1)));
+        const dc = Math.max(0, Math.max(tok.c - cc, cc - (tok.c + sz - 1)));
+        if (Math.max(dr, dc) > R) continue;
+        // Walls block (use centre-of-cell rays); own footprint always visible
+        const isOwnFootprint = (dr === 0 && dc === 0);
+        if (isOwnFootprint || !_wallBlocksPt(srcC, srcR, cc + 0.5, rr + 0.5)) {
+          mask.add(rr + ',' + cc);
+        }
+      }
+    }
+  }
+  return mask;
 }
 
 function _drawDarknessZones(ctx) {
@@ -2394,7 +4052,11 @@ let timerDuration = 30, timerLeft = 30, timerRunning = false, _timerInterval = n
 
 // ── Input state ───────────────────────────────────────────────
 let currentEffect='fire', currentShape='draw', circleRadius=3, tokenMode=false, inspectMode=false;
-let fogEnabled = false, fogMode = false, fogDrawing = false, fogPrevCell = null, shiftHeld = false;
+let fogEnabled = false, fogMode = false, fogDrawing = false, fogPrevCell = null, shiftHeld = false, altHeld = false;
+// ── Terrain palette tools ───────────────────────────────────
+let eyedropperMode  = false; // PICK: next click samples cell terrain
+const terrainAlpha  = {};    // terrain effect name → 0.0..1.0 (default 1)
+function getTerrainAlpha(eff) { return terrainAlpha[eff] !== undefined ? terrainAlpha[eff] : 1.0; }
 let bgImage = null, _mapObjectURL = null;
 let dmRefVisible = false;
 let projWindow = null, _projCheckInterval = null;
@@ -2405,9 +4067,100 @@ let coneActive=false, coneOrigin=null;
 let wallMode=false, wallActive=false, wallStart=null, wallErasing=false;
 let _cobblePattern=null, _cobbleCELL=-1;
 let _waterPattern=null,  _waterCELL=-1;
+// Global water flow direction (0=Right, 90=Down, 180=Left, 270=Up, -1=still).
+// Each individual cell can override this via waterCellFlow.
+let waterFlowAngle = 90;
+// Per-cell flow override: "r,c" → angle.  Populated when cells are painted.
+let waterCellFlow = {};
 let _grassPattern=null,  _grassCELL=-1;
+let _grassTallPattern=null,     _grassTallCELL=-1;
+let _grassDeadPattern=null,     _grassDeadCELL=-1;
+let _grassJunglePattern=null,   _grassJungleCELL=-1;
+let _grassSnowPattern=null,     _grassSnowCELL=-1;
+let _grassFlowersPattern=null,  _grassFlowersCELL=-1;
+let _grassMushroomsPattern=null,_grassMushroomsCELL=-1;
+let _grassAutumnPattern=null,   _grassAutumnCELL=-1;
 let _lavaPattern=null,   _lavaCELL=-1;
+let lavaFlowAngle = 90; // 0=Right, 90=Down, 180=Left, 270=Up, -1=still
+let lavaCellFlow  = {}; // "r,c" → angle, per-cell override
 let _stoneFloorPattern=null, _stoneFloorCELL=-1;
+let _stoneCrackedPattern=null, _stoneCrackedCELL=-1;
+let _stoneMossyPattern=null,   _stoneMossyCELL=-1;
+let _stoneDarkPattern=null,    _stoneDarkCELL=-1;
+let _stoneSandPattern=null,    _stoneSandCELL=-1;
+let _stoneBrickPattern=null,   _stoneBrickCELL=-1;
+let _mudPattern=null,          _mudCELL=-1;
+let _webPattern=null,          _webCELL=-1;
+let _swampPattern=null,        _swampCELL=-1;
+let _bloodPattern=null,        _bloodCELL=-1;
+let bloodFlowAngle = 90;       // 0=Right, 90=Down, 180=Left, 270=Up, -1=still
+let bloodCellFlow  = {};       // "r,c" → angle, per-cell override
+let lightningFlowAngle = 90;   // bolt direction — same convention as water/lava
+let lightningCellFlow  = {};   // "r,c" → angle, per-cell override
+let _firePattern=null,         _fireCELL=-1;
+let _icePattern=null,          _iceCELL=-1;
+let _lightningPattern=null,    _lightningCELL=-1;
+let _poisonPattern=null,       _poisonCELL=-1;
+
+// NES-style stone variants cycled by re-clicking the STONE pill.
+// Each entry's `eff` is what gets written into the cell when painted,
+// so saves and MP sync carry the variant automatically.
+const STONE_VARIANTS = [
+  { eff: 'stone',         label: 'STONE',   icon: '🪨' },
+  { eff: 'stone_cracked', label: 'CRACKED', icon: '🪨' },
+  { eff: 'stone_mossy',   label: 'MOSSY',   icon: '🌿' },
+  { eff: 'stone_dark',    label: 'SLATE',   icon: '⬛' },
+  { eff: 'stone_sand',    label: 'SAND',    icon: '🟫' },
+  { eff: 'stone_brick',   label: 'BRICK',   icon: '🧱' },
+];
+const STONE_EFFS = new Set(STONE_VARIANTS.map(v => v.eff));
+let currentStoneVariant = 'stone';
+
+const GRASS_VARIANTS = [
+  { eff: 'grass',          label: 'GRASS',    icon: '🌿' },
+  { eff: 'grass_tall',     label: 'TALL',     icon: '🌾' },
+  { eff: 'grass_dead',     label: 'DEAD',     icon: '🍂' },
+  { eff: 'grass_jungle',   label: 'JUNGLE',   icon: '🌴' },
+  { eff: 'grass_snow',     label: 'SNOW',     icon: '❄️'  },
+  { eff: 'grass_flowers',  label: 'FLOWERS',  icon: '🌸' },
+  { eff: 'grass_mushrooms',label: 'MUSHROOMS',icon: '🍄' },
+  { eff: 'grass_autumn',   label: 'AUTUMN',   icon: '🍁' },
+  { eff: 'swamp',          label: 'SWAMP',    icon: '🌫️' },
+];
+const GRASS_EFFS = new Set(GRASS_VARIANTS.map(v => v.eff));
+let currentGrassVariant = 'grass';
+
+// Invalidate every cached CanvasPattern. Must be called whenever either
+// `canvas` or `cellCvs` has its width/height reset, because in WebKit a
+// resize destroys context state and any patterns previously created from
+// that context become dead — assigning one to fillStyle crashes the page.
+function _invalidatePatternCaches() {
+  _cobblePattern = null;       _cobbleCELL       = -1;
+  _waterPattern = null;        _waterCELL        = -1;
+  _grassPattern = null;        _grassCELL        = -1;
+  _grassTallPattern=null;     _grassTallCELL=-1;
+  _grassDeadPattern=null;     _grassDeadCELL=-1;
+  _grassJunglePattern=null;   _grassJungleCELL=-1;
+  _grassSnowPattern=null;     _grassSnowCELL=-1;
+  _grassFlowersPattern=null;  _grassFlowersCELL=-1;
+  _grassMushroomsPattern=null;_grassMushroomsCELL=-1;
+  _grassAutumnPattern=null;   _grassAutumnCELL=-1;
+  _lavaPattern = null;         _lavaCELL         = -1;
+  _stoneFloorPattern = null;   _stoneFloorCELL   = -1;
+  _stoneCrackedPattern = null; _stoneCrackedCELL = -1;
+  _stoneMossyPattern = null;   _stoneMossyCELL   = -1;
+  _stoneDarkPattern = null;    _stoneDarkCELL    = -1;
+  _stoneSandPattern = null;    _stoneSandCELL    = -1;
+  _stoneBrickPattern = null;   _stoneBrickCELL   = -1;
+  _mudPattern        = null;   _mudCELL          = -1;
+  _webPattern        = null;   _webCELL          = -1;
+  _swampPattern      = null;   _swampCELL        = -1;
+  _bloodPattern      = null;   _bloodCELL        = -1;
+  _firePattern       = null;   _fireCELL         = -1;
+  _icePattern        = null;   _iceCELL          = -1;
+  _lightningPattern  = null;   _lightningCELL    = -1;
+  _poisonPattern     = null;   _poisonCELL       = -1;
+}
 const _effectKeys={'1':'fire','2':'poison','3':'ice','4':'lightning','5':'holy','6':'erase','7':'water','8':'grass'};
 // Feature 5 — Ruler
 let rulerMode=false, rulerStart=null;
@@ -2629,6 +4382,34 @@ function pointerDown(x,y) {
     }
   }
 
+  // ── Eyedropper — Alt+click OR eyedropperMode: sample terrain from cell ──
+  if (altHeld || eyedropperMode) {
+    const cell = cellFromXY(x, y);
+    const k    = cell.r + ',' + cell.c;
+    const effs = grid[k];
+    if (effs) {
+      const te = effs.find(e => TERRAIN_EFFECTS.has(e));
+      if (te) {
+        // Stone variants share pill-stone — set currentStoneVariant first so
+        // setActiveEffect('stone') highlights the right pill without null-deref.
+        if (STONE_EFFS && STONE_EFFS.has(te)) {
+          currentStoneVariant = te;
+          setActiveEffect('stone');
+        } else {
+          setActiveEffect(te);
+        }
+        _syncTerrainAlphaUI(te);
+      }
+    }
+    if (eyedropperMode) {
+      eyedropperMode = false;
+      canvas.style.cursor = 'none';
+      document.getElementById('eyedrop-btn')?.classList.remove('active');
+    }
+    return;
+  }
+
+  // ── Terrain flood-fill — replace connected same-type terrain with active ──
   // LoS mode
   if (losMode) { losStart={x,y}; return; }
 
@@ -2856,6 +4637,7 @@ function pointerDown(x,y) {
   }
 
   if (fogMode) {
+    pushUndo();  // one entry per stroke — drag updates in movePos share this snapshot
     if (currentShape==='circle') {
       fogSetCells(getCircleCells(cellFromXY(x,y), circleRadius), !shiftHeld);
     } else if (currentShape==='square') {
@@ -2874,6 +4656,43 @@ function pointerDown(x,y) {
     return;
   }
   if (!currentEffect) return;  // no effect selected — canvas is read-only
+
+  // ── Shift+click on existing water/lava = apply current flow direction
+  //    to the entire connected cluster. ──────────────────────────────────
+  if (shiftHeld && (currentEffect === 'water' || currentEffect === 'lava' || currentEffect === 'lightning')) {
+    const {r: sr, c: sc} = cellFromXY(x, y);
+    const startKey = sr + ',' + sc;
+    if (grid[startKey] && grid[startKey].includes(currentEffect)) {
+      pushUndo();
+      const flowStore = currentEffect === 'water' ? waterCellFlow
+                      : currentEffect === 'lava'  ? lavaCellFlow
+                      :                             lightningCellFlow;
+      const angle     = currentEffect === 'water' ? waterFlowAngle
+                      : currentEffect === 'lava'  ? lavaFlowAngle
+                      :                             lightningFlowAngle;
+      const visited = new Set([startKey]);
+      const queue   = [startKey];
+      while (queue.length) {
+        const k = queue.pop();
+        flowStore[k] = angle;
+        const [rr, cc] = k.split(',').map(Number);
+        for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+          const nk = (rr+dr) + ',' + (cc+dc);
+          if (!visited.has(nk) && grid[nk] && grid[nk].includes(currentEffect)) {
+            visited.add(nk); queue.push(nk);
+          }
+        }
+      }
+      for (const k of visited) {
+        const [rr, cc] = k.split(',').map(Number);
+        cctx.clearRect(cc*CELL, rr*CELL, CELL, CELL);
+        drawCell(cctx, rr, cc, grid[k], 0);
+      }
+      rebuildCells();
+      return;
+    }
+  }
+
   if (currentShape==='draw') {
     if (currentEffect==='erase') {
       pushUndo(); erasing=true; erasePrevCell=null;
@@ -3030,8 +4849,8 @@ canvas.addEventListener('mouseup',e=>{pointerUp();e.preventDefault();});
 // ── Right-click: remove a single layer from a multi-effect cell ──────────────
 const _layerMenu = document.getElementById('layer-menu');
 const _layerItems = document.getElementById('layer-menu-items');
-const _EFFECT_LABELS = {fire:'🔥 Fire',poison:'☠️ Poison',ice:'❄️ Ice',lightning:'⚡ Lightning',holy:'✨ Holy',water:'💧 Water',grass:'🌿 Grass',lava:'🌋 Lava',stone:'🪨 Stone',difficult:'⚠️ Difficult',blood:'🩸 Blood'};
-const _EFFECT_DOT = {fire:'#E85020',poison:'#50A010',ice:'#3080C0',lightning:'#7050EE',holy:'#C0A020',water:'#1870C0',grass:'#3a8818',lava:'#CC3300',stone:'#8a7a6a',difficult:'#C8A000',blood:'#801020'};
+const _EFFECT_LABELS = {fire:'🔥 Fire',poison:'☠️ Poison',ice:'❄️ Ice',lightning:'⚡ Lightning',holy:'✨ Holy',water:'💧 Water',grass:'🌿 Grass',grass_tall:'🌾 Tall Grass',grass_dead:'🍂 Dead Grass',grass_jungle:'🌴 Jungle',grass_snow:'❄️ Snow Grass',grass_flowers:'🌸 Flowers',grass_mushrooms:'🍄 Mushrooms',grass_autumn:'🍁 Autumn',lava:'🌋 Lava',stone:'🪨 Stone',difficult:'⚠️ Difficult',blood:'🩸 Blood',web:'🕸️ Web'};
+const _EFFECT_DOT = {fire:'#E85020',poison:'#50A010',ice:'#3080C0',lightning:'#7050EE',holy:'#C0A020',water:'#1870C0',grass:'#3a8818',grass_tall:'#1e5c0a',grass_dead:'#8a6a18',grass_jungle:'#0a6820',grass_snow:'#90b8d0',grass_flowers:'#48a820',grass_mushrooms:'#5a6828',grass_autumn:'#a05c18',lava:'#CC3300',stone:'#8a7a6a',difficult:'#C8A000',blood:'#801020',web:'#8870a0'};
 
 function openLayerMenu(screenX, screenY, cellKey) {
   const effs = grid[cellKey];
@@ -3066,6 +4885,14 @@ function closeLayerMenu() { _layerMenu.classList.remove('open'); }
 canvas.addEventListener('contextmenu', e => {
   e.preventDefault();
   const {x, y} = getXY(e);
+  // Token under cursor takes priority — pop its stat block for quick reference
+  const tok = tokenAt(x, y);
+  if (tok) {
+    closeLayerMenu();
+    openStatBlockPopover(tok, e.clientX, e.clientY);
+    return;
+  }
+  closeStatBlockPopover();
   const cell = cellFromXY(x, y);
   const key = cell.r + ',' + cell.c;
   if (grid[key] && grid[key].length >= 2) {
@@ -3074,6 +4901,67 @@ canvas.addEventListener('contextmenu', e => {
     closeLayerMenu();
   }
 });
+
+// ── Quick-reference monster stat block popover ─────────────────
+const _statPop = document.getElementById('statblock-popover');
+function _escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function _statRow(label, val) {
+  if (val == null || val === '' || (Array.isArray(val) && !val.length)) return '';
+  const v = Array.isArray(val) ? val.join(', ') : val;
+  return `<div style="margin:2px 0"><span style="color:rgba(255,180,60,0.85);font-weight:700;letter-spacing:.03em">${label}:</span> ${_escapeHtml(v)}</div>`;
+}
+function openStatBlockPopover(tok, clientX, clientY) {
+  if (!_statPop) return;
+  const b = tok.bestiary || {};
+  const hp = tok.hp != null ? tok.hp : (tok.maxHp != null ? tok.maxHp : '—');
+  const maxHp = tok.maxHp != null ? tok.maxHp : '—';
+  const conds = (tok.conditions || []).join(', ') || '—';
+  const dmNotesBlock = tok.dmNotes ? `<div style="margin-top:8px;padding:6px 8px;background:rgba(120,80,200,0.12);border-left:3px solid rgba(180,140,255,0.6);border-radius:4px;font-style:italic;font-size:11px">${_escapeHtml(tok.dmNotes)}</div>` : '';
+  _statPop.innerHTML = `
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:6px;border-bottom:1px solid rgba(255,180,60,0.25);padding-bottom:5px">
+      <div>
+        <div style="font-size:14px;font-weight:700;color:#fff;letter-spacing:.02em">${_escapeHtml(tok.name || 'Unnamed')}</div>
+        ${b.type ? `<div style="font-size:10px;color:rgba(255,255,255,0.55);font-style:italic">${_escapeHtml(b.type)}${b.cr ? ` · CR ${_escapeHtml(b.cr)}` : ''}</div>` : ''}
+      </div>
+      <button id="statpop-close" style="background:transparent;border:none;color:rgba(255,255,255,0.5);font-size:18px;cursor:pointer;padding:0 4px;line-height:1" title="Close">×</button>
+    </div>
+    ${_statRow('HP', `${hp} / ${maxHp}`)}
+    ${_statRow('AC', b.ac)}
+    ${_statRow('Speed', tok.speed != null ? `${tok.speed} sq` : null)}
+    ${_statRow('Saves', b.saves)}
+    ${_statRow('Senses', b.senses)}
+    ${_statRow('Languages', b.languages)}
+    ${_statRow('Resistances', b.resistances)}
+    ${_statRow('Immunities', b.immunities)}
+    ${_statRow('Vulnerabilities', b.vulnerabilities)}
+    ${_statRow('Condition Imm.', b.condImmunities)}
+    ${_statRow('Conditions', conds === '—' ? null : conds)}
+    ${tok.concentrating ? '<div style="margin:4px 0;color:#C39BFF;font-weight:700">⚫ Concentrating</div>' : ''}
+    ${tok.exhaustion > 0 ? `<div style="margin:4px 0;color:#E67E22;font-weight:700">Exhaustion ${tok.exhaustion}</div>` : ''}
+    ${b.notes ? `<div style="margin-top:6px;color:rgba(255,255,255,0.78);white-space:pre-wrap;font-size:11px">${_escapeHtml(b.notes)}</div>` : ''}
+    ${dmNotesBlock}
+  `;
+  // Position near the click, but keep on-screen
+  _statPop.style.display = 'block';
+  const rect = _statPop.getBoundingClientRect();
+  const pad = 8;
+  let left = clientX + 12;
+  let top  = clientY + 12;
+  if (left + rect.width > window.innerWidth - pad)  left = window.innerWidth - rect.width - pad;
+  if (top  + rect.height > window.innerHeight - pad) top  = clientY - rect.height - 12;
+  if (top < pad) top = pad;
+  if (left < pad) left = pad;
+  _statPop.style.left = left + 'px';
+  _statPop.style.top  = top  + 'px';
+  const closeBtn = document.getElementById('statpop-close');
+  if (closeBtn) closeBtn.addEventListener('click', closeStatBlockPopover);
+}
+function closeStatBlockPopover() { if (_statPop) _statPop.style.display = 'none'; }
+// Click anywhere outside the popover (or press Escape) to dismiss
+document.addEventListener('mousedown', e => {
+  if (_statPop && _statPop.style.display === 'block' && !_statPop.contains(e.target) && e.target !== canvas) closeStatBlockPopover();
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeStatBlockPopover(); });
 
 document.addEventListener('mousedown', e => {
   if (!_layerMenu.contains(e.target)) closeLayerMenu();
@@ -3085,8 +4973,10 @@ canvas.addEventListener('touchend',e=>{pointerUp();mouseInside=false;e.preventDe
 
 document.addEventListener('keydown',e=>{
   if(e.key==='Shift') shiftHeld=true;
+  if(e.key==='Alt')   altHeld=true;
   if(e.key==='Escape') {
     if(teleportMode && teleportToken) { teleportToken=null; }
+    if(eyedropperMode) { eyedropperMode=false; canvas.style.cursor='none'; document.getElementById('eyedrop-btn')?.classList.remove('active'); }
     closeLayerMenu();
   }
   if((e.ctrlKey||e.metaKey)&&!e.shiftKey&&e.key==='z'){e.preventDefault();undo();}
@@ -3097,7 +4987,9 @@ document.addEventListener('keydown',e=>{
     if(eff){setActiveEffect(eff);exitDrawModes();}
   }
 });
-document.addEventListener('keyup',e=>{ if(e.key==='Shift') shiftHeld=false; });
+document.addEventListener('keyup',e=>{ if(e.key==='Shift') shiftHeld=false; if(e.key==='Alt') altHeld=false; });
+// Bug fix: reset held-key flags if the window loses focus (e.g. Alt+Tab on macOS swallows keyup)
+window.addEventListener('blur', () => { shiftHeld = false; altHeld = false; });
 
 // ── Token modal ────────────────────────────────────────────────
 let pendingTokenCell=null, editingTokenId=null, selectedColor=TOKEN_COLORS[0];
@@ -3131,6 +5023,29 @@ function buildConditions(){
   });
 }
 
+// Populate the "Owned by" dropdown from the current MP roster. Safe to call
+// even when there's no MP session — produces just the DM-only option.
+function _refreshOwnerDropdown() {
+  const sel = document.getElementById('tok-owner');
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">— DM only (no player vision) —</option>';
+  let roster = null;
+  try { roster = (typeof window.mpPlayers === 'function') ? window.mpPlayers() : null; } catch(e) {}
+  if (roster && roster.players) {
+    for (const [pid, name] of Object.entries(roster.players)) {
+      if (pid === roster.dmId) continue;  // DM owns nothing — DM sees all
+      const opt = document.createElement('option');
+      opt.value = pid;
+      opt.textContent = name + (pid === roster.myId ? ' (you)' : '');
+      sel.appendChild(opt);
+    }
+  }
+  sel.value = prev;  // restore selection if still present
+}
+// Keep the dropdown live when the roster changes mid-session
+if (typeof window.mpOnPlayersChanged === 'function') window.mpOnPlayersChanged(_refreshOwnerDropdown);
+
 function openTokenModal(existing) {
   document.getElementById('tok-name').value=existing?existing.name:'';
   selectedColor=existing?existing.color:TOKEN_COLORS[0];
@@ -3153,6 +5068,12 @@ function openTokenModal(existing) {
   // Light
   document.getElementById('tok-light-bright').value=existing?(existing.lightRadius||0):0;
   document.getElementById('tok-light-dim').value=existing?(existing.lightDim||0):0;
+  // DM notes (private, never sent to players)
+  document.getElementById('tok-notes').value=existing?(existing.dmNotes||''):'';
+  // Owner (per-player vision) — repopulate from the current MP roster each open
+  if (typeof _refreshOwnerDropdown === 'function') _refreshOwnerDropdown();
+  const _ownerSel = document.getElementById('tok-owner');
+  if (_ownerSel) _ownerSel.value = (existing && existing.ownerPlayerId) || '';
   // Death saves section — show only when HP is 0
   const ds=existing?(existing.deathSaves||{successes:0,failures:0}):{successes:0,failures:0};
   const showDs=existing&&existing.hp!=null&&existing.hp<=0&&existing.maxHp>0;
@@ -3192,6 +5113,8 @@ document.getElementById('tok-ok').addEventListener('click',()=>{
   const exhaustion=parseInt(document.getElementById('tok-exhaustion').value)||0;
   const lightRadius=parseInt(document.getElementById('tok-light-bright').value)||0;
   const lightDim=parseInt(document.getElementById('tok-light-dim').value)||0;
+  const dmNotes=document.getElementById('tok-notes').value;
+  const ownerPlayerId=(document.getElementById('tok-owner')?.value || '') || null;
   // Death saves
   let dsSuccesses=0, dsFailures=0;
   document.querySelectorAll('.ds-success').forEach(cb=>{if(cb.checked)dsSuccesses++;});
@@ -3202,13 +5125,13 @@ document.getElementById('tok-ok').addEventListener('click',()=>{
   pushUndo();
   if (editingTokenId!==null) {
     const tok=tokens.find(t=>t.id===editingTokenId);
-    if(tok){tok.name=name;tok.color=selectedColor;tok.size=selectedSize;tok.speed=speed;tok.hp=hp;tok.maxHp=maxHp;tok.conditions=[...selectedConditions];tok.concentrating=concentrating;tok.exhaustion=exhaustion;tok.lightRadius=lightRadius;tok.lightDim=lightDim;tok.deathSaves=deathSaves;tok.initBonus=initBonus;}
+    if(tok){tok.name=name;tok.color=selectedColor;tok.size=selectedSize;tok.speed=speed;tok.hp=hp;tok.maxHp=maxHp;tok.conditions=[...selectedConditions];tok.concentrating=concentrating;tok.exhaustion=exhaustion;tok.lightRadius=lightRadius;tok.lightDim=lightDim;tok.deathSaves=deathSaves;tok.initBonus=initBonus;tok.dmNotes=dmNotes;tok.ownerPlayerId=ownerPlayerId;}
     // Sync colour/name in the initiative tracker if this token is already listed.
     const ie=initiative.find(i=>i.tokenId===editingTokenId);
     if(ie){ie.color=selectedColor;ie.name=name;}
     renderInitiative();
   } else if (pendingTokenCell) {
-    tokens.push({id:tokenIdSeq++,r:pendingTokenCell.r,c:pendingTokenCell.c,name,color:selectedColor,size:selectedSize,speed,hp,maxHp,conditions:[...selectedConditions],concentrating,exhaustion,lightRadius,lightDim,deathSaves,initBonus});
+    tokens.push({id:tokenIdSeq++,r:pendingTokenCell.r,c:pendingTokenCell.c,name,color:selectedColor,size:selectedSize,speed,hp,maxHp,conditions:[...selectedConditions],concentrating,exhaustion,lightRadius,lightDim,deathSaves,initBonus,dmNotes,ownerPlayerId});
   }
   closeTokenModal();
 });
@@ -3302,6 +5225,24 @@ window.__arcaneAddToInitiative = function(charName, score) {
   if (window.__mpScheduleSync) window.__mpScheduleSync();
 };
 
+// ── Terrain alpha slider sync ─────────────────────────────────
+function _syncTerrainAlphaUI(eff) {
+  const slider = document.getElementById('terrain-alpha-slider');
+  const valLbl = document.getElementById('terrain-alpha-val');
+  const effLbl = document.getElementById('terrain-alpha-eff');
+  if (!slider) return;
+  if (eff && TERRAIN_EFFECTS.has(eff)) {
+    const pct = Math.round(getTerrainAlpha(eff) * 100);
+    slider.value  = pct;
+    valLbl.textContent = pct + '%';
+    effLbl.textContent = eff.charAt(0).toUpperCase() + eff.slice(1).replace('_',' ');
+  } else {
+    effLbl.textContent = '─';
+    valLbl.textContent = '100%';
+    slider.value = 100;
+  }
+}
+
 // ── Toolbar ────────────────────────────────────────────────────
 function setActiveEffect(eff) {
   currentEffect=eff; tokenMode=false;
@@ -3319,6 +5260,7 @@ function setActiveEffect(eff) {
     if(cat){ cat.classList.add('open','has-active'); cat.querySelector('.cat-toggle')?.setAttribute('aria-expanded','true'); }
   }
   updateHint();
+  _syncTerrainAlphaUI(eff);
 }
 
 function clearActiveEffect() {
@@ -3353,13 +5295,19 @@ function updateHint() {
   if(trapMode){document.getElementById('hint').textContent='Click a cell to place a trap marker · Click again to reveal · Click revealed trap to remove';return;}
   if(teleportMode){document.getElementById('hint').textContent=teleportToken?'Click destination to teleport · Esc to cancel':'Click a token to select it · Click destination to teleport · Esc to cancel';return;}
   if (fogMode) { document.getElementById('hint').textContent='Fog brush — drag to reveal · Shift+drag to hide · Effects are ignored while in brush mode · Click FOG to paint effects · Shift-click FOG to turn off'; return; }
+  if (eyedropperMode) { document.getElementById('hint').textContent='PICK mode — click any terrain cell to copy it as your active tool · Esc to cancel'; return; }
   if (fogEnabled) { document.getElementById('hint').textContent='Fog visible — painting effects normally · Click FOG to enter uncover brush · Shift-click FOG to turn off'; return; }
   if (boundsMode) { document.getElementById('hint').textContent='Drag handles to resize · Drag inside to move · Click TABLE to lock projection'; return; }
   if (projBounds) { document.getElementById('hint').textContent='Projection active — inner area only · Click TABLE again to clear'; return; }
   if (inspectMode) { document.getElementById('hint').textContent='Hover over a cell to see its status effects · Hover toolbar buttons for descriptions · Click INSPECT to exit'; return; }
   if(tokenMode){document.getElementById('hint').textContent='Click empty cell to place · Click token to edit/drag to move · Hover token to see movement range';return;}
   if (!currentEffect) { document.getElementById('hint').textContent='No tool selected — click an effect or press 1-8'; return; }
-  const h={draw:currentEffect==='erase'?'Click & drag to erase · Keys 1-8 switch effects':'Draw freely · Close a shape to auto-fill · Keys 1-8 switch effects',cone:'Click origin · Drag to aim · Release to place',circle:`Click to place · Radius: ${circleRadius} sq`,square:`Click to place · Half-size: ${circleRadius} sq (${circleRadius*2+1}×${circleRadius*2+1})`};
+  const drawHint = currentEffect === 'erase'
+    ? 'Click & drag to erase · Keys 1-8 switch effects'
+    : (currentEffect === 'water' || currentEffect === 'lava')
+      ? `Draw ${currentEffect} freely · Shift+click existing ${currentEffect} to set flow direction for that whole cluster`
+      : 'Draw freely · Close a shape to auto-fill · Keys 1-8 switch effects';
+  const h={draw:drawHint,cone:'Click origin · Drag to aim · Release to place',circle:`Click to place · Radius: ${circleRadius} sq`,square:`Click to place · Half-size: ${circleRadius} sq (${circleRadius*2+1}×${circleRadius*2+1})`};
   document.getElementById('hint').textContent=h[currentShape]||'';
 }
 
@@ -3368,7 +5316,57 @@ function closeAllDDs(){
   document.querySelectorAll('.arrow-btn').forEach(b=>b.setAttribute('aria-expanded','false'));
 }
 
-document.querySelectorAll('.effect-main').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();if(currentEffect===b.dataset.effect){clearActiveEffect();}else{setActiveEffect(b.dataset.effect);}closeAllDDs();}));
+document.querySelectorAll('.effect-main').forEach(b=>b.addEventListener('click',e=>{
+  e.stopPropagation();
+  const target = b.dataset.effect;
+  if (target === 'stone') {
+    // Cycle through the NES stone variants on every click while STONE is selected.
+    if (currentEffect === 'stone' && STONE_EFFS.has(currentStoneVariant)) {
+      const idx = STONE_VARIANTS.findIndex(v => v.eff === currentStoneVariant);
+      currentStoneVariant = STONE_VARIANTS[(idx + 1) % STONE_VARIANTS.length].eff;
+      _updateStonePillLabel();
+      updateHint();
+    } else {
+      setActiveEffect('stone');
+      _updateStonePillLabel();
+    }
+  } else if (target === 'grass') {
+    if (currentEffect === 'grass' && GRASS_EFFS.has(currentGrassVariant)) {
+      const idx = GRASS_VARIANTS.findIndex(v => v.eff === currentGrassVariant);
+      currentGrassVariant = GRASS_VARIANTS[(idx + 1) % GRASS_VARIANTS.length].eff;
+      _updateGrassPillLabel();
+      updateHint();
+    } else {
+      setActiveEffect('grass');
+      _updateGrassPillLabel();
+    }
+  } else if (currentEffect === target) {
+    clearActiveEffect();
+  } else {
+    setActiveEffect(target);
+  }
+  closeAllDDs();
+}));
+
+// Reflect the currently-selected stone variant on the STONE pill's main button.
+function _updateStonePillLabel() {
+  const btn = document.querySelector('#pill-stone .effect-main');
+  if (!btn) return;
+  const v = STONE_VARIANTS.find(x => x.eff === currentStoneVariant) || STONE_VARIANTS[0];
+  btn.innerHTML = `<span class="icon">${v.icon}</span>${v.label}`;
+  btn.title = `${v.label} stone · click again to cycle through ${STONE_VARIANTS.length} NES tile variants`;
+}
+// Initial label paint
+_updateStonePillLabel();
+
+function _updateGrassPillLabel() {
+  const btn = document.querySelector('#pill-grass .effect-main');
+  if (!btn) return;
+  const v = GRASS_VARIANTS.find(x => x.eff === currentGrassVariant) || GRASS_VARIANTS[0];
+  btn.innerHTML = `<span class="icon">${v.icon}</span>${v.label}`;
+  btn.title = `${v.label} · click again to cycle through ${GRASS_VARIANTS.length} grass variants`;
+}
+_updateGrassPillLabel();
 document.querySelectorAll('.arrow-btn').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();const dd=document.getElementById('dd-'+b.dataset.toggle);const was=dd.classList.contains('open');closeAllDDs();if(!was){dd.classList.add('open');b.setAttribute('aria-expanded','true');}}));
 document.querySelectorAll('.shape-item').forEach(item=>item.addEventListener('click',e=>{e.stopPropagation();setActiveEffect(item.dataset.effect);setShape(item.dataset.effect,item.dataset.shape);closeAllDDs();}));
 document.addEventListener('click',closeAllDDs);
@@ -3441,6 +5439,106 @@ document.getElementById('inspect-btn').addEventListener('click', () => {
   updateHint();
 });
 
+// ── Map grid auto-detection ────────────────────────────────────
+// Analyse an image to find the dominant grid-line spacing along each axis
+// using a brute-force harmonic search over edge-intensity projections.
+// Returns { rows, cols, cellPx } or null if no convincing grid was found.
+function _detectMapGrid(img) {
+  const maxW = 800;
+  const scale = Math.min(1, maxW / img.naturalWidth, maxW / img.naturalHeight);
+  const dw = Math.max(8, Math.round(img.naturalWidth  * scale));
+  const dh = Math.max(8, Math.round(img.naturalHeight * scale));
+  const c  = document.createElement('canvas');
+  c.width = dw; c.height = dh;
+  const cx = c.getContext('2d');
+  cx.drawImage(img, 0, 0, dw, dh);
+  const data = cx.getImageData(0, 0, dw, dh).data;
+  const colEdge = new Float32Array(dw);
+  const rowEdge = new Float32Array(dh);
+  for (let y = 1; y < dh; y++) {
+    for (let x = 1; x < dw; x++) {
+      const i  = (y * dw + x) * 4;
+      const jL = (y * dw + (x - 1)) * 4;
+      const jT = ((y - 1) * dw + x) * 4;
+      const lA = data[i]  * 0.299 + data[i+1]  * 0.587 + data[i+2]  * 0.114;
+      const lL = data[jL] * 0.299 + data[jL+1] * 0.587 + data[jL+2] * 0.114;
+      const lT = data[jT] * 0.299 + data[jT+1] * 0.587 + data[jT+2] * 0.114;
+      colEdge[x] += Math.abs(lA - lL);
+      rowEdge[y] += Math.abs(lA - lT);
+    }
+  }
+  // Harmonic search: best spacing maximises sum of edge intensity at integer
+  // multiples. Also tracks the median score across all candidate spacings,
+  // so we can reject results that are just the best of a noisy field.
+  function findSpacing(arr) {
+    // Cap spacing at arr.length / 10 → forces at least ~10 cells per axis,
+    // which kills the "4-by-5 phantom grid" case where noise + a few strong
+    // edges align at very wide spacings on map images with no grid lines.
+    const minS = 16, maxS = Math.min(arr.length / 10, 140);
+    if (maxS <= minS) return { s: 0, score: 0, scores: [] };
+    let best = { s: 0, score: 0 };
+    const scores = [];
+    for (let s = minS; s <= maxS; s += 0.5) {
+      let total = 0, count = 0;
+      for (let k = 1; k * s < arr.length; k++) {
+        const px = Math.round(k * s);
+        total += Math.max(arr[px-1] || 0, arr[px] || 0, arr[px+1] || 0);
+        count++;
+      }
+      // Require at least 8 sample harmonics — protects against high scores
+      // driven by only 4-5 strong edges that happen to align.
+      if (count < 8) continue;
+      const score = total / count;
+      scores.push(score);
+      if (score > best.score) best = { s, score };
+    }
+    best.scores = scores;
+    return best;
+  }
+  const xRes = findSpacing(colEdge);
+  const yRes = findSpacing(rowEdge);
+  if (xRes.s < 16 || yRes.s < 16) return null;
+  // Confidence check: best score must be meaningfully above the median.
+  // Maps with no grid lines produce a flat noisy spectrum where best ≈ median.
+  function confident(res) {
+    if (!res.scores || res.scores.length < 5) return false;
+    const sorted = [...res.scores].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    return res.score > median * 1.5;
+  }
+  if (!confident(xRes) || !confident(yRes)) return null;
+  const realSx = xRes.s / scale;
+  const realSy = yRes.s / scale;
+  const colsDet = Math.round(img.naturalWidth  / realSx);
+  const rowsDet = Math.round(img.naturalHeight / realSy);
+  // Real D&D maps are at least ~10 cells wide. Anything smaller is almost
+  // certainly a false positive.
+  if (colsDet < 10 || rowsDet < 10 || colsDet > 150 || rowsDet > 150) return null;
+  const ratio = Math.max(realSx, realSy) / Math.min(realSx, realSy);
+  if (ratio > 1.25) return null;
+  return { rows: rowsDet, cols: colsDet, cellPx: (realSx + realSy) / 2 };
+}
+
+function _applyDetectedGrid(det) {
+  cols = det.cols;
+  rows = det.rows;
+  const colSlider = document.getElementById('col-slider');
+  const rowSlider = document.getElementById('row-slider');
+  const colVal = document.getElementById('col-val');
+  const rowVal = document.getElementById('row-val');
+  if (colSlider) colSlider.value = cols;
+  if (rowSlider) rowSlider.value = rows;
+  if (colVal) colVal.textContent = cols;
+  if (rowVal) rowVal.textContent = rows;
+  // Clear placed content because the cell coordinate system just changed.
+  // We keep the background image (the whole point of the import).
+  grid = {}; tokens = []; walls = []; labels = []; projBounds = null;
+  fogReset();
+  resize();
+  // Push the new dimensions out to any connected players
+  if (window.__mpScheduleSync) window.__mpScheduleSync();
+}
+
 document.getElementById('map-input').addEventListener('change', function() {
   const file = this.files[0];
   if (!file) return;
@@ -3453,6 +5551,21 @@ document.getElementById('map-input').addEventListener('change', function() {
       document.getElementById('map-btn').classList.add('active');
       document.getElementById('map-panel').style.display = 'flex';
       if (window.__mpScheduleSync) window.__mpScheduleSync();
+      // Auto-detect grid lines and offer to match the battle grid.
+      // Run after a tick so the user sees the map before the prompt.
+      setTimeout(() => {
+        let det = null;
+        try { det = _detectMapGrid(img); } catch(e) { det = null; }
+        if (!det) return;
+        if (det.cols === cols && det.rows === rows) return;
+        const msg =
+          `Detected what looks like a ${det.cols} × ${det.rows} grid in this map.\n\n` +
+          `• Click OK to resize the battle grid to ${det.cols} × ${det.rows} ` +
+          `(your existing tokens, walls, labels, and fog will be cleared).\n` +
+          `• Click Cancel to keep the current ${cols} × ${rows} grid ` +
+          `(use this if your map has no visible grid lines or the detection looks wrong).`;
+        if (confirm(msg)) _applyDetectedGrid(det);
+      }, 80);
     };
     img.onerror = () => alert('Map image failed to load.');
     img.src = ev.target.result;
@@ -3541,7 +5654,7 @@ document.getElementById('col-slider').addEventListener('input',function(){cols=p
 document.getElementById('row-slider').addEventListener('input',function(){rows=parseInt(this.value);document.getElementById('row-val').textContent=rows;grid={};tokens=[];projBounds=null;walls=[];labels=[];fogReset();resize();});
 document.getElementById('clear-btn').addEventListener('click',()=>{
   pushUndo();
-  grid={};tokens=[];projBounds=null;walls=[];labels=[];lights=[];
+  grid={};tokens=[];projBounds=null;walls=[];labels=[];lights=[];waterCellFlow={};lavaCellFlow={};bloodCellFlow={};lightningCellFlow={};
   darknessZones=[];darknessZoneIdSeq=1;
   renderLightGroupManager();
   drawing=false;rawPts=[];strokeCells=new Set();prevCell=null;
@@ -3583,6 +5696,7 @@ function openProjectionWindow() {
   }, 1000);
 }
 
+
 // ── Save / Load ───────────────────────────────────────────────
 function getSaveData() {
   return {
@@ -3594,6 +5708,12 @@ function getSaveData() {
     traps: {...traps},
     ambientLight,
     darknessZones: darknessZones.map(dz => ({...dz, cells: [...dz.cells]})),
+    weatherType, weatherIntensity,
+    waterCellFlow: {...waterCellFlow},
+    lavaCellFlow:  {...lavaCellFlow},
+    bloodCellFlow: {...bloodCellFlow},
+    lightningCellFlow: {...lightningCellFlow},
+    terrainAlpha:  {...terrainAlpha},
   };
 }
 
@@ -3614,7 +5734,6 @@ function saveGame() {
     URL.revokeObjectURL(url);
   }, 100);
   autoSave();
-  alert('Saved as battle-grid.json — check your Downloads folder.');
 }
 
 function loadGame(json) {
@@ -3624,6 +5743,13 @@ function loadGame(json) {
     document.getElementById('col-slider').value=cols; document.getElementById('col-val').textContent=cols;
     document.getElementById('row-slider').value=rows; document.getElementById('row-val').textContent=rows;
     grid=s.grid||{};
+    // Strip terrain types removed in this version so old saves don't silently corrupt.
+    // Unknown terrain effects become invisible dark squares, which is worse than just erasing them.
+    const _REMOVED_TERRAINS = new Set(['pit','acid']);
+    for (const k of Object.keys(grid)) {
+      grid[k] = grid[k].filter(e => !_REMOVED_TERRAINS.has(e));
+      if (grid[k].length === 0) delete grid[k];
+    }
     tokens=(s.tokens||[]).map(t=>({...t,conditions:t.conditions||[],size:t.size||1,speed:t.speed??6,deathSaves:t.deathSaves||{successes:0,failures:0},concentrating:!!t.concentrating,exhaustion:t.exhaustion||0,lightRadius:t.lightRadius||0,lightDim:t.lightDim||0}));
     fogEnabled=s.fogEnabled||false;
     for(const k in fogVis)delete fogVis[k]; for(const k in fogTarget)delete fogTarget[k];
@@ -3633,10 +5759,18 @@ function loadGame(json) {
     walls=s.walls||[]; wallIdSeq=walls.length?Math.max(...walls.map(w=>w.id))+1:1;
     labels=s.labels||[]; labelIdSeq=labels.length?Math.max(...labels.map(l=>l.id))+1:1;
     lights=s.lights||[]; lightIdSeq=lights.length?Math.max(...lights.map(l=>l.id))+1:1;
-    ambientLight = s.ambientLight ?? 0;
+    ambientLight = s.ambientLight ?? 1;   // default to full daylight for old saves
     _setAmbient(ambientLight);
     darknessZones = (s.darknessZones||[]).map(dz => ({...dz, cells: [...(dz.cells||[])]}));
     darknessZoneIdSeq = darknessZones.length ? Math.max(...darknessZones.map(dz=>dz.id))+1 : 1;
+    setWeather(s.weatherType || 'none', s.weatherIntensity != null ? s.weatherIntensity : 0.6);
+    if (typeof _syncWeatherUI === 'function') _syncWeatherUI();
+    waterCellFlow = s.waterCellFlow ? {...s.waterCellFlow} : {};
+    lavaCellFlow  = s.lavaCellFlow  ? {...s.lavaCellFlow}  : {};
+    bloodCellFlow = s.bloodCellFlow ? {...s.bloodCellFlow} : {};
+    lightningCellFlow = s.lightningCellFlow ? {...s.lightningCellFlow} : {};
+    if (s.terrainAlpha) { for (const k in terrainAlpha) delete terrainAlpha[k]; Object.assign(terrainAlpha, s.terrainAlpha); }
+    _syncTerrainAlphaUI(currentEffect);
     covers=s.covers||{};
     traps=s.traps||{};
     renderLightGroupManager();
@@ -4245,6 +6379,22 @@ if (_ambSlider) _ambSlider.addEventListener('input', () => _setAmbient(parseInt(
   el.addEventListener('click', () => _setAmbient(vals[id]));
 });
 
+// ── Weather controls ─────────────────────────────────────────
+function _syncWeatherUI() {
+  const t = document.getElementById('weather-type');
+  const i = document.getElementById('weather-intensity');
+  const v = document.getElementById('weather-intensity-val');
+  if (t) t.value = weatherType;
+  if (i) i.value = Math.round(weatherIntensity * 100);
+  if (v) v.textContent = Math.round(weatherIntensity * 100) + '%';
+}
+{
+  const wt = document.getElementById('weather-type');
+  const wi = document.getElementById('weather-intensity');
+  if (wt) wt.addEventListener('change', () => { setWeather(wt.value, weatherIntensity); _syncWeatherUI(); if (window.__mpScheduleSync) window.__mpScheduleSync(); });
+  if (wi) wi.addEventListener('input', () => { setWeather(weatherType, parseInt(wi.value) / 100); _syncWeatherUI(); if (window.__mpScheduleSync) window.__mpScheduleSync(); });
+}
+
 // ── Encounter lighting presets ───────────────────────────────
 function renderEncounterPresets() {
   const sel = document.getElementById('encounter-preset-select');
@@ -4445,6 +6595,430 @@ document.getElementById('undo-all-btn').addEventListener('click',()=>{
   document.getElementById('undo-history-btn').classList.remove('active');
   rebuildCells();
 });
+
+// ── Fullscreen presentation mode ─────────────────────────────
+let _fsMode = false;
+
+function toggleFullscreen() {
+  _fsMode = !_fsMode;
+  document.body.classList.toggle('fs-mode', _fsMode);
+  const btn = document.getElementById('fullscreen-btn');
+  if (btn) {
+    btn.textContent = _fsMode ? '⛶ EXIT' : '⛶ FULL';
+    btn.title = _fsMode
+      ? 'Exit fullscreen (Esc) — or move mouse to top edge to show toolbar'
+      : 'Fullscreen presentation mode — hides toolbar, move mouse to top to reveal it';
+  }
+  setTimeout(resize, 60);
+}
+
+// In fullscreen mode: slide the toolbar (and the dock that lives inside it)
+// into view when the mouse approaches the top edge.
+document.addEventListener('mousemove', e => {
+  if (!_fsMode) return;
+  const tb = document.getElementById('toolbar');
+  if (!tb) return;
+  if (e.clientY < 70)        tb.style.transform = 'translateY(0)';
+  else if (e.clientY > 180)  tb.style.transform = '';
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && _fsMode) { e.preventDefault(); toggleFullscreen(); }
+});
+
+document.getElementById('fullscreen-btn').addEventListener('click', toggleFullscreen);
+
+// ── Bottom dock wiring ────────────────────────────────────────
+(function () {
+  // Each dock button delegates its click to the original (now hidden) button,
+  // so all existing open/close logic keeps working untouched.
+  document.querySelectorAll('.dock-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.preventDefault();
+      const target = document.getElementById(btn.dataset.target);
+      if (target) target.click();
+    });
+  });
+
+  // Mirror the multiplayer unread badge onto the dock chat button.
+  const mpBadge   = document.getElementById('mp-badge');
+  const dockBadge = document.getElementById('dock-mp-badge');
+  if (mpBadge && dockBadge) {
+    const sync = () => {
+      const visible = mpBadge.style.display !== 'none' && mpBadge.style.display !== '';
+      dockBadge.style.display = visible ? 'inline-flex' : 'none';
+      if (mpBadge.textContent) dockBadge.textContent = mpBadge.textContent;
+    };
+    sync();
+    new MutationObserver(sync).observe(mpBadge, {
+      attributes: true, attributeFilter: ['style'], childList: true, characterData: true, subtree: true,
+    });
+  }
+
+  // Reflect open-panel state on the dock button (subtle "active" highlight).
+  const panelMap = [
+    { btn: 'dice-btn',     panel: 'dice-overlay'     },
+    { btn: 'sheet-btn',    panel: 'sheet-overlay'    },
+    { btn: 'bestiary-btn', panel: 'bestiary-overlay' },
+    { btn: 'mp-tab-btn',   panel: 'mp-panel'         },
+  ];
+  panelMap.forEach(({ btn, panel }) => {
+    const panelEl = document.getElementById(panel);
+    const dockBtn = document.querySelector(`.dock-btn[data-target="${btn}"]`);
+    if (!panelEl || !dockBtn) return;
+    const update = () => {
+      const cs = getComputedStyle(panelEl);
+      const open = cs.display !== 'none' && cs.visibility !== 'hidden';
+      dockBtn.classList.toggle('active', open);
+    };
+    new MutationObserver(update).observe(panelEl, {
+      attributes: true, attributeFilter: ['style', 'class'],
+    });
+    update();
+  });
+})();
+
+// Frame picker dropdown toggle
+(function () {
+  const toggle = document.getElementById('app-border-toggle');
+  const menu   = document.getElementById('app-border-menu');
+  if (!toggle || !menu) return;
+  toggle.addEventListener('click', e => {
+    e.stopPropagation();
+    const open = menu.classList.toggle('open');
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+  document.addEventListener('click', e => {
+    if (!menu.contains(e.target) && e.target !== toggle) {
+      menu.classList.remove('open');
+      toggle.setAttribute('aria-expanded', 'false');
+    }
+  });
+  // Close menu after a style is picked
+  menu.querySelectorAll('.app-border-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      menu.classList.remove('open');
+      toggle.setAttribute('aria-expanded', 'false');
+    });
+  });
+})();
+
+// ── Water & lava flow direction ───────────────────────────────
+function _wireFlowCompass(btnClass, storageKey, getAngle, setAngle) {
+  document.querySelectorAll('.' + btnClass).forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      setAngle(parseInt(btn.dataset.angle, 10));
+      document.querySelectorAll('.' + btnClass).forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      try { localStorage.setItem(storageKey, getAngle()); } catch(_) {}
+    });
+  });
+  try {
+    const stored = localStorage.getItem(storageKey);
+    if (stored !== null) {
+      setAngle(parseInt(stored, 10));
+      const btn = document.querySelector(`.${btnClass}[data-angle="${getAngle()}"]`);
+      if (btn) {
+        document.querySelectorAll('.' + btnClass).forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+      }
+    }
+  } catch(_) {}
+}
+_wireFlowCompass('wdir-btn', 'dnd-water-flow',
+  () => waterFlowAngle, v => { waterFlowAngle = v; });
+_wireFlowCompass('ldir-btn', 'dnd-lava-flow',
+  () => lavaFlowAngle,  v => { lavaFlowAngle  = v; });
+_wireFlowCompass('bdir-btn', 'dnd-lightning-flow',
+  () => lightningFlowAngle, v => { lightningFlowAngle = v; });
+
+// ── Terrain palette tool buttons ──────────────────────────────
+(function() {
+  // PICK — eyedropper toggle
+  const eyedropBtn = document.getElementById('eyedrop-btn');
+  if (eyedropBtn) {
+    eyedropBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      eyedropperMode = !eyedropperMode;
+      eyedropBtn.classList.toggle('active', eyedropperMode);
+      canvas.style.cursor = eyedropperMode ? 'crosshair' : (currentEffect ? 'none' : 'crosshair');
+    });
+  }
+
+  // OPACITY slider — per terrain type
+  const slider  = document.getElementById('terrain-alpha-slider');
+  const valLbl  = document.getElementById('terrain-alpha-val');
+  const effLbl  = document.getElementById('terrain-alpha-eff');
+  if (slider) {
+    slider.addEventListener('input', () => {
+      const pct = parseInt(slider.value, 10);
+      const alpha = pct / 100;
+      valLbl.textContent = pct + '%';
+      const eff = currentEffect;
+      if (eff && TERRAIN_EFFECTS.has(eff)) {
+        terrainAlpha[eff] = alpha;
+        // Immediately redraw all cells of this terrain type
+        for (const [k, effs] of Object.entries(grid)) {
+          if (effs.find(e => TERRAIN_EFFECTS.has(e) && e === eff)) {
+            const [r2, c2] = k.split(',').map(Number);
+            cctx.clearRect(c2 * CELL, r2 * CELL, CELL, CELL);
+            drawCell(cctx, r2, c2, effs, 0);
+          }
+        }
+        // Persist
+        try {
+          const stored = JSON.parse(localStorage.getItem('dnd-terrain-alpha') || '{}');
+          stored[eff] = alpha;
+          localStorage.setItem('dnd-terrain-alpha', JSON.stringify(stored));
+        } catch(_) {}
+      }
+    });
+  }
+
+  // Restore saved terrain alphas
+  try {
+    const stored = JSON.parse(localStorage.getItem('dnd-terrain-alpha') || '{}');
+    Object.assign(terrainAlpha, stored);
+  } catch(_) {}
+})();
+
+// ── App border style selector ─────────────────────────────────
+const BORDER_STYLES = ['arcane', 'dragon', 'classic', 'forest', 'pool', 'blossom', 'jazz', 'camo', 'none'];
+
+// ── Jazz cup border renderer ────────────────────────────────────────────────
+// Uses the real jazz-border.png (900×500 transparent PNG) tiled around all
+// four strips.  The border is widened to 40 px so the Jazz motif is clearly
+// visible; the image is scaled so its pattern centre sits at the strip centre.
+const JAZZ_B = 40; // border thickness for jazz (px)
+
+function _renderJazzBorder(wrap) {
+  const W = wrap.offsetWidth, H = wrap.offsetHeight;
+  if (!W || !H) return;
+  const B = JAZZ_B;
+
+  // Widen border + round corners (both override CSS !important)
+  wrap.style.setProperty('border-width',  B + 'px', 'important');
+  wrap.style.setProperty('border-radius', B + 'px', 'important');
+
+  const img = new Image();
+  img.onload = function () {
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const ctx = c.getContext('2d');
+
+    // Fill with Jazz teal so transparent gaps in the PNG blend in
+    // rather than showing as white breaks between squiggles
+    ctx.fillStyle = '#1ad4cc';
+    ctx.fillRect(0, 0, W, H);
+
+    const TILE_H = B + 6;  // slightly taller than strip so clip hides edges
+    const TILE_W = 80;
+    const STEP   = 40;     // 50% overlap — denser packing, no gaps
+
+    // ── Straight strips — exclude the B×B corner squares ────────────────
+    function hStrip(sy) {
+      const iy = sy + B / 2 - TILE_H / 2;
+      ctx.save();
+      ctx.beginPath(); ctx.rect(B, sy, W - 2 * B, B); ctx.clip();
+      for (let x = B; x < W - B + TILE_W; x += STEP)
+        ctx.drawImage(img, x, iy, TILE_W, TILE_H);
+      ctx.restore();
+    }
+
+    function vStrip(sx) {
+      ctx.save();
+      ctx.beginPath(); ctx.rect(sx, B, B, H - 2 * B); ctx.clip();
+      ctx.translate(sx + B / 2, B);
+      ctx.rotate(Math.PI / 2);
+      for (let x = 0; x < H - 2 * B + TILE_W; x += STEP)
+        ctx.drawImage(img, x, -TILE_H / 2, TILE_W, TILE_H);
+      ctx.restore();
+    }
+
+    // ── Corner arcs — quarter-circle pie filled with Jazz image ──────────
+    // The image is rotated to the tangent direction at the arc midpoint so
+    // the brushstrokes appear to "bend" around the curve.
+    function cornerArc(cx, cy, a1, a2) {
+      const midA = (a1 + a2) / 2;
+      ctx.save();
+
+      // Clip to quarter-circle wedge
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, B, a1, a2);
+      ctx.closePath();
+      ctx.clip();
+
+      // Translate to arc midpoint, rotate to tangent direction
+      ctx.translate(
+        cx + Math.cos(midA) * B / 2,
+        cy + Math.sin(midA) * B / 2
+      );
+      ctx.rotate(midA + Math.PI / 2);
+
+      // Draw 3 tiles to guarantee coverage across the wedge
+      for (let i = -1; i <= 1; i++)
+        ctx.drawImage(img, i * TILE_W - TILE_W / 2, -TILE_H / 2, TILE_W, TILE_H);
+
+      ctx.restore();
+    }
+
+    hStrip(0);      // top
+    hStrip(H - B);  // bottom
+    vStrip(0);      // left
+    vStrip(W - B);  // right
+
+    // Corners — CW arcs connecting each pair of adjacent strips
+    cornerArc(B,     B,     Math.PI,       3 * Math.PI / 2); // top-left
+    cornerArc(W - B, B,     3 * Math.PI / 2, 2 * Math.PI);  // top-right
+    cornerArc(B,     H - B, Math.PI / 2,   Math.PI);         // bottom-left
+    cornerArc(W - B, H - B, 0,             Math.PI / 2);     // bottom-right
+
+    ctx.clearRect(B, B, W - 2 * B, H - 2 * B);
+
+    const url = c.toDataURL();
+    wrap.style.background =
+      `url("${url}") 0 0 / 100% 100% no-repeat border-box,` +
+      `linear-gradient(#070710,#070710) padding-box`;
+  };
+  img.src = 'jazz-border.png';
+}
+
+// ── 🪖 Army Camouflage border renderer ─────────────────────────────────────
+// MultiCam / OCP palette: warm tan base, sage-green clouds, dark brown
+// streaks, and white highlights — layered macro + micro pattern.
+function _renderCamoBorder(wrap) {
+  const W = wrap.offsetWidth, H = wrap.offsetHeight;
+  if (!W || !H) return;
+  const B = 14;
+
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const ctx = c.getContext('2d');
+
+  // Seeded LCG — deterministic per element size
+  let s = 0x4CA2F0A3;
+  const rng = () => { s = (Math.imul(s, 1664525) + 1013904223) | 0; return (s >>> 0) / 0x100000000; };
+
+  // MultiCam colour layers (macro → micro)
+  const LAYERS = [
+    // base fill — warm khaki tan
+    { fill: '#c4b896', blobs: 0,   minR: 0,    maxR: 0,    aspect: 0 },
+    // large sage-green cloud patches
+    { fill: '#7a9060', blobs: 40,  minR: B*3,  maxR: B*7,  aspect: 0.55 },
+    // medium olive-brown blobs
+    { fill: '#a08c68', blobs: 30,  minR: B*2,  maxR: B*5,  aspect: 0.45 },
+    // sandy mid-tone fill
+    { fill: '#b8a87a', blobs: 25,  minR: B*1.5,maxR: B*4,  aspect: 0.50 },
+    // dark brown micro-streaks
+    { fill: '#3c3020', blobs: 80,  minR: B*0.3,maxR: B*1.4,aspect: 0.18 },
+    // charcoal spots
+    { fill: '#28221a', blobs: 50,  minR: B*0.2,maxR: B*0.8,aspect: 0.30 },
+    // white/light highlights
+    { fill: '#e4dece', blobs: 35,  minR: B*0.3,maxR: B*1.2,aspect: 0.35 },
+  ];
+
+  // Organic blob — quadratic-bezier polygon with random radial distortion
+  function blob(cx, cy, rx, ry, angle, color) {
+    const pts = 6 + (rng() * 5 | 0);
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(angle);
+    ctx.beginPath();
+    for (let i = 0; i <= pts; i++) {
+      const a   = (i / pts) * Math.PI * 2;
+      const dr  = 0.55 + rng() * 0.90;
+      const px  = Math.cos(a) * rx * dr;
+      const py  = Math.sin(a) * ry * dr;
+      const ca  = a - Math.PI / pts;
+      const cpx = Math.cos(ca) * rx * (0.7 + rng() * 0.6);
+      const cpy = Math.sin(ca) * ry * (0.7 + rng() * 0.6);
+      i === 0 ? ctx.moveTo(px, py) : ctx.quadraticCurveTo(cpx, cpy, px, py);
+    }
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // Base tan fill
+  ctx.fillStyle = LAYERS[0].fill;
+  ctx.fillRect(0, 0, W, H);
+
+  // Scatter all layers across the full canvas
+  for (const layer of LAYERS.slice(1)) {
+    for (let i = 0; i < layer.blobs; i++) {
+      const rx = layer.minR + rng() * (layer.maxR - layer.minR);
+      const ry = rx * (layer.aspect * (0.7 + rng() * 0.6));
+      blob(
+        rng() * W, rng() * H,
+        rx, ry,
+        rng() * Math.PI,
+        layer.fill
+      );
+    }
+  }
+
+  // Clear interior — CSS padding-box dark overlay covers it
+  ctx.clearRect(B, B, W - 2 * B, H - 2 * B);
+
+  const url = c.toDataURL();
+  wrap.style.background =
+    `url("${url}") 0 0 / 100% 100% no-repeat border-box,` +
+    `linear-gradient(#070710,#070710) padding-box`;
+}
+
+// ResizeObserver — re-render canvas borders on resize
+(function () {
+  const wrap = document.getElementById('canvas-wrap');
+  if (!wrap) return;
+  const ro = new ResizeObserver(() => {
+    if (wrap.classList.contains('border-jazz')) _renderJazzBorder(wrap);
+    if (wrap.classList.contains('border-camo')) _renderCamoBorder(wrap);
+  });
+  ro.observe(wrap);
+})();
+
+const CANVAS_BORDERS = new Set(['jazz', 'camo']);
+
+function applyAppBorderStyle(style) {
+  const wrap = document.getElementById('canvas-wrap');
+  if (!wrap) return;
+  BORDER_STYLES.forEach(s => wrap.classList.remove('border-' + s));
+  // Clear any inline overrides when switching away from canvas borders
+  if (!CANVAS_BORDERS.has(style)) {
+    wrap.style.background = '';
+    wrap.style.removeProperty('border-width');
+    wrap.style.removeProperty('border-radius');
+  }
+  wrap.classList.add('border-' + style);
+  if (style === 'jazz') _renderJazzBorder(wrap);
+  if (style === 'camo') _renderCamoBorder(wrap);
+}
+document.querySelectorAll('.app-border-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const style = btn.dataset.style;
+    document.querySelectorAll('.app-border-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    applyAppBorderStyle(style);
+    try { localStorage.setItem('dnd-app-border', style); } catch(_) {}
+  });
+});
+// Restore persisted choice (default: arcane)
+(function () {
+  let stored = 'arcane';
+  try {
+    const s = localStorage.getItem('dnd-app-border');
+    if (s && BORDER_STYLES.includes(s)) stored = s;
+  } catch(_) {}
+  applyAppBorderStyle(stored);
+  const btn = document.querySelector(`.app-border-btn[data-style="${stored}"]`);
+  if (btn) {
+    document.querySelectorAll('.app-border-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  }
+})();
 
 // ── Boot ──────────────────────────────────────────────────────
 window.addEventListener('resize',()=>resize());
@@ -5567,7 +8141,31 @@ requestAnimationFrame(render);
     ['Streetwise',   'CHA'],
     ['Thievery',     'DEX'],
   ];
+  const SKILLS_5E = [
+    ['Initiative',      'DEX'],
+    ['Acrobatics',      'DEX'],
+    ['Animal Handling', 'WIS'],
+    ['Arcana',          'INT'],
+    ['Athletics',       'STR'],
+    ['Deception',       'CHA'],
+    ['History',         'INT'],
+    ['Insight',         'WIS'],
+    ['Intimidation',    'CHA'],
+    ['Investigation',   'INT'],
+    ['Medicine',        'WIS'],
+    ['Nature',          'WIS'],
+    ['Perception',      'WIS'],
+    ['Performance',     'CHA'],
+    ['Persuasion',      'CHA'],
+    ['Religion',        'INT'],
+    ['Sleight of Hand', 'DEX'],
+    ['Stealth',         'DEX'],
+    ['Survival',        'WIS'],
+  ];
   const ABILS = ['STR','CON','DEX','INT','WIS','CHA'];
+  // Expose for the DM roll-request popup so it can pick the right list per sheet
+  window._SKILLS_4E = SKILLS_4E;
+  window._SKILLS_5E = SKILLS_5E;
 
   const STORAGE_KEY_OLD = 'arcane_4e_sheet_v1';     // legacy single sheet
   const STORAGE_KEY     = 'arcane_4e_sheets_v2';    // { sheets:{id:sheet}, activeId }
@@ -5580,12 +8178,15 @@ requestAnimationFrame(render);
   function defaultSheet(name) {
     return {
       id: makeId(),
+      system: '4e',    // '4e' | '5e' — drives skill list, prof bonus formula, defenses, etc.
       name: name || '', level: 1, cls: '', race: '',
       abilities: { STR:10, CON:10, DEX:10, INT:10, WIS:10, CHA:10 },
       defenses:  { AC:10, Fort:10, Ref:10, Will:10 },
       hp: 0, maxhp: 0, surges: 0,
+      hitDice: 0, hitDiceUsed: 0,   // 5e — total HD = level, used resets on long rest
+      saveProfs: { STR:false, DEX:false, CON:false, INT:false, WIS:false, CHA:false }, // 5e save proficiencies
       initMisc: 0,     // misc initiative bonus (feats, items, etc.)
-      trained: [],     // skill names
+      trained: [],     // skill names (4e "trained" / 5e "proficient")
       inventory: [],   // [{id, name, qty, weight, equipped, notes}]
       vision: 'normal', // 'normal' | 'lowlight' | 'darkvision'
     };
@@ -5725,27 +8326,52 @@ requestAnimationFrame(render);
   // ── Math helpers ──────────────────────────────────────────────
   function modOf(score) { return Math.floor((Number(score) - 10) / 2); }
   function halfLevel(s) { return Math.floor(Number(s.level || 1) / 2); }
+  // 5e proficiency bonus: +2 at 1-4, +3 at 5-8, +4 at 9-12, +5 at 13-16, +6 at 17-20
+  function profBonus5e(s) { return Math.ceil(Math.max(1, Number(s.level) || 1) / 4) + 1; }
+  function skillsFor(s) { return s && s.system === '5e' ? SKILLS_5E : SKILLS_4E; }
+  function isFiveE(s)   { return s && s.system === '5e'; }
+
   function skillModFor(s, skillName) {
-    const entry = SKILLS_4E.find(([n]) => n === skillName);
+    const list = skillsFor(s);
+    const entry = list.find(([n]) => n === skillName);
     if (!entry) return 0;
     const ability = entry[1];
-    const base = modOf(s.abilities[ability]) + halfLevel(s) + (s.trained.includes(skillName) ? 5 : 0);
-    // Initiative also adds any misc bonus stored on the sheet.
+    const aMod = modOf(s.abilities[ability] || 10);
+    const isTrained = s.trained.includes(skillName);
+    if (isFiveE(s)) {
+      // 5e: ability + (proficient ? prof bonus : 0). Initiative is just DEX (+ misc).
+      if (skillName === 'Initiative') return aMod + (s.initMisc || 0);
+      return aMod + (isTrained ? profBonus5e(s) : 0);
+    }
+    // 4e: ability + ½level + (trained ? 5 : 0). Initiative adds misc.
+    const base = aMod + halfLevel(s) + (isTrained ? 5 : 0);
     return skillName === 'Initiative' ? base + (s.initMisc || 0) : base;
   }
   function rollSkill(s, skillName) {
     const d20 = Math.floor(Math.random() * 20) + 1;
     const mod = skillModFor(s, skillName);
-    const entry = SKILLS_4E.find(([n]) => n === skillName);
+    const list = skillsFor(s);
+    const entry = list.find(([n]) => n === skillName);
     const ability = entry ? entry[1] : '';
-    return {
-      skill: skillName,
-      ability,
-      d20, mod,
-      total: d20 + mod,
-      breakdown: `d20[${d20}] + ${ability}(${modOf(s.abilities[ability]||10)}) + ½lvl(${halfLevel(s)})${s.trained.includes(skillName) ? ' + trained(5)' : ''} = ${d20+mod}`,
-      name: s.name || '',
-    };
+    const aMod = modOf(s.abilities[ability] || 10);
+    const isTrained = s.trained.includes(skillName);
+    let breakdown;
+    if (isFiveE(s)) {
+      if (skillName === 'Initiative') {
+        breakdown = `d20[${d20}] + DEX(${aMod})` +
+                    ((s.initMisc || 0) ? ` + misc(${s.initMisc})` : '') +
+                    ` = ${d20 + mod}`;
+      } else {
+        breakdown = `d20[${d20}] + ${ability}(${aMod})` +
+                    (isTrained ? ` + prof(${profBonus5e(s)})` : '') +
+                    ` = ${d20 + mod}`;
+      }
+    } else {
+      breakdown = `d20[${d20}] + ${ability}(${aMod}) + ½lvl(${halfLevel(s)})` +
+                  (isTrained ? ' + trained(5)' : '') +
+                  ` = ${d20 + mod}`;
+    }
+    return { skill: skillName, ability, d20, mod, total: d20 + mod, breakdown, name: s.name || '', system: s.system || '4e' };
   }
   window.arcaneRollSkill = (skillName) => rollSkill(mpActiveSheet(), skillName);
 
@@ -5833,8 +8459,44 @@ requestAnimationFrame(render);
     fireSheetsChanged();
   });
 
+  // System toggle (4e ↔ 5e). Changing system migrates the trained-skill list
+  // by intersecting with the new system's known skills, so anything that
+  // doesn't translate (Bluff → Deception, etc.) is simply dropped rather
+  // than silently giving you a bonus on a skill that doesn't exist.
+  const systemSel = document.getElementById('sh-system');
+  if (systemSel) {
+    systemSel.addEventListener('change', () => {
+      pushFormToSheet();              // capture in-flight edits
+      const newSystem = systemSel.value === '5e' ? '5e' : '4e';
+      if (sheet.system === newSystem) return;
+      const newList = newSystem === '5e' ? SKILLS_5E : SKILLS_4E;
+      const newNames = new Set(newList.map(([n]) => n));
+      sheet.trained = (sheet.trained || []).filter(n => newNames.has(n));
+      sheet.system = newSystem;
+      saveStore();
+      fillForm();
+      fireSheetsChanged();
+    });
+  }
+
   // ── Fill the form from current sheet ──────────────────────────
   function fillForm() {
+    // Apply system class to the panel so CSS can show/hide 4e-only vs 5e-only fields
+    const panel = document.getElementById('sheet-panel');
+    if (panel) {
+      panel.classList.toggle('system-5e', isFiveE(sheet));
+      panel.classList.toggle('system-4e', !isFiveE(sheet));
+    }
+    const sysSel = document.getElementById('sh-system');
+    if (sysSel) sysSel.value = sheet.system || '4e';
+    // 4e Surges field doubles as "Hit Dice (used / total)" in 5e
+    const surgesLbl = document.getElementById('sh-surges-label');
+    if (surgesLbl) surgesLbl.textContent = isFiveE(sheet) ? 'Hit Dice used' : 'Surges';
+    const surgesEl = document.getElementById('sh-surges');
+    if (surgesEl) surgesEl.title = isFiveE(sheet)
+      ? 'Hit Dice spent so far this short-rest cycle (resets on long rest)'
+      : 'Healing Surges remaining';
+
     document.getElementById('sh-name').value = sheet.name || '';
     document.getElementById('sh-level').value = sheet.level || 1;
     document.getElementById('sh-class').value = sheet.cls || '';
@@ -5849,7 +8511,8 @@ requestAnimationFrame(render);
     document.getElementById('sh-Will').value = sheet.defenses.Will;
     document.getElementById('sh-hp').value    = sheet.hp;
     document.getElementById('sh-maxhp').value = sheet.maxhp;
-    document.getElementById('sh-surges').value= sheet.surges;
+    // For 5e the same numeric input stores "hit dice used"
+    document.getElementById('sh-surges').value = isFiveE(sheet) ? (sheet.hitDiceUsed || 0) : (sheet.surges || 0);
     const initMiscEl = document.getElementById('sh-init-misc');
     if (initMiscEl) initMiscEl.value = sheet.initMisc || 0;
     const visSel = document.getElementById('sh-vision');
@@ -5857,6 +8520,7 @@ requestAnimationFrame(render);
     renderSkills();
     renderInventory();
     updateInitDisplay();
+    updateProfReadout();
   }
 
   function fmtMod(n) { return (n >= 0 ? '+' : '') + n; }
@@ -5864,7 +8528,7 @@ requestAnimationFrame(render);
   // ── Skills list ───────────────────────────────────────────────
   function renderSkills() {
     skillsBox.innerHTML = '';
-    SKILLS_4E.forEach(([name, abi]) => {
+    skillsFor(sheet).forEach(([name, abi]) => {
       const isTrained = sheet.trained.includes(name);
       const mod = skillModFor(sheet, name);
       const row = document.createElement('div');
@@ -6047,7 +8711,7 @@ requestAnimationFrame(render);
   });
 
   function recomputeMods() {
-    SKILLS_4E.forEach(([name]) => {
+    skillsFor(sheet).forEach(([name]) => {
       const el = skillsBox.querySelector(`[data-skill-mod="${name}"]`);
       if (el) el.textContent = fmtMod(skillModFor(sheet, name));
     });
@@ -6056,6 +8720,13 @@ requestAnimationFrame(render);
       if (el) el.textContent = fmtMod(modOf(sheet.abilities[a]));
     });
     updateInitDisplay();
+    updateProfReadout();
+  }
+  function updateProfReadout() {
+    const el = document.getElementById('sh-prof-readout');
+    if (!el) return;
+    if (isFiveE(sheet)) el.textContent = `Proficiency +${profBonus5e(sheet)}`;
+    else                el.textContent = `½ Level +${halfLevel(sheet)}`;
   }
 
   function updateInitDisplay() {
@@ -6083,7 +8754,10 @@ requestAnimationFrame(render);
     sheet.defenses.Will = parseInt(document.getElementById('sh-Will').value) || 10;
     sheet.hp     = parseInt(document.getElementById('sh-hp').value)    || 0;
     sheet.maxhp  = parseInt(document.getElementById('sh-maxhp').value) || 0;
-    sheet.surges = parseInt(document.getElementById('sh-surges').value)|| 0;
+    // Surges input doubles as "Hit Dice used" in 5e
+    const surgesVal = parseInt(document.getElementById('sh-surges').value) || 0;
+    if (isFiveE(sheet)) sheet.hitDiceUsed = surgesVal;
+    else                sheet.surges      = surgesVal;
     sheet.initMisc = parseInt(document.getElementById('sh-init-misc')?.value) || 0;
     const visSel = document.getElementById('sh-vision');
     if (visSel) sheet.vision = visSel.value || 'normal';
@@ -6184,14 +8858,38 @@ requestAnimationFrame(render);
     const charLine = mpSh.name ? ` (as ${mpSh.name})` : '';
     reqFromEl.textContent  = `${fromName || 'DM'} is asking for${charLine}:`;
     reqSkillEl.textContent = `${skill} check`;
-    const mod = skillModFor(mpSh, skill);
-    const entry = SKILLS_4E.find(([n]) => n === skill);
+    const list = skillsFor(mpSh);
+    let entry = list.find(([n]) => n === skill);
+    // Cross-system request? Fall back to the other catalog so the player can
+    // still roll it as a plain "ability check + (½lvl|prof if trained)".
+    if (!entry) {
+      const other = isFiveE(mpSh) ? SKILLS_4E : SKILLS_5E;
+      entry = other.find(([n]) => n === skill);
+    }
     const abi = entry ? entry[1] : '';
-    reqBreakEl.textContent =
-      `Your modifier: ${(mod>=0?'+':'')}${mod}  ` +
-      `( ${abi} ${(modOf(mpSh.abilities[abi]||10)>=0?'+':'')}${modOf(mpSh.abilities[abi]||10)} ` +
-      `+ ½lvl ${halfLevel(mpSh)}` +
-      (mpSh.trained.includes(skill) ? ' + trained 5' : '') + ' )';
+    const aMod = modOf(mpSh.abilities[abi] || 10);
+    const trained = mpSh.trained.includes(skill);
+    // Recompute mod manually when the skill isn't in this sheet's system
+    let mod;
+    if (list.some(([n]) => n === skill)) {
+      mod = skillModFor(mpSh, skill);
+    } else if (entry) {
+      mod = aMod + (isFiveE(mpSh) ? (trained ? profBonus5e(mpSh) : 0)
+                                  : halfLevel(mpSh) + (trained ? 5 : 0));
+    } else {
+      mod = 0;
+    }
+    let formula;
+    if (isFiveE(mpSh)) {
+      formula = `( ${abi || '—'} ${aMod>=0?'+':''}${aMod}` +
+                (trained ? ` + prof ${profBonus5e(mpSh)}` : '') + ' )';
+    } else {
+      formula = `( ${abi || '—'} ${aMod>=0?'+':''}${aMod} + ½lvl ${halfLevel(mpSh)}` +
+                (trained ? ' + trained 5' : '') + ' )';
+    }
+    const crossSys = entry && !list.some(([n]) => n === skill)
+      ? ` · cross-system check (${isFiveE(mpSh) ? '4e' : '5e'} skill)` : '';
+    reqBreakEl.textContent = `Your modifier: ${(mod>=0?'+':'')}${mod}  ${formula}${crossSys}`;
     reqD20El.style.display = 'none';
     reqTotalEl.style.display = 'none';
     reqRollBtn.disabled = false;
@@ -6252,13 +8950,24 @@ requestAnimationFrame(render);
   window.arcaneOpenRollRequest = openRollRequestReset;
 
   // ── DM Roll-Request UI (in mp panel) ──────────────────────────
-  // Populate skill picker
+  // The DM may have a mixed table of 4e and 5e players — so the picker
+  // lists the union of both skill catalogs, de-duped, with edition badges
+  // for skills that only exist in one system.
   const dmSkillSel = document.getElementById('mp-dm-roll-skill');
   if (dmSkillSel) {
-    SKILLS_4E.forEach(([n, a]) => {
+    const fourE = new Set(SKILLS_4E.map(([n]) => n));
+    const fiveE = new Set(SKILLS_5E.map(([n]) => n));
+    const union = [...new Set([...SKILLS_4E.map(([n,a])=>n+'|'+a), ...SKILLS_5E.map(([n,a])=>n+'|'+a)])]
+      .map(s => s.split('|'));
+    // Initiative first, then alphabetical
+    union.sort((a, b) => a[0] === 'Initiative' ? -1 : b[0] === 'Initiative' ? 1 : a[0].localeCompare(b[0]));
+    union.forEach(([n, a]) => {
       const opt = document.createElement('option');
       opt.value = n;
-      opt.textContent = `${n} (${a})`;
+      const onlyIn = fourE.has(n) && !fiveE.has(n) ? ' · 4e only'
+                  : fiveE.has(n) && !fourE.has(n) ? ' · 5e only'
+                  : '';
+      opt.textContent = `${n} (${a})${onlyIn}`;
       dmSkillSel.appendChild(opt);
     });
   }
@@ -6769,6 +9478,157 @@ requestAnimationFrame(render);
   newBtn.addEventListener('click', () => showEditor(null));
   cancelBtn.addEventListener('click', hideEditor);
 
+  // ── Compendium JSON import ───────────────────────────────────
+  // Accepts several common SRD JSON shapes and normalises them into our
+  // creature schema. Recognised formats:
+  //   • Plain array of creatures: [ {name, ...}, ... ]
+  //   • 5e.tools-style: { "monster": [...] }
+  //   • Open5e-style:  { "results": [...] } or { "count": N, "results": [...] }
+  //   • Single creature object: { name, ... } → wrapped as a one-item array
+  // Field aliases handled: ac (number | array of {ac,...}); hp (number | string |
+  //   {average} | {hit_points_roll}); speed ({walk} | number | "30 ft."); size
+  //   words ("Medium" → "medium"); ability saves under .save{} or per-stat
+  //   numeric fields with abbreviations.
+  function _normalizeCompendiumEntry(raw) {
+    if (!raw || typeof raw !== 'object' || !raw.name) return null;
+    const c = defaultCreature();
+    c.id = makeId();
+    c.name = String(raw.name).trim();
+    // size
+    const sizeRaw = String(raw.size || 'M').toLowerCase();
+    const sizeMap = { t:'tiny', s:'small', m:'medium', l:'large', h:'huge', g:'gargantuan',
+                      tiny:'tiny', small:'small', medium:'medium', large:'large', huge:'huge', gargantuan:'gargantuan' };
+    c.size = sizeMap[sizeRaw] || sizeMap[sizeRaw[0]] || 'medium';
+    // type
+    if (raw.type) {
+      if (typeof raw.type === 'string') c.type = raw.type;
+      else if (raw.type.type) c.type = raw.type.type;
+    }
+    // CR
+    if (raw.cr != null) c.cr = String(raw.cr);
+    else if (raw.challenge_rating != null) c.cr = String(raw.challenge_rating);
+    // AC
+    if (typeof raw.ac === 'number') c.ac = raw.ac;
+    else if (Array.isArray(raw.ac) && raw.ac.length) {
+      const first = raw.ac[0];
+      c.ac = typeof first === 'number' ? first : (first.ac || first.value || 10);
+    }
+    else if (raw.armor_class != null) {
+      c.ac = Array.isArray(raw.armor_class) ? (raw.armor_class[0].value || 10) : Number(raw.armor_class) || 10;
+    }
+    // HP
+    if (typeof raw.hp === 'number') c.hp = raw.hp;
+    else if (raw.hp && typeof raw.hp === 'object') {
+      c.hp = raw.hp.average || Number(String(raw.hp.formula || '').match(/^\d+/)?.[0]) || 10;
+    }
+    else if (typeof raw.hit_points === 'number') c.hp = raw.hit_points;
+    else if (typeof raw.hp === 'string') c.hp = parseInt(raw.hp, 10) || 10;
+    // Speed (we use squares = ft/5)
+    let speedFt = 30;
+    if (typeof raw.speed === 'number') speedFt = raw.speed;
+    else if (typeof raw.speed === 'string') speedFt = parseInt(raw.speed, 10) || 30;
+    else if (raw.speed && typeof raw.speed === 'object') {
+      speedFt = raw.speed.walk || raw.speed.normal || 30;
+      if (typeof speedFt === 'string') speedFt = parseInt(speedFt, 10) || 30;
+    }
+    c.speed = Math.max(1, Math.round(speedFt / 5));
+    // Saves — either raw.save{STR:..} or raw.saving_throws[] or per-ability bonuses
+    const stats = ['STR','DEX','CON','INT','WIS','CHA'];
+    if (raw.save && typeof raw.save === 'object') {
+      stats.forEach(s => { const v = raw.save[s] ?? raw.save[s.toLowerCase()]; if (v != null) c.saves[s] = Number(v) || 0; });
+    } else if (Array.isArray(raw.saving_throws)) {
+      raw.saving_throws.forEach(st => {
+        const k = String(st.ability || st.index || '').slice(0,3).toUpperCase();
+        if (stats.includes(k)) c.saves[k] = Number(st.value) || 0;
+      });
+    }
+    // Resistances / immunities / vulnerabilities / condition immunities
+    function joinIfArray(v) {
+      if (!v) return '';
+      if (Array.isArray(v)) return v.map(x => typeof x === 'string' ? x : (x.name || x.value || '')).filter(Boolean).join(', ');
+      return String(v);
+    }
+    c.resistances     = joinIfArray(raw.resistances     || raw.resist           || raw.damage_resistances);
+    c.immunities      = joinIfArray(raw.immunities      || raw.immune           || raw.damage_immunities);
+    c.vulnerabilities = joinIfArray(raw.vulnerabilities || raw.vulnerable       || raw.damage_vulnerabilities);
+    c.condImmunities  = joinIfArray(raw.condImmunities  || raw.conditionImmune  || raw.condition_immunities);
+    c.senses          = joinIfArray(raw.senses);
+    c.languages       = joinIfArray(raw.languages);
+    // Notes: flatten traits/actions/special_abilities into a summary the DM can read
+    const noteParts = [];
+    if (raw.notes) noteParts.push(String(raw.notes));
+    function describe(list, label) {
+      if (!Array.isArray(list) || !list.length) return;
+      noteParts.push(`— ${label} —`);
+      for (const a of list) {
+        const name = a.name || '?';
+        const text = (a.desc || a.entries || a.text || '').toString().replace(/\s+/g,' ').trim();
+        noteParts.push(`• ${name}${text ? ': ' + text : ''}`);
+      }
+    }
+    describe(raw.trait              || raw.special_abilities, 'Traits');
+    describe(raw.action             || raw.actions,           'Actions');
+    describe(raw.reaction           || raw.reactions,         'Reactions');
+    describe(raw.legendary          || raw.legendary_actions, 'Legendary');
+    if (noteParts.length) c.notes = noteParts.join('\n');
+    return c;
+  }
+
+  function _importCompendium(text) {
+    let parsed;
+    try { parsed = JSON.parse(text); }
+    catch (e) { alert('Could not parse JSON: ' + e.message); return; }
+    // Extract entry array from the various shapes
+    let entries = null;
+    if (Array.isArray(parsed)) entries = parsed;
+    else if (parsed && Array.isArray(parsed.monster))  entries = parsed.monster;
+    else if (parsed && Array.isArray(parsed.monsters)) entries = parsed.monsters;
+    else if (parsed && Array.isArray(parsed.results))  entries = parsed.results;
+    else if (parsed && Array.isArray(parsed.creatures))entries = parsed.creatures;
+    else if (parsed && parsed.name)                    entries = [parsed];
+    if (!entries || !entries.length) {
+      alert('No creature entries found in this file. Expected an array of monsters, or an object with a "monster" / "monsters" / "results" / "creatures" array.');
+      return;
+    }
+    const existingLC = new Set(db.creatures.map(c => (c.name || '').toLowerCase()));
+    let added = 0, skippedDup = 0, skippedBad = 0;
+    for (const raw of entries) {
+      const c = _normalizeCompendiumEntry(raw);
+      if (!c) { skippedBad++; continue; }
+      if (existingLC.has(c.name.toLowerCase())) { skippedDup++; continue; }
+      db.creatures.push(c);
+      existingLC.add(c.name.toLowerCase());
+      added++;
+    }
+    if (added) saveDB();
+    renderList();
+    const lines = [`Imported ${added} creature${added === 1 ? '' : 's'}.`];
+    if (skippedDup) lines.push(`Skipped ${skippedDup} already in your bestiary.`);
+    if (skippedBad) lines.push(`Skipped ${skippedBad} unrecognised entr${skippedBad === 1 ? 'y' : 'ies'}.`);
+    alert(lines.join('\n'));
+  }
+
+  const importInput = document.getElementById('bestiary-import-input');
+  if (importInput) {
+    importInput.addEventListener('change', function () {
+      const f = this.files[0]; if (!f) return;
+      const r = new FileReader();
+      r.onload = e => {
+        const buf = e.target.result;
+        const b = new Uint8Array(buf);
+        let text;
+        if (b[0] === 0xFF && b[1] === 0xFE)      text = new TextDecoder('utf-16le').decode(buf);
+        else if (b[0] === 0xFE && b[1] === 0xFF) text = new TextDecoder('utf-16be').decode(buf);
+        else                                      text = new TextDecoder('utf-8').decode(buf);
+        if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+        _importCompendium(text);
+      };
+      r.onerror = () => alert('Could not read compendium file.');
+      r.readAsArrayBuffer(f);
+      this.value = '';
+    });
+  }
+
   // Load the preset name roster (skips duplicates by case-insensitive name).
   const presetsBtn = document.getElementById('bestiary-presets-btn');
   if (presetsBtn) {
@@ -6910,7 +9770,8 @@ requestAnimationFrame(render);
       v: 1,
       rows, cols,
       grid: JSON.parse(JSON.stringify(grid)),
-      tokens: tokens.map(t => ({ ...t })),
+      // Strip dmNotes — DM-private, must never reach players
+      tokens: tokens.map(({ dmNotes, ...rest }) => rest),
       walls: walls.map(w => ({ ...w })),
       labels: labels.map(l => ({ ...l })),
       lights: lights.map(l => ({ ...l })),
@@ -6923,6 +9784,8 @@ requestAnimationFrame(render);
       initiative: (initiative || []).map(e => ({ ...e })),
       initCurrent, roundNum,
       bgImageDataUrl: window._bgImageDataUrl || null,
+      ambientLight,
+      weatherType, weatherIntensity,
     };
   }
 
@@ -7015,6 +9878,13 @@ requestAnimationFrame(render);
       img.src = s.bgImageDataUrl;
     } else if (!s.bgImageDataUrl && window._bgImageDataUrl) {
       bgImage = null; window._bgImageDataUrl = null;
+    }
+
+    // Ambient light + weather (atmospheric, mirrors to players)
+    if (typeof s.ambientLight === 'number' && typeof _setAmbient === 'function') _setAmbient(s.ambientLight);
+    if (s.weatherType != null) {
+      setWeather(s.weatherType, typeof s.weatherIntensity === 'number' ? s.weatherIntensity : weatherIntensity);
+      if (typeof _syncWeatherUI === 'function') _syncWeatherUI();
     }
 
     // Re-render — wrap in try/catch so a single bad field can't blank the page.
@@ -7295,4 +10165,116 @@ requestAnimationFrame(render);
     btn.textContent = '✓ Picked up!';
     setTimeout(() => { btn.style.display = 'none'; }, 600);
   });
+})();
+
+// ── Auto-update checker ──────────────────────────────────────────────────────
+(function () {
+  const CURRENT_VERSION  = '1.6';
+  // Route through the local server so the WKWebView (file:// origin) can
+  // reach an external URL without hitting Same-Origin-Policy restrictions.
+  const MANIFEST_URL     = 'http://localhost:8765/api/check_update';
+  const PREF_KEY         = 'arcane_autoUpdate';     // localStorage: 'true'/'false'
+  const DISMISSED_KEY    = 'arcane_updateDismissed'; // localStorage: version string
+
+  // ── Settings popover toggle ─────────────────────────────────────
+  const settingsBtn     = document.getElementById('settings-btn');
+  const settingsPop     = document.getElementById('settings-popover');
+  const autoUpdateChk   = document.getElementById('auto-update-chk');
+  const checkNowBtn     = document.getElementById('check-update-now-btn');
+  const statusEl        = document.getElementById('settings-update-status');
+
+  // Restore saved preference
+  autoUpdateChk.checked = localStorage.getItem(PREF_KEY) === 'true';
+
+  settingsBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const open = settingsPop.style.display !== 'none';
+    settingsPop.style.display = open ? 'none' : 'flex';
+    settingsBtn.setAttribute('aria-expanded', String(!open));
+  });
+
+  // Close when clicking outside
+  document.addEventListener('click', (e) => {
+    if (!settingsPop.contains(e.target) && e.target !== settingsBtn) {
+      settingsPop.style.display = 'none';
+      settingsBtn.setAttribute('aria-expanded', 'false');
+    }
+  });
+
+  autoUpdateChk.addEventListener('change', () => {
+    localStorage.setItem(PREF_KEY, autoUpdateChk.checked ? 'true' : 'false');
+    if (autoUpdateChk.checked) {
+      statusEl.textContent = 'Will check for updates on next launch.';
+    } else {
+      statusEl.textContent = '';
+    }
+  });
+
+  // ── Core check function ─────────────────────────────────────────
+  async function checkForUpdates(manual = false) {
+    statusEl.textContent = 'Checking…';
+    try {
+      const res = await fetch(MANIFEST_URL, { cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+
+      const remote  = String(data.version || '').trim();
+      const dlUrl   = String(data.url     || '').trim();
+
+      if (!remote || !dlUrl) {
+        statusEl.textContent = 'Manifest missing version or URL.';
+        return;
+      }
+
+      // Simple semver comparison (handles "1.5" > "1.0" etc.)
+      const parseVer = v => v.split('.').map(Number);
+      const newerAvailable = (() => {
+        const [rMaj, rMin = 0] = parseVer(remote);
+        const [cMaj, cMin = 0] = parseVer(CURRENT_VERSION);
+        return rMaj > cMaj || (rMaj === cMaj && rMin > cMin);
+      })();
+
+      if (newerAvailable) {
+        statusEl.textContent = `v${remote} available!`;
+        showBanner(remote, dlUrl);
+      } else {
+        statusEl.textContent = `v${CURRENT_VERSION} is up to date.`;
+        if (manual) {
+          // Flash the status briefly even if already dismissed banner
+          setTimeout(() => { statusEl.textContent = ''; }, 3000);
+        }
+      }
+    } catch (err) {
+      statusEl.textContent = 'Check failed — no network?';
+      if (manual) setTimeout(() => { statusEl.textContent = ''; }, 3000);
+    }
+  }
+
+  checkNowBtn.addEventListener('click', () => checkForUpdates(true));
+
+  // ── Update banner ───────────────────────────────────────────────
+  const banner      = document.getElementById('update-banner');
+  const bannerMsg   = document.getElementById('update-banner-msg');
+  const dlLink      = document.getElementById('update-download-link');
+  const dismissBtn  = document.getElementById('update-banner-dismiss');
+
+  function showBanner(version, url) {
+    // Don't re-show if the user already dismissed this exact version
+    if (localStorage.getItem(DISMISSED_KEY) === version) return;
+    bannerMsg.textContent = `🚀 Arcane Overlay v${version} is available!`;
+    dlLink.href = url;
+    banner.style.display = 'flex';
+  }
+
+  dismissBtn.addEventListener('click', () => {
+    // Record which version was dismissed so we don't nag every launch
+    const ver = (dlLink.href.match(/\/download\/([^/]+)\//) || [])[1] || '';
+    if (ver) localStorage.setItem(DISMISSED_KEY, ver);
+    banner.style.display = 'none';
+  });
+
+  // ── Auto-check on startup (after a short delay) ─────────────────
+  if (localStorage.getItem(PREF_KEY) === 'true') {
+    setTimeout(() => checkForUpdates(false), 2500);
+  }
 })();

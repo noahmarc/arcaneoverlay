@@ -8,7 +8,48 @@ body {
   color: #fff;
   min-height: 100vh;
   padding: 12px;
+  transition: padding 0.22s ease;
 }
+
+/* ── Fullscreen / Presentation mode ── */
+body.fs-mode {
+  padding: 0;
+  overflow: hidden;
+}
+body.fs-mode #app {
+  gap: 0;
+  height: 100vh;
+}
+body.fs-mode #toolbar {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 1000;
+  border-radius: 0;
+  border-top: none;
+  border-left: none;
+  border-right: none;
+  transform: translateY(-110%);
+  transition: transform 0.22s ease;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.8);
+}
+body.fs-mode #canvas-wrap {
+  flex: 1;
+  border-radius: 0;
+  border: none;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+body.fs-mode #canvas-wrap canvas {
+  max-width: 100vw;
+  max-height: 100vh;
+  object-fit: contain;
+}
+body.fs-mode #hint { display: none; }
+body.fs-mode #init-panel { bottom: 8px; }
 
 /* ── App layout ── */
 #app {
@@ -43,11 +84,17 @@ body {
 
 .toolbar-right {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
   margin-left: auto;
   font-size: 12px;
   color: rgba(255,255,255,0.45);
+}
+.toolbar-right-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .toolbar-right label { display: flex; align-items: center; gap: 4px; }
 .toolbar-right input[type=range] { width: 55px; accent-color: rgba(255,255,255,0.5); }
@@ -238,6 +285,9 @@ body {
 .stone-pill.active     { border-color:#8a7a6a; background:rgba(100,90,80,0.25);  box-shadow:0 0 10px rgba(100,90,80,0.25); }
 .difficult-pill.active { border-color:#C8A000; background:rgba(180,150,20,0.22); box-shadow:0 0 10px rgba(180,150,20,0.25); }
 .blood-pill.active     { border-color:#801020; background:rgba(140,20,30,0.22);  box-shadow:0 0 10px rgba(140,20,30,0.25); }
+.mud-pill.active       { border-color:#5a3218; background:rgba(90,50,24,0.25);   box-shadow:0 0 10px rgba(90,50,24,0.30); }
+.web-pill.active       { border-color:#8870a0; background:rgba(120,100,160,0.18);box-shadow:0 0 10px rgba(130,110,180,0.28); }
+.swamp-pill.active     { border-color:#3a5018; background:rgba(50,75,20,0.22);   box-shadow:0 0 10px rgba(60,90,25,0.28); }
 
 /* ── Shape dropdown ── */
 .shape-dropdown {
@@ -287,6 +337,147 @@ body {
 .shape-item:hover    { background: rgba(255,255,255,0.08); color: #fff; }
 .shape-item.selected { color: #fff; background: rgba(255,255,255,0.06); }
 .shape-item .sicon   { font-size: 13px; width: 16px; text-align: center; flex-shrink: 0; }
+
+/* ── Water flow direction compass ── */
+/* ── Terrain tools row (eyedropper, fill, opacity) ── */
+#terrain-tools-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px 8px;
+  border-top: 1px solid rgba(255,255,255,0.07);
+  flex-wrap: wrap;
+}
+.terrain-tool-btn {
+  font: bold 10px/1 'Segoe UI', system-ui, sans-serif;
+  letter-spacing: .04em;
+  color: rgba(220,210,240,0.85);
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.13);
+  border-radius: 7px;
+  padding: 4px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.terrain-tool-btn:hover {
+  background: rgba(255,255,255,0.10);
+  border-color: rgba(255,255,255,0.28);
+  color: #fff;
+}
+.terrain-tool-btn.active {
+  background: rgba(140,100,255,0.22);
+  border-color: rgba(180,140,255,0.70);
+  color: #c8a8ff;
+  box-shadow: 0 0 8px rgba(160,120,255,0.35);
+}
+#terrain-alpha-ctrl {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 4px;
+}
+#terrain-alpha-eff {
+  font: bold 10px/1 'Segoe UI', system-ui, sans-serif;
+  color: rgba(200,190,220,0.70);
+  min-width: 28px;
+  text-align: right;
+}
+.terrain-alpha-label {
+  font: bold 9px/1 'Segoe UI', system-ui, sans-serif;
+  letter-spacing: .06em;
+  color: rgba(180,170,200,0.55);
+  text-transform: uppercase;
+}
+#terrain-alpha-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 72px;
+  height: 4px;
+  background: rgba(255,255,255,0.15);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+#terrain-alpha-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: rgba(200,180,255,0.85);
+  border: 1px solid rgba(255,255,255,0.4);
+  cursor: pointer;
+}
+#terrain-alpha-val {
+  font: bold 10px/1 'Segoe UI', system-ui, sans-serif;
+  color: rgba(210,200,230,0.75);
+  min-width: 30px;
+}
+
+.water-flow-section {
+  padding: 8px 8px 6px;
+  border-top: 1px solid rgba(255,255,255,0.07);
+  margin-top: 4px;
+}
+.water-flow-label {
+  display: block;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .1em;
+  color: rgba(255,255,255,0.35);
+  margin-bottom: 6px;
+}
+.water-flow-compass {
+  display: grid;
+  grid-template-columns: repeat(3, 28px);
+  grid-template-rows: repeat(3, 28px);
+  gap: 3px;
+}
+.wdir-btn {
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 6px;
+  color: rgba(255,255,255,0.6);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background .12s, color .12s, border-color .12s;
+}
+.wdir-btn:hover {
+  background: rgba(30,136,216,0.25);
+  color: #fff;
+  border-color: rgba(30,136,216,0.55);
+}
+.wdir-btn.active {
+  background: rgba(30,136,216,0.35);
+  border-color: rgba(66,184,248,0.75);
+  color: #42b8f8;
+  box-shadow: 0 0 6px rgba(66,184,248,0.35);
+}
+/* Lava variant — same layout, ember colour */
+.ldir-btn {
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 6px;
+  color: rgba(255,255,255,0.6);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background .12s, color .12s, border-color .12s;
+}
+.ldir-btn:hover {
+  background: rgba(200,60,10,0.28);
+  color: #fff;
+  border-color: rgba(255,100,20,0.6);
+}
+.ldir-btn.active {
+  background: rgba(200,60,10,0.38);
+  border-color: rgba(255,140,40,0.85);
+  color: #ff8820;
+  box-shadow: 0 0 6px rgba(255,100,20,0.4);
+}
 
 /* ── Radius panel ── */
 #radius-panel {
@@ -703,6 +894,341 @@ canvas { display: block; }
   padding-top: 10px;
   margin-top: 4px;
   line-height: 1.5;
+}
+
+/* ── Player dock (Dice / Sheet / Bestiary / Chat) ──
+   Lives inside the toolbar's right column, below the W/H/CLR/FRAME/FULL row.
+   Stays put — no fixed positioning, no overlap with the rest of the toolbar. */
+#app-dock {
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 14px;
+  align-self: flex-end;
+}
+
+.dock-btn {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 56px;
+  padding: 5px 4px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: rgba(255,255,255,0.72);
+  cursor: pointer;
+  font-family: inherit;
+  transition:
+    transform .15s cubic-bezier(.34,1.56,.64,1),
+    background .15s, color .15s, border-color .15s;
+}
+.dock-btn:hover {
+  background: rgba(255,255,255,0.09);
+  color: #fff;
+  transform: translateY(-2px) scale(1.04);
+  border-color: rgba(255,255,255,0.14);
+}
+.dock-btn:active {
+  transform: translateY(0) scale(0.97);
+  transition-duration: .08s;
+}
+.dock-btn.active {
+  background: rgba(155,100,255,0.20);
+  border-color: rgba(155,100,255,0.55);
+  color: #fff;
+}
+.dock-icon {
+  font-size: 20px;
+  line-height: 1;
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.4));
+}
+.dock-label {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  opacity: 0.65;
+  transition: opacity .15s;
+}
+.dock-btn:hover .dock-label,
+.dock-btn.active .dock-label { opacity: 1; }
+
+.dock-badge {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  background: #E74C3C;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 800;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  border-radius: 8px;
+  border: 1.5px solid rgba(10,8,22,0.95);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  box-shadow: 0 0 8px rgba(231,76,60,0.55);
+}
+
+/* Hide the legacy floating launcher buttons — the dock replaces them */
+#dice-btn,
+#sheet-btn,
+#bestiary-btn,
+#mp-tab-btn { display: none !important; }
+
+/* In player-restricted mode, the bestiary entry also disappears from the dock */
+body.player-restricted .dock-btn-bestiary { display: none !important; }
+
+/* In fullscreen mode the dock rides along with the toolbar — when the toolbar
+   slides into view (mouse near top edge), the dock comes with it. No separate
+   peek logic needed since the dock is a child of the toolbar now. */
+
+/* ── App border (decorative frame around the battle grid) ── */
+/* All styles use a thick transparent border + dual gradient backgrounds
+   (padding-box solid for content, border-box gradient for the frame) +
+   inner glow + corner ornament pseudo-elements. */
+
+#canvas-wrap {
+  position: relative;
+  transition: box-shadow .25s ease;
+}
+
+
+/* Override the default thin border for all styled frames */
+#canvas-wrap[class*="border-"]:not(.border-none) {
+  border: 14px solid transparent !important;
+  border-radius: 14px;
+}
+
+/* ── 🌀 Arcane ── */
+@keyframes arcane-pulse {
+  0%, 100% {
+    box-shadow:
+      inset 0 0 0 2px rgba(180,120,255,0.55),
+      inset 0 0 14px rgba(140,80,255,0.35),
+      0 0  22px rgba(120,60,255,0.50),
+      0 0  60px rgba(120,60,255,0.20),
+      0 0 110px rgba(100,40,255,0.10);
+  }
+  50% {
+    box-shadow:
+      inset 0 0 0 2px rgba(210,160,255,0.85),
+      inset 0 0 22px rgba(170,100,255,0.60),
+      0 0  40px rgba(160,80,255,0.80),
+      0 0 100px rgba(140,60,255,0.45),
+      0 0 180px rgba(120,40,255,0.25);
+  }
+}
+
+#canvas-wrap.border-arcane {
+  background:
+    linear-gradient(#070710, #070710) padding-box,
+    linear-gradient(135deg,
+      #1a0a3a 0%, #2a1450 18%, #6a30b0 35%, #a060e0 50%,
+      #6a30b0 65%, #2a1450 82%, #1a0a3a 100%) border-box;
+  animation: arcane-pulse 3s ease-in-out infinite;
+}
+
+/* ── 🐉 Dragon ── */
+#canvas-wrap.border-dragon {
+  background:
+    linear-gradient(#070710, #070710) padding-box,
+    linear-gradient(135deg,
+      #180404 0%, #3a0808 15%, #6a1010 30%, #a04020 45%,
+      #d4a020 50%, #a04020 55%, #6a1010 70%, #3a0808 85%, #180404 100%) border-box;
+  box-shadow:
+    inset 0 0 0 2px rgba(255,180,40,0.6),
+    inset 0 0 14px rgba(200,80,20,0.35),
+    0 0 22px rgba(220,100,20,0.45),
+    0 0 60px rgba(180,50,10,0.18);
+}
+
+/* ── 📜 Classic ── */
+#canvas-wrap.border-classic {
+  background:
+    linear-gradient(#070710, #070710) padding-box,
+    linear-gradient(135deg,
+      #1a0e08 0%, #2c1810 25%,
+      #b89240 48%, #e6c060 50%, #b89240 52%,
+      #2c1810 75%, #1a0e08 100%) border-box;
+  box-shadow:
+    inset 0 0 0 2px rgba(200,160,60,0.85),
+    inset 0 0 0 5px rgba(20,12,6,0.6),
+    inset 0 0 0 7px rgba(160,120,40,0.5),
+    0 0 12px rgba(0,0,0,0.6);
+}
+
+/* ── 🌿 Forest ── */
+#canvas-wrap.border-forest {
+  background:
+    linear-gradient(#070710, #070710) padding-box,
+    linear-gradient(135deg,
+      #03100a 0%, #082018 20%, #1a4828 40%, #3a8c4a 50%,
+      #1a4828 60%, #082018 80%, #03100a 100%) border-box;
+  box-shadow:
+    inset 0 0 0 2px rgba(80,180,90,0.55),
+    inset 0 0 14px rgba(40,140,60,0.35),
+    0 0 22px rgba(50,160,70,0.4),
+    0 0 60px rgba(40,120,50,0.18);
+}
+
+/* ── 🎱 Pool Table ── */
+#canvas-wrap.border-pool {
+  border-radius: 4px !important;
+  background:
+    /* ── Interior ── */
+    linear-gradient(#070710, #070710) padding-box,
+
+    /* ── Pockets: black hole → dark leather ring → shadow → wood ── */
+    /* TL */ radial-gradient(circle,
+      #010101 0%, #0a0a0a 26%, #170c05 42%,
+      #3a1e0c 55%, #28140a 65%, #140905 75%, transparent 85%)
+      border-box   0%   0% / 16px 16px no-repeat,
+    /* TR */ radial-gradient(circle,
+      #010101 0%, #0a0a0a 26%, #170c05 42%,
+      #3a1e0c 55%, #28140a 65%, #140905 75%, transparent 85%)
+      border-box 100%   0% / 16px 16px no-repeat,
+    /* BL */ radial-gradient(circle,
+      #010101 0%, #0a0a0a 26%, #170c05 42%,
+      #3a1e0c 55%, #28140a 65%, #140905 75%, transparent 85%)
+      border-box   0% 100% / 16px 16px no-repeat,
+    /* BR */ radial-gradient(circle,
+      #010101 0%, #0a0a0a 26%, #170c05 42%,
+      #3a1e0c 55%, #28140a 65%, #140905 75%, transparent 85%)
+      border-box 100% 100% / 16px 16px no-repeat,
+    /* TC */ radial-gradient(circle,
+      #010101 0%, #0a0a0a 26%, #170c05 42%,
+      #3a1e0c 55%, #28140a 65%, #140905 75%, transparent 85%)
+      border-box  50%   0% / 16px 16px no-repeat,
+    /* BC */ radial-gradient(circle,
+      #010101 0%, #0a0a0a 26%, #170c05 42%,
+      #3a1e0c 55%, #28140a 65%, #140905 75%, transparent 85%)
+      border-box  50% 100% / 16px 16px no-repeat,
+
+    /* ── Wood grain — fine streaks (~5 px period, nearly along the rail) ── */
+    repeating-linear-gradient(174deg,
+      transparent           0px,  transparent           3px,
+      rgba(0,0,0,0.13)      3px,  rgba(0,0,0,0.13)      4px,
+      transparent           4px,  transparent           8px,
+      rgba(210,120,40,0.07) 8px,  rgba(210,120,40,0.07) 9px,
+      transparent           9px,  transparent          13px,
+      rgba(0,0,0,0.07)     13px,  rgba(0,0,0,0.07)     14px) border-box,
+
+    /* ── Wood grain — broad undulation (~28 px swell) ── */
+    repeating-linear-gradient(169deg,
+      rgba(0,0,0,0.00)       0px,
+      rgba(0,0,0,0.20)      10px,
+      rgba(175,88,22,0.08)  19px,
+      rgba(0,0,0,0.00)      28px) border-box,
+
+    /* ── Base mahogany — warm highlight at centre, dark at edges ── */
+    linear-gradient(155deg,
+      #0c0400  0%,  #2a0f04  8%,  #4c1e08 18%,  #7a3810 28%,
+      #9c4e1c 38%,  #b05a20 44%,
+      #8c4416 50%,
+      #b05a20 56%,  #9c4e1c 62%,
+      #7a3810 72%,  #4c1e08 82%,  #2a0f04 92%,  #0c0400 100%) border-box;
+
+  box-shadow:
+    /* green felt edge visible under rail */
+    inset 0 0 0 2px rgba(42,125,52,0.88),
+    inset 0 0 0 4px rgba(28,92,38,0.38),
+    inset 0 0 9px  rgba(22,78,32,0.22),
+    /* outer wood shadow + ambient */
+    0 0 24px rgba(0,0,0,0.82),
+    0 0 10px rgba(60,28,6,0.62);
+}
+
+/* ── 🎷 Jazz Cup ── */
+#canvas-wrap.border-jazz {
+  /* border-width and border-radius set to 40 px by _renderJazzBorder() via setProperty */
+  box-shadow:
+    inset 0 0 0 2px rgba(0,180,165,0.35),
+    0 0 28px rgba(0,0,0,0.85),
+    0 0 14px rgba(0,160,150,0.25);
+}
+
+/* ── 🪖 Army Camouflage ── */
+#canvas-wrap.border-camo {
+  border-radius: 2px !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(30,50,10,0.60),
+    0 0 16px rgba(0,0,0,0.80),
+    0 0  6px rgba(40,60,10,0.40);
+}
+
+/* ── 🌸 Cherry Blossom ── */
+#canvas-wrap.border-blossom {
+  border-radius: 8px !important;
+  background:
+    linear-gradient(#070710, #070710) padding-box,
+    url('cherry-blossom-border.png') 0 0 / 250px 250px border-box;
+  box-shadow:
+    inset 0 0 0 1px rgba(220,170,185,0.30),
+    0 0 20px rgba(0,0,0,0.80),
+    0 0 10px rgba(200,130,155,0.22);
+}
+
+
+/* ── ✕ None — keep the original thin border ── */
+#canvas-wrap.border-none::before,
+#canvas-wrap.border-none::after { display: none; }
+
+/* ── Frame picker dropdown (toolbar) ── */
+#app-border-picker {
+  position: relative;
+  display: inline-block;
+}
+#app-border-menu {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 500;
+  background: rgba(12,10,24,0.98);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px;
+  padding: 6px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+  min-width: 130px;
+  flex-direction: column;
+  gap: 3px;
+}
+#app-border-menu.open { display: flex; }
+.app-border-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: rgba(255,255,255,0.75);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+  transition: background .12s, color .12s;
+}
+.app-border-btn span { font-size: 14px; width: 18px; text-align: center; }
+.app-border-btn:hover {
+  background: rgba(255,255,255,0.08);
+  color: #fff;
+}
+.app-border-btn.active {
+  background: rgba(155,100,255,0.22);
+  border-color: rgba(155,100,255,0.55);
+  color: #fff;
 }
 
 /* ── Token modal extensions ── */
@@ -1744,6 +2270,35 @@ canvas { display: block; }
   justify-content: center; align-items: center;
 }
 #sheet-overlay.open { display: flex; }
+/* System-specific field visibility (driven by .system-4e / .system-5e on #sheet-panel) */
+#sheet-panel.system-4e .only-5e { display: none !important; }
+#sheet-panel.system-5e .only-4e { display: none !important; }
+/* System pill in the header — sits next to the title */
+#sheet-panel .sh-system-pill {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.18);
+  color: #fff;
+  margin-left: 8px;
+  cursor: pointer;
+  letter-spacing: 0.03em;
+}
+#sheet-panel.system-5e .sh-system-pill {
+  background: rgba(60,130,210,0.22);
+  border-color: rgba(120,200,255,0.55);
+  color: rgba(220,240,255,0.95);
+}
+#sheet-panel.system-4e .sh-system-pill {
+  background: rgba(190,130,40,0.22);
+  border-color: rgba(255,200,120,0.55);
+  color: rgba(255,240,220,0.95);
+}
+/* Tint the prof readout to match */
+#sheet-panel.system-5e #sh-prof-readout { color: rgba(120,200,255,0.85); }
+#sheet-panel.system-4e #sh-prof-readout { color: rgba(255,200,120,0.85); }
 #sheet-panel {
   width: 420px; max-height: 86vh; overflow-y: auto;
   background: #0E0C1E; border: 1px solid rgba(255,255,255,0.10);
@@ -2803,3 +3358,104 @@ body.player-restricted label[for="row-slider"] { display: none !important; }
   from { transform: translateX(-50%) translateY(8px); opacity: 0; }
   to   { transform: translateX(-50%) translateY(0);   opacity: 1; }
 }
+
+/* ── Settings popover ───────────────────────────────────────────── */
+#settings-wrap {
+  position: relative;
+}
+#settings-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 980;
+  min-width: 220px;
+  background: rgba(18,14,32,0.97);
+  border: 1px solid rgba(180,140,255,0.22);
+  border-radius: 10px;
+  padding: 12px 14px;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.7);
+  backdrop-filter: blur(8px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.settings-section-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  color: rgba(180,140,255,0.7);
+  text-transform: uppercase;
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  color: rgba(255,255,255,0.85);
+  user-select: none;
+}
+.settings-row input[type="checkbox"] {
+  accent-color: #9b6dff;
+  width: 14px; height: 14px;
+  cursor: pointer;
+}
+.settings-check-now {
+  align-self: flex-start;
+  padding: 4px 10px;
+  background: rgba(120,80,220,0.25);
+  border: 1px solid rgba(150,100,255,0.35);
+  border-radius: 6px;
+  color: #c8a8ff;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s;
+}
+.settings-check-now:hover { background: rgba(120,80,220,0.42); }
+#settings-update-status {
+  font-size: 11px;
+  color: rgba(255,255,255,0.55);
+  min-height: 14px;
+}
+
+/* ── Update available banner ────────────────────────────────────── */
+#update-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+  background: linear-gradient(90deg, rgba(200,140,30,0.92), rgba(180,100,20,0.92));
+  border-bottom: 1px solid rgba(255,200,80,0.35);
+  font-size: 12px;
+  color: #fff3cc;
+  backdrop-filter: blur(4px);
+  animation: banner-slide 0.25s ease-out;
+}
+@keyframes banner-slide {
+  from { transform: translateY(-100%); opacity: 0; }
+  to   { transform: translateY(0);     opacity: 1; }
+}
+#update-banner-msg { flex: 1; }
+#update-download-link {
+  padding: 3px 10px;
+  background: rgba(255,220,80,0.22);
+  border: 1px solid rgba(255,220,80,0.5);
+  border-radius: 5px;
+  color: #ffe080;
+  font-weight: 700;
+  font-size: 11px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+#update-download-link:hover { background: rgba(255,220,80,0.38); }
+#update-banner-dismiss {
+  background: none;
+  border: none;
+  color: rgba(255,255,255,0.55);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+}
+#update-banner-dismiss:hover { color: #fff; }
