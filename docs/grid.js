@@ -10218,8 +10218,8 @@ requestAnimationFrame(render);
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
 
-      const remote  = String(data.version || '').trim();
-      const dlUrl   = String(data.url     || '').trim();
+      const remote  = String(data.version      || '').trim();
+      const dlUrl   = String(data.download_url || '').trim();
 
       if (!remote || !dlUrl) {
         statusEl.textContent = 'Manifest missing version or URL.';
