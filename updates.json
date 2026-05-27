@@ -1,5 +1,5 @@
 {
-  "newVersion": "1.6",
-  "downloadURL": "https://github.com/noahmarc/arcaneoverlay/releases/download/1.6/ArcaneOverlay-mac.zip",
-  "notes": "Fire/poison border fix, ice shimmer sync, auto-update checker"
+  "version": "1.6",
+  "download_url": "https://github.com/noahmarc/arcaneoverlay/releases/download/1.6/ArcaneOverlay-mac.zip",
+  "release_notes": "Fire/poison border fix, ice shimmer sync, auto-update checker"
 }
