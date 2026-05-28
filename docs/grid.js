@@ -8,7 +8,7 @@ const EFFECTS = {
   poison:    { r:80,  g:160, b:20,  glow:'#70CC20', inkR:'100,200,30'  },
   ice:       { r:50,  g:140, b:220, glow:'#50BBFF', inkR:'60,160,250'  },
   lightning: { r:140, g:100, b:255, glow:'#8060FF', inkR:'160,120,255' },
-  holy:      { r:180, g:170, b:255, glow:'#D0CCFF', inkR:'200,190,255' },
+  holy:      { r:255, g:215, b:80,  glow:'#FFE060', inkR:'255,220,90'  },
   erase:     { r:220, g:60,  b:60,  glow:'#FF4040', inkR:'220,70,70'   },
   water:     { r:30,  g:110, b:200, glow:'#1090FF', inkR:'40,130,220'  },
   grass:     { r:60,  g:160, b:40,  glow:'#50CC28', inkR:'70,180,45'   },
@@ -341,11 +341,11 @@ const cellPhase = {};
 function getPhase(r,c){const k=r+','+c;if(!cellPhase[k])cellPhase[k]=Math.random()*Math.PI*2;return cellPhase[k];}
 
 const _effectSpeeds = {fire:120, poison:140, ice:160, lightning:60, holy:130};
-const _effectBg = {fire:[30,5,0], poison:[5,15,3], ice:[3,8,20], lightning:[4,2,18], holy:[8,4,18]};
+const _effectBg = {fire:[30,5,0], poison:[5,15,3], ice:[3,8,20], lightning:[4,2,18], holy:[28,18,2]};
 _effectBg['difficult'] = [18,16,4];
 _effectBg['blood'] = [20,2,3];
 _effectBg['web']   = [8, 6, 12];
-const _borderColors = {fire:'#E85020',poison:'#50A010',ice:'#3080C0',lightning:'#7050EE',holy:'#C0A020'};
+const _borderColors = {fire:'#E85020',poison:'#50A010',ice:'#3080C0',lightning:'#7050EE',holy:'#FFC830'};
 _borderColors['difficult'] = '#C8A000';
 _borderColors['blood'] = '#801020';
 
@@ -481,53 +481,169 @@ function drawCell(c2, r, c, eff, ts) {
       br=Math.round(br/statusEffs.length); bg_=Math.round(bg_/statusEffs.length); bb=Math.round(bb/statusEffs.length);
       c2.fillStyle=`rgba(${br},${bg_},${bb},${bgA})`; c2.fillRect(x,y,CELL,CELL);
 
-      const key = comboKey(statusEffs);
-      const avgSpd = Math.round(statusEffs.reduce((s,e)=>s+(_effectSpeeds[e]||120),0)/statusEffs.length);
-      const fIdxCombo = ts ? (Math.floor(ts/avgSpd) + phOff) % 8 : phOff % 8;
+      // ── Procedural combo render ──────────────────────────────────
+      // Each effect draws its own pixel art with additive blending
+      // (globalCompositeOperation='lighter'), so two bright cores fuse
+      // into a new colour: fire+poison → toxic-brown, ice+lightning
+      // → cold-violet, lightning+holy → divine-flash, etc.
+      // Adjacent same-effect cells still merge per-effect via _neighborsOf().
+      const _hasEffAt = (rr, cc, eff) => {
+        const k = rr + ',' + cc;
+        return !!(grid[k] && grid[k].includes(eff));
+      };
+      const _neighborsOf = (eff) => ({
+        n:  _hasEffAt(r-1, c,   eff), s:  _hasEffAt(r+1, c,   eff),
+        e:  _hasEffAt(r,   c+1, eff), w:  _hasEffAt(r,   c-1, eff),
+        ne: _hasEffAt(r-1, c+1, eff), nw: _hasEffAt(r-1, c-1, eff),
+        se: _hasEffAt(r+1, c+1, eff), sw: _hasEffAt(r+1, c-1, eff),
+      });
 
-      if (statusEffs.length === 2 && _comboSheets[key]?.complete && _comboSheets[key]?.naturalWidth) {
-        const img = _comboSheets[key];
-        const fx=(fIdxCombo%4)*SFW, fy=Math.floor(fIdxCombo/4)*SFH;
-        c2.save(); c2.globalCompositeOperation='lighter';
-        c2.drawImage(img, fx, fy, SFW, SFH, x, y, CELL, CELL);
-        c2.restore();
-      } else {
-        let drawn = null;
-        for (let i=0; i<statusEffs.length && !drawn; i++) {
-          for (let j=i+1; j<statusEffs.length && !drawn; j++) {
-            const pk=[statusEffs[i],statusEffs[j]].sort().join('-');
-            const ci=_comboSheets[pk];
-            if (ci?.complete && ci?.naturalWidth) {
-              const fx=(fIdxCombo%4)*SFW, fy=Math.floor(fIdxCombo/4)*SFH;
-              c2.save(); c2.globalCompositeOperation='lighter';
-              c2.drawImage(ci, fx, fy, SFW, SFH, x, y, CELL, CELL);
-              c2.restore(); drawn=[statusEffs[i],statusEffs[j]];
-            }
+      // Special-case combos with custom physical reactions
+      const hasFireIce       = statusEffs.length === 2
+        && statusEffs.includes('fire') && statusEffs.includes('ice');
+      const hasFirePoison    = statusEffs.length === 2
+        && statusEffs.includes('fire') && statusEffs.includes('poison');
+      const hasIceLightning  = statusEffs.length === 2
+        && statusEffs.includes('ice') && statusEffs.includes('lightning');
+      const hasFireLightning = statusEffs.length === 2
+        && statusEffs.includes('fire') && statusEffs.includes('lightning');
+      const hasIcePoison     = statusEffs.length === 2
+        && statusEffs.includes('ice') && statusEffs.includes('poison');
+
+      // Fire + Ice → Water (physics: ice melts, fire is quenched, the
+      // cell becomes a puddle of flowing water).
+      if (hasFireIce) {
+        const wPat = (typeof getWaterPattern === 'function') ? getWaterPattern() : null;
+        if (wPat) {
+          const scrollT = ts ? (ts * 0.025) % CELL : 0;
+          if (wPat.setTransform) {
+            // Slow drift roughly NE→SW so it looks like a melt-runoff
+            wPat.setTransform(new DOMMatrix().rotate(135 - 90).translate(0, scrollT));
           }
+          c2.fillStyle = wPat;
+          c2.fillRect(x, y, CELL, CELL);
+        } else {
+          c2.fillStyle = '#0d2d50'; c2.fillRect(x, y, CELL, CELL);
+          c2.globalAlpha = .5; c2.strokeStyle = '#42b8f8'; c2.lineWidth = .8;
+          const wOff = ts ? (ts * 0.025) % CELL : 0;
+          for (let i = 0; i < 3; i++) {
+            const wy = y + ((i * CELL / 3 + wOff) % CELL);
+            c2.beginPath(); c2.moveTo(x, wy); c2.lineTo(x + CELL, wy); c2.stroke();
+          }
+          c2.globalAlpha = 1;
         }
-        const remaining = drawn ? statusEffs.filter(e=>!drawn.includes(e)) : statusEffs;
-        for (const e of remaining) {
-          const fIdx2 = ts ? (Math.floor(ts/(_effectSpeeds[e]||120)) + phOff) % 8 : phOff % 8;
-          drawSprite(c2, e, fIdx2, x, y);
+        // A few rising steam wisps in the first few frames of each pulse
+        const sFrame = ts ? Math.floor(ts / 90) : 0;
+        const wisp = sFrame % 18;
+        if (wisp < 4) {
+          c2.globalAlpha = 0.32 * (1 - wisp / 4);
+          c2.fillStyle = '#f0fafc';
+          const wpx = Math.max(1, Math.round(CELL / 16));
+          // Three wisps at fixed horizontal positions, rising over the wisp window
+          for (let wi = 0; wi < 3; wi++) {
+            const wcx = x + Math.floor(CELL * (0.25 + 0.25 * wi));
+            const wcy = y + Math.floor(CELL * (0.45 - wisp * 0.08));
+            c2.fillRect(wcx, wcy, wpx, wpx);
+          }
+          c2.globalAlpha = 1;
+        }
+        // Skip the additive-blend composite for this combo
+      } else if (hasFirePoison) {
+        // Fire + Poison → Explosion (volatile toxic gas ignites in a
+        // repeating burst).  All adjacent explosion cells share one
+        // global clock so a cluster detonates in sync.
+        const subN = _neighborsOf('fire'); // any combined-fire neighbors
+        for (const eff of statusEffs) {
+          // Merge with same-type neighbors as well
+          const n2 = _neighborsOf(eff);
+          for (const k of Object.keys(n2)) subN[k] = subN[k] || n2[k];
+        }
+        _drawExplosionStatus(c2, x, y, ts, ph, subN);
+      } else if (hasIceLightning) {
+        // Ice + Lightning → Shocked Ice (lightning supercharges and arcs
+        // along the cracks in the ice).  Renders the ice base then
+        // electrifies the crack network.
+        const lKey = r + ',' + c;
+        const lAng = (lightningCellFlow[lKey] !== undefined)
+          ? lightningCellFlow[lKey] : lightningFlowAngle;
+        _drawShockedIceStatus(c2, x, y, ts, ph, r, c, lAng);
+      } else if (hasFireLightning) {
+        // Fire + Lightning → Plasma (ionized state: bright cyan/violet
+        // core with swirling tendrils + scintillation).  Adjacent
+        // plasma cells merge via the same additive falloff used by fire.
+        const subN = _neighborsOf('fire');
+        for (const eff of statusEffs) {
+          const n2 = _neighborsOf(eff);
+          for (const k of Object.keys(n2)) subN[k] = subN[k] || n2[k];
+        }
+        _drawPlasmaStatus(c2, x, y, ts, ph, subN);
+      } else if (hasIcePoison) {
+        // Ice + Poison → Poisoned Ice (toxic gas seeps up through the
+        // cracks in the ice surface).
+        _drawPoisonedIceStatus(c2, x, y, ts, ph, r, c);
+      } else {
+
+      c2.save();
+      c2.globalCompositeOperation = 'lighter';
+      c2.globalAlpha = 0.72;          // each effect contributes ~72%, so two
+                                       // bright cores sum near saturation
+                                       // without washing entirely to white
+      for (const eff of statusEffs) {
+        const subN = _neighborsOf(eff);
+        if (eff === 'fire') {
+          _drawFireStatus(c2, x, y, ts, ph, subN);
+        } else if (eff === 'poison') {
+          _drawPoisonStatus(c2, x, y, ts, ph, subN);
+        } else if (eff === 'ice') {
+          _drawIceStatus(c2, x, y, ts, r, c);
+        } else if (eff === 'lightning') {
+          const lKey = r + ',' + c;
+          const lAng = (lightningCellFlow[lKey] !== undefined)
+            ? lightningCellFlow[lKey] : lightningFlowAngle;
+          _drawLightningStatus(c2, x, y, ts, ph, lAng);
+        } else if (eff === 'holy') {
+          _drawRadiantStatus(c2, x, y, ts, ph, subN);
+        }
+      }
+      c2.restore();
+
+      // Combo-specific accent overlay — a tiny "fusion marker" pixel at
+      // the centre that pulses, makes it obvious to the player that this
+      // is a combined effect (not just a single one).
+      if (statusEffs.length === 2) {
+        const t2 = (ts || 0);
+        const pulse = 0.55 + 0.45 * Math.abs(Math.sin(t2 * 0.005 + ph));
+        if (pulse > 0.85) {
+          c2.fillStyle = '#ffffff';
+          const cx2 = x + Math.floor(CELL / 2);
+          const cy2 = y + Math.floor(CELL / 2);
+          const pxs = Math.max(1, Math.round(CELL / 16));
+          c2.fillRect(cx2 - Math.floor(pxs/2), cy2 - Math.floor(pxs/2), pxs, pxs);
         }
       }
 
-      // Cycling multi-colour border
-      const bcs = statusEffs.map(e => _borderColors[e]||'#888');
-      c2.globalAlpha = 0.7;
-      c2.lineWidth = 1.5;
-      for (let i = 0; i < bcs.length; i++) {
-        const t2 = (ts || 0) * 0.0008;
-        const offset = (i / bcs.length + t2) % 1;
-        c2.strokeStyle = bcs[i];
-        c2.beginPath();
-        const perim = 2*(CELL-1.2);
-        c2.setLineDash([perim/bcs.length * 0.7, perim - perim/bcs.length * 0.7]);
-        c2.lineDashOffset = -(offset * perim);
-        c2.strokeRect(x+.6,y+.6,CELL-1.2,CELL-1.2);
+      } // end of fire+ice else-branch
+
+      // Cycling multi-colour border — suppressed for combos whose own
+      // animation already reads as full-cell (plasma's swirling tendrils
+      // make a perimeter stroke redundant and visually noisy).
+      if (!hasFireLightning) {
+        const bcs = statusEffs.map(e => _borderColors[e]||'#888');
+        c2.globalAlpha = 0.7;
+        c2.lineWidth = 1.5;
+        for (let i = 0; i < bcs.length; i++) {
+          const t2 = (ts || 0) * 0.0008;
+          const offset = (i / bcs.length + t2) % 1;
+          c2.strokeStyle = bcs[i];
+          c2.beginPath();
+          const perim = 2*(CELL-1.2);
+          c2.setLineDash([perim/bcs.length * 0.7, perim - perim/bcs.length * 0.7]);
+          c2.lineDashOffset = -(offset * perim);
+          c2.strokeRect(x+.6,y+.6,CELL-1.2,CELL-1.2);
+        }
+        c2.setLineDash([]);
+        c2.globalAlpha = 1;
       }
-      c2.setLineDash([]);
-      c2.globalAlpha = 1;
       c2.restore();
       return;
 
@@ -573,19 +689,11 @@ function drawCell(c2, r, c, eff, ts) {
         const lAng = (lightningCellFlow[cellKey] !== undefined) ? lightningCellFlow[cellKey] : lightningFlowAngle;
         _drawLightningStatus(c2, x, y, ts, ph, lAng);
       } else if (se==='holy') {
-        c2.fillStyle=`rgba(8,4,18,${bgA})`; c2.fillRect(x,y,CELL,CELL);
-        const fIdx4 = ts ? (Math.floor(ts/130) + phOff) % 8 : phOff % 8;
-        if (!drawSprite(c2, 'holy', fIdx4, x, y)) {
-          const p=ts?0.65+0.35*Math.abs(Math.sin(ts*.003+ph)):1;
-          const g=c2.createRadialGradient(x+CELL/2,y+CELL/2,0,x+CELL/2,y+CELL/2,CELL*.72);
-          g.addColorStop(0,`rgba(255,255,220,${.55*p})`); g.addColorStop(.45,`rgba(200,185,255,${.33*p})`); g.addColorStop(1,'rgba(80,60,180,0)');
-          c2.fillStyle=g; c2.fillRect(x,y,CELL,CELL);
-          c2.globalAlpha=.28*p; c2.strokeStyle='rgba(255,255,200,0.9)'; c2.lineWidth=.8;
-          const cx2=x+CELL/2, cy2=y+CELL/2, r2=CELL*.32;
-          for(let a=0;a<4;a++){const ag=a*Math.PI/2;c2.beginPath();c2.moveTo(cx2,cy2);c2.lineTo(cx2+Math.cos(ag)*r2,cy2+Math.sin(ag)*r2);c2.stroke();}
-          for(let a=0;a<4;a++){const ag=a*Math.PI/2+Math.PI/4;c2.beginPath();c2.moveTo(cx2,cy2);c2.lineTo(cx2+Math.cos(ag)*r2*.65,cy2+Math.sin(ag)*r2*.65);c2.stroke();}
-          c2.globalAlpha=1;
-        }
+        if (!hasTerrain) { c2.fillStyle=`rgba(28,18,2,${bgA})`; c2.fillRect(x,y,CELL,CELL); }
+        const _hasHoly = (rr, cc) => { const k = rr+','+cc; return !!(grid[k] && grid[k].includes('holy')); };
+        const N = { n: _hasHoly(r-1,c), s: _hasHoly(r+1,c), e: _hasHoly(r,c+1), w: _hasHoly(r,c-1),
+                    ne: _hasHoly(r-1,c+1), nw: _hasHoly(r-1,c-1), se: _hasHoly(r+1,c+1), sw: _hasHoly(r+1,c-1) };
+        _drawRadiantStatus(c2, x, y, ts, ph, N);
       } else if (se==='difficult') {
         c2.fillStyle=`rgba(180,150,30,${bgA*0.45})`; c2.fillRect(x,y,CELL,CELL);
         c2.save();
@@ -628,7 +736,7 @@ function drawCell(c2, r, c, eff, ts) {
   }
 
   // ── Border: status colour takes priority; fall back to terrain ───
-  const _bcMap = {fire:'#E85020',poison:'#50A010',ice:'#3080C0',lightning:'#7050EE',holy:'#C0A020',erase:'#A02020',water:'#1870C0',grass:'#3a8818',grass_tall:'#1e5c0a',grass_dead:'#8a6a18',grass_jungle:'#0a6820',grass_snow:'#90b8d0',grass_flowers:'#48a820',grass_mushrooms:'#5a6828',grass_autumn:'#a05c18',lava:'#CC3300',stone:'#8a7a6a',stone_cracked:'#7a7068',stone_mossy:'#3a8a26',stone_dark:'#3a4054',stone_sand:'#a8804a',stone_brick:'#c25a3a',difficult:'#C8A000',blood:'#801020',mud:'#5a3218',web:'#8870a0',swamp:'#3a5018'};
+  const _bcMap = {fire:'#E85020',poison:'#50A010',ice:'#3080C0',lightning:'#7050EE',holy:'#FFC830',erase:'#A02020',water:'#1870C0',grass:'#3a8818',grass_tall:'#1e5c0a',grass_dead:'#8a6a18',grass_jungle:'#0a6820',grass_snow:'#90b8d0',grass_flowers:'#48a820',grass_mushrooms:'#5a6828',grass_autumn:'#a05c18',lava:'#CC3300',stone:'#8a7a6a',stone_cracked:'#7a7068',stone_mossy:'#3a8a26',stone_dark:'#3a4054',stone_sand:'#a8804a',stone_brick:'#c25a3a',difficult:'#C8A000',blood:'#801020',mud:'#5a3218',web:'#8870a0',swamp:'#3a5018'};
   const borderEff = hasStatus ? statusEffs[0] : (hasTerrain ? terrainEffs[0] : null);
   // Lightning, fire, and poison render their own visuals that fill the cell;
   // a perimeter stroke just adds a distracting colored frame.
@@ -1241,27 +1349,7 @@ function _drawIceStatus(c2, x, y, ts, gr, gc) {
     }
   }
 
-  // ── Cracks (hand-traced paths give the iconic ice-block look) ──
-  c2.fillStyle = '#3868a0';
-  const cracks = [
-    // Main diagonal crack — top edge down through middle
-    [5,0],[5,1],[6,2],[6,3],[7,4],[8,5],[8,6],[9,7],[10,8],[10,9],[11,10],[11,11],
-    // Left branch off the main crack
-    [5,3],[4,3],[3,4],[2,4],[1,5],
-    // Right branch
-    [9,7],[10,7],[11,7],[12,7],
-    // Top-right short crack
-    [13,1],[14,2],[14,3],
-    // Bottom-left short crack
-    [2,12],[3,13],[3,14],[4,15],
-    // Small bottom-right detail
-    [13,12],[14,13],
-  ];
-  for (const [cc, cr] of cracks) px1(cc, cr);
-  // Crack shadow pixels (darker tone on one side adds depth)
-  c2.fillStyle = '#1e4070';
-  const shadows = [[7,1],[8,2],[9,3],[6,15]];
-  for (const [cc, cr] of shadows) px1(cc, cr);
+  // (Cracks removed — the surface now reads as smooth ice sheet, no fissures.)
 
   // ── Sweeping diagonal glint — travels NW→SE across the whole ice sheet ──
   // globalGlint advances on a shared clock; each tile subtracts its own
@@ -1535,6 +1623,597 @@ function _drawPoisonStatus(c2, x, y, ts, ph, neighbors) {
     }
     // else: bubble dispersed (gas remains)
   }
+}
+
+// RADIANT — divine light: a steady bright golden core with sharp 8-point
+// starburst rays emanating outward, and rapid scintillation (twinkling
+// sparkles) across the surface. Adjacent radiant tiles merge using the
+// same additive falloff model as fire/poison.
+//
+// Design notes (light, not gas):
+//   - NO breathing pulse — light has steady luminance, not contraction
+//   - Fixed 8-point starburst rays (cardinal + diagonal) — not rotating
+//   - High-frequency scintillation — sparkles flick on/off every 1-2 frames
+//   - Sharp colour bands — light has defined edges, gas has soft fades
+function _drawRadiantStatus(c2, x, y, ts, ph, neighbors) {
+  const { TG, px1 } = _pixHelpers(c2, x, y);
+  const frame = ts ? Math.floor(ts / 50) : 0;    // faster clock for crisp twinkle
+  const N     = neighbors || {};
+
+  const cx = 7.5, cy = 7.5;
+
+  // Additive linear-falloff "glow" function — same construction as fire's
+  // heat() so two adjacent radiant cells sum to ~1.0 at their shared edge,
+  // making the seam vanish.
+  const glow = (dx, dy) => {
+    const d = Math.sqrt(dx * dx + dy * dy);
+    return d < 16 ? 1 - d / 16 : 0;
+  };
+
+  // 8-point starburst rays — FIXED directions (N/S/E/W + diagonals), not
+  // rotating.  A pixel sits "on" a ray when its angle from centre is within
+  // a narrow band of one of the 8 axes (mod π/4).
+  const rayBoost = (dx, dy) => {
+    const d = Math.sqrt(dx * dx + dy * dy);
+    if (d < 1.0 || d > 7.5) return 0;
+    const ang = Math.atan2(dy, dx);
+    const local = ((ang) % (Math.PI / 4) + Math.PI * 2) % (Math.PI / 4);
+    const armDist = Math.min(local, Math.PI / 4 - local);
+    // Sharper ray (smaller angular tolerance) — light has defined beams
+    return Math.max(0, 0.18 - armDist * 0.6) * (1 - d / 8);
+  };
+
+  for (let row = 0; row < TG; row++) {
+    for (let col = 0; col < TG; col++) {
+      const dx = col - cx;
+      const dy = row - cy;
+
+      // Edge-fade ray boost at neighbour seams (rays only appear within
+      // each cell's interior; the perimeter relies on symmetric glow()).
+      const edgeDist = Math.min(
+        N.e ? (TG - 1 - col) : 99, N.w ? col           : 99,
+        N.s ? (TG - 1 - row) : 99, N.n ? row           : 99
+      );
+      const symFactor = edgeDist < 3 ? edgeDist / 3 : 1;
+
+      // Steady core intensity (NO breathing pulse — that read as gaseous).
+      const r = Math.sqrt(dx * dx + dy * dy);
+      let total = Math.max(0, 1 - r / 16) + rayBoost(dx, dy) * symFactor;
+
+      // Neighbour glow contributions
+      if (N.e)  total += glow(dx - TG, dy);
+      if (N.w)  total += glow(dx + TG, dy);
+      if (N.s)  total += glow(dx,      dy - TG);
+      if (N.n)  total += glow(dx,      dy + TG);
+      if (N.se) total += glow(dx - TG, dy - TG);
+      if (N.sw) total += glow(dx + TG, dy - TG);
+      if (N.ne) total += glow(dx - TG, dy + TG);
+      if (N.nw) total += glow(dx + TG, dy + TG);
+
+      // High-frequency scintillation: tiny random brightness bumps that
+      // change every frame.  Only applies in the medium-brightness band
+      // (the rays/fringe), so the core stays clean white.
+      if (total > 0.40 && total < 0.85) {
+        const hash = (col * 0x9E37 + row * 0x85EB + frame * 0xC2B2) >>> 0;
+        if ((hash % 100) < 11) total += 0.14;    // ~11% of frames: brief flicker
+      }
+
+      // Sharper colour bands — discrete steps of light, not soft gradient
+      let color = null;
+      if      (total > 0.97) color = '#ffffff';   // pure white core
+      else if (total > 0.86) color = '#fff8c0';   // cream
+      else if (total > 0.74) color = '#ffe680';   // light gold
+      else if (total > 0.62) color = '#ffc830';   // gold
+      else if (total > 0.50) color = '#e89818';   // dark gold
+      else if (total > 0.38) color = '#a87010';   // bronze
+      else if (total > 0.28) {
+        // Outermost fringe — sparse sparkle pixels (rapid on/off)
+        const hash = (col * 0x9E37 + row * 0x85EB + frame * 0xC2B2) >>> 0;
+        if ((hash % 100) < 32) color = '#704808';
+      }
+      if (color) {
+        c2.fillStyle = color;
+        px1(col, row);
+      }
+    }
+  }
+
+  // Bright sparkles — short bursts of pure-white pixels at random
+  // positions, regenerated every 2 frames.  Reads as light scintillating
+  // off a surface, not as drifting particles.
+  const sparkleCount = 3;
+  const sparkleEpoch = Math.floor(frame / 2);    // new positions every 2 frames
+  for (let si = 0; si < sparkleCount; si++) {
+    const h = (sparkleEpoch * 0x9E37 + si * 0x85EB) >>> 0;
+    const sc = 2 + (h % 12);
+    const sr = 2 + ((h >>> 4) % 12);
+    // Skip if this position is right at a neighbour seam (avoid edge-blink)
+    if ((N.e && sc >= 14) || (N.w && sc <= 1)) continue;
+    if ((N.s && sr >= 14) || (N.n && sr <= 1)) continue;
+    c2.fillStyle = '#ffffff';
+    px1(sc, sr);
+  }
+}
+
+// EXPLOSION — the Fire + Poison reaction.  A repeating violent burst:
+// bright white-hot flash, expanding shockwave, hot debris fallout, then
+// a brief lull before re-igniting.  All explosion cells share a global
+// clock so a cluster detonates in unison.
+function _drawExplosionStatus(c2, x, y, ts, ph, neighbors) {
+  const { TG, px1 } = _pixHelpers(c2, x, y);
+  const frame = ts ? Math.floor(ts / 80) : 0;
+  const N     = neighbors || {};
+  const cycle = 24;
+  const t     = frame % cycle;                 // 0..23 — explosion phase
+  const cx    = 7.5, cy = 7.5;
+
+  // Phase windows:
+  //   0–2   white-hot flash + first shockwave
+  //   3–5   peak: full orange-red shockwave fills cell
+  //   6–10  dissipating: red embers + dark smoke
+  //   11–17 quiet smolder: dim red glow at centre
+  //   18–22 build-up: small spark grows back into white-hot
+  //   23     pause beat before re-detonation
+
+  // Compute the current "shock radius" — how far the blast has expanded.
+  // Grows from 0 at frame 0 to ~10 by frame 5, then fades.
+  const shockRadius = t <= 5 ? t * 2.0 : (t < 10 ? 10 + (t - 5) * 0.6 : 0);
+  const shockAlive  = t <= 9;
+
+  // Build palette per phase
+  const phaseColors = (function () {
+    if (t <= 2) return ['#ffffff', '#fff8c0', '#ffe060', '#ffa820', '#e04000'];
+    if (t <= 5) return ['#fff8c0', '#ffe060', '#ffa820', '#e04000', '#801008'];
+    if (t <= 9) return ['#ffa820', '#e04000', '#801008', '#3a0808', '#202020'];
+    if (t <= 17) return ['#a02810', '#601004', '#280808', '#181010', null];
+    return ['#fff8c0', '#ffa820', '#e04000', '#801008', '#3a0808'];
+  })();
+
+  for (let row = 0; row < TG; row++) {
+    for (let col = 0; col < TG; col++) {
+      const dx = col - cx;
+      const dy = row - cy;
+      const d  = Math.sqrt(dx * dx + dy * dy);
+
+      // Edge fade so the cell merges seamlessly with adjacent explosion
+      // cells (same construction as fire/poison).
+      const edgeDist = Math.min(
+        N.e ? (TG - 1 - col) : 99, N.w ? col           : 99,
+        N.s ? (TG - 1 - row) : 99, N.n ? row           : 99
+      );
+      const symFactor = edgeDist < 3 ? edgeDist / 3 : 1;
+
+      // Core intensity: time-varying.
+      // During flash/peak: bright centre saturated, falloff outward.
+      // During fade: dimmer overall.
+      // During build: tiny core, mostly empty.
+      let intensity = 0;
+      if (t <= 5) {
+        // Flash + peak — bright everywhere within shock radius
+        intensity = Math.max(0, 1 - d / Math.max(2, shockRadius * 1.6));
+      } else if (t <= 9) {
+        // Dissipating — embers near centre, faint ring at shock radius
+        intensity = Math.max(0, 0.7 - d / 10);
+        const ringD = Math.abs(d - shockRadius * 0.6);
+        if (ringD < 1.4) intensity = Math.max(intensity, 0.55 - ringD * 0.3);
+      } else if (t <= 17) {
+        // Smolder — small dim core
+        intensity = Math.max(0, 0.4 - d / 5);
+      } else {
+        // Build-up — spark growing
+        const buildR = (t - 17) * 0.7;
+        intensity = Math.max(0, 1 - d / Math.max(1.5, buildR * 2));
+      }
+      intensity *= symFactor;
+
+      // Sharp shockwave ring during flash/peak — bright pixels exactly
+      // at the expanding radius.
+      let ringHit = false;
+      if (shockAlive && t >= 1) {
+        const ringD = Math.abs(d - shockRadius);
+        if (ringD < 1.2) { ringHit = true; intensity = Math.max(intensity, 0.95); }
+      }
+
+      // Map intensity to phase palette
+      let color = null;
+      if      (intensity > 0.86) color = phaseColors[0];
+      else if (intensity > 0.70) color = phaseColors[1];
+      else if (intensity > 0.54) color = phaseColors[2];
+      else if (intensity > 0.36) color = phaseColors[3];
+      else if (intensity > 0.20) color = phaseColors[4];
+
+      // Hot debris speckle during the falling-debris phase (6..10):
+      // random pixels in the outer band flash bright orange.
+      if (!color && t >= 6 && t <= 11 && d > 3 && d < 9) {
+        const hash = (col * 0x9E37 + row * 0x85EB + frame * 0xC2B2) >>> 0;
+        if ((hash % 100) < 14) color = '#ffa820';
+        else if ((hash % 100) < 22) color = '#e04000';
+      }
+
+      // Smoke smudges during smolder phase: dark pixels scattered
+      if (!color && t >= 8 && t <= 16 && d < 8) {
+        const hash = (col * 0x9E37 + row * 0x85EB + 0xDEAD) >>> 0;
+        if (((hash + Math.floor(frame / 3)) % 100) < 10) color = '#201810';
+      }
+
+      if (color) {
+        c2.fillStyle = color;
+        px1(col, row);
+      }
+    }
+  }
+
+  // Outward-flying shrapnel pixels — short streaks at the cardinal
+  // directions during the peak/dissipating phases, only on sides that
+  // face open space (no neighbour explosion).
+  if (t >= 2 && t <= 7) {
+    const shrapPx = [
+      { col: 8, row: 1,  side: 'n' }, { col: 14, row: 8, side: 'e' },
+      { col: 8, row: 14, side: 's' }, { col: 1,  row: 8, side: 'w' },
+    ];
+    c2.fillStyle = '#ffe060';
+    for (const s of shrapPx) {
+      if (N[s.side]) continue;
+      px1(s.col, s.row);
+    }
+    c2.fillStyle = '#ff7800';
+    if (!N.ne) px1(13, 2);
+    if (!N.nw) px1(2,  2);
+    if (!N.se) px1(13, 13);
+    if (!N.sw) px1(2,  13);
+  }
+}
+
+// SHOCKED ICE — Ice + Lightning combo.  Ice surface base, but the crack
+// network is supercharged with electricity: rapidly flickering cyan-white
+// arcs along the crack paths, periodic full-cell flashes, and bright
+// sparks at crack endpoints.
+function _drawShockedIceStatus(c2, x, y, ts, ph, gr, gc, lAng) {
+  const { TG, px1 } = _pixHelpers(c2, x, y);
+  const frame = ts ? Math.floor(ts / 60) : 0;    // faster than ice (more electric)
+
+  // ── Base layer: ice noise (slightly darkened so the arcs read brighter) ──
+  for (let row = 0; row < TG; row++) {
+    for (let col = 0; col < TG; col++) {
+      const hash = (col * 0x9E37 + row * 0x85EB) >>> 0;
+      const v = hash % 100;
+      let color;
+      if      (v < 18) color = '#5a8090';   // darker
+      else if (v < 50) color = '#7ca4b8';   // base
+      else if (v < 82) color = '#94b8c8';   // lighter
+      else             color = '#b8cad8';   // frost
+      c2.fillStyle = color;
+      px1(col, row);
+    }
+  }
+
+  // Periodic full-cell flash: synced across all shocked-ice cells
+  // (no per-cell phase), so a cluster lights up together.  Phase ~12% of
+  // the time — fast strobe-like blinks.
+  const flashPhase = frame % 9;
+  const flashing   = flashPhase < 1;
+
+  // ── Electric arcs along the crack paths ──────────────────────────
+  // Crack network (same skeleton as _drawIceStatus so the geometry is
+  // recognisable), but rendered as glowing electric pixels.
+  const cracks = [
+    [5,0],[5,1],[6,2],[6,3],[7,4],[8,5],[8,6],[9,7],[10,8],[10,9],[11,10],[11,11],
+    [5,3],[4,3],[3,4],[2,4],[1,5],
+    [10,7],[11,7],[12,7],
+    [13,1],[14,2],[14,3],
+    [2,12],[3,13],[3,14],[4,15],
+    [13,12],[14,13],
+  ];
+  // Arc travels along the crack at high speed — each frame, a "head"
+  // position moves along the crack and lights pixels around it brightly.
+  const head = frame % cracks.length;
+
+  for (let i = 0; i < cracks.length; i++) {
+    const [cc, cr] = cracks[i];
+    // Distance (in path-index space) from the bright arc head
+    const dHead = Math.min(
+      ((i - head) % cracks.length + cracks.length) % cracks.length,
+      ((head - i) % cracks.length + cracks.length) % cracks.length
+    );
+    let color;
+    if (flashing)        color = '#ffffff';
+    else if (dHead === 0) color = '#ffffff';   // arc head — white hot
+    else if (dHead <= 1)  color = '#c8eeff';   // bright cyan
+    else if (dHead <= 3)  color = '#80c8ff';   // pale electric blue
+    else                  color = '#3868a0';   // resting crack shadow
+    c2.fillStyle = color;
+    px1(cc, cr);
+  }
+
+  // Shadow pixels next to the crack — turn purple-violet when flashing
+  // (the ice itself is charged), otherwise stay dim navy.
+  const shadowPx = [[7,1],[8,2],[9,3],[6,15],[4,4],[11,8]];
+  c2.fillStyle = flashing ? '#8060ff' : '#1e4070';
+  for (const [cc, cr] of shadowPx) px1(cc, cr);
+
+  // ── Bright sparks at crack endpoints — rapid-fire flicker ──
+  // Endpoints of the crack branches (where electricity would jump off).
+  const endpoints = [[5,0],[1,5],[12,7],[14,3],[4,15],[14,13],[11,11]];
+  for (let si = 0; si < endpoints.length; si++) {
+    const [cc, cr] = endpoints[si];
+    const sparkPhase = (frame * 2 + si * 3) % 7;
+    if (sparkPhase < 2) {
+      c2.fillStyle = sparkPhase === 0 ? '#ffffff' : '#c8eeff';
+      px1(cc, cr);
+      // Tiny arc bloom around the spark
+      if (sparkPhase === 0) {
+        c2.fillStyle = '#80c8ff';
+        if (cc > 0)      px1(cc - 1, cr);
+        if (cc < TG - 1) px1(cc + 1, cr);
+        if (cr > 0)      px1(cc, cr - 1);
+        if (cr < TG - 1) px1(cc, cr + 1);
+      }
+    }
+  }
+
+  // ── Full-cell tint during flash ──
+  // Overlay a faint violet wash on top to sell the "charged" feel.
+  if (flashing) {
+    c2.fillStyle = 'rgba(180, 160, 255, 0.18)';
+    c2.fillRect(x, y, CELL, CELL);
+  }
+
+  // ── Drifting micro-arcs across the ice surface ──
+  // Random pixels in the ice surface flick to bright cyan briefly — like
+  // small static discharges crawling across the ice.
+  const microCount = 2;
+  for (let mi = 0; mi < microCount; mi++) {
+    const h = (frame * 0x9E37 + mi * 0x85EB) >>> 0;
+    const mc = 1 + (h % 14);
+    const mr = 1 + ((h >>> 5) % 14);
+    if (((h >>> 12) % 4) === 0) {
+      c2.fillStyle = '#ffffff';
+      px1(mc, mr);
+    }
+  }
+}
+
+// PLASMA — the Fire + Lightning combo.  Ionised state: bright white core
+// with five swirling violet/magenta tendrils that bend and rotate at
+// different speeds, plus rapid scintillation and white arc-jumps.
+// Adjacent plasma cells merge using the same additive falloff as fire.
+function _drawPlasmaStatus(c2, x, y, ts, ph, neighbors) {
+  const { TG, px1 } = _pixHelpers(c2, x, y);
+  const frame = ts ? Math.floor(ts / 55) : 0;     // fast clock — plasma is volatile
+  const f     = frame * 0.45;                     // global animation phase
+  const N     = neighbors || {};
+  const cx    = 7.5, cy = 7.5;
+
+  // Core pulse: rapid, small — plasma flickers, doesn't breathe
+  const corePulse = 0.92 + 0.08 * Math.sin(f * 1.4);
+
+  // Additive linear-falloff for neighbour merging (same shape as fire/poison
+  // → two cells sum to ~1.0 at their shared edge).
+  const energy = (dx, dy) => {
+    const d = Math.sqrt(dx * dx + dy * dy);
+    return d < 16 ? 1 - d / 16 : 0;
+  };
+
+  // Five swirling tendrils — each has its own angular velocity (some CW,
+  // some CCW) and a different starting phase, so they're never aligned.
+  // Each tendril bends with radius via a sin modulation, giving them
+  // their characteristic curved/whipping look.
+  const tendrils = [
+    { w:  0.13, p0: 0.0  },
+    { w: -0.18, p0: 1.3  },
+    { w:  0.22, p0: 2.6  },
+    { w: -0.10, p0: 3.9  },
+    { w:  0.16, p0: 5.2  },
+  ];
+
+  const tendrilBoost = (dx, dy) => {
+    const r = Math.sqrt(dx * dx + dy * dy);
+    if (r < 1.2 || r > 8.5) return 0;
+    const ang = Math.atan2(dy, dx);
+    let boost = 0;
+    for (let ti = 0; ti < tendrils.length; ti++) {
+      const t = tendrils[ti];
+      // Bent tendril angle: rotates at t.w rad/frame, wobbles with radius
+      const bent = t.p0 + t.w * f + Math.sin(r * 0.55 + f * 0.7 + ti) * 0.35;
+      // Angular distance from this pixel to the tendril (signed → unsigned)
+      let aDiff = ((ang - bent + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+      aDiff = Math.abs(aDiff);
+      // Tendril is brightest at exact angle, falls off quickly
+      const angScore = Math.max(0, 0.18 - aDiff * 0.55);
+      // Radial profile — tendrils strongest at r=4.5, fall off either side
+      const radScore = Math.max(0, 1 - Math.abs(r - 4.5) / 4.5);
+      boost += angScore * radScore;
+    }
+    return boost;
+  };
+
+  for (let row = 0; row < TG; row++) {
+    for (let col = 0; col < TG; col++) {
+      const dx = col - cx;
+      const dy = row - cy;
+
+      // Edge-fade tendrils at neighbour seams so the perimeter relies on
+      // the symmetric energy() falloff (same trick as fire/poison/holy).
+      const edgeDist = Math.min(
+        N.e ? (TG - 1 - col) : 99, N.w ? col           : 99,
+        N.s ? (TG - 1 - row) : 99, N.n ? row           : 99
+      );
+      const symFactor = edgeDist < 3 ? edgeDist / 3 : 1;
+
+      // Own intensity
+      const r = Math.sqrt(dx * dx + dy * dy);
+      let total = Math.max(0, 1 - r / 16) * corePulse + tendrilBoost(dx, dy) * symFactor;
+
+      // Neighbour contributions
+      if (N.e)  total += energy(dx - TG, dy);
+      if (N.w)  total += energy(dx + TG, dy);
+      if (N.s)  total += energy(dx,      dy - TG);
+      if (N.n)  total += energy(dx,      dy + TG);
+      if (N.se) total += energy(dx - TG, dy - TG);
+      if (N.sw) total += energy(dx + TG, dy - TG);
+      if (N.ne) total += energy(dx - TG, dy + TG);
+      if (N.nw) total += energy(dx + TG, dy + TG);
+
+      // Scintillation: pixels in the mid-brightness band randomly pop
+      // brighter every frame — reads as ionised arcing.
+      if (total > 0.40 && total < 0.88) {
+        const hash = (col * 0x9E37 + row * 0x85EB + frame * 0xC2B2) >>> 0;
+        if ((hash % 100) < 14) total += 0.18;
+      }
+
+      // Plasma palette — white-hot core through electric violet
+      let color = null;
+      if      (total > 0.96) color = '#ffffff';   // white core
+      else if (total > 0.87) color = '#ddc8ff';   // cyan-violet halo
+      else if (total > 0.76) color = '#c060ff';   // bright violet
+      else if (total > 0.65) color = '#ff50d0';   // hot magenta
+      else if (total > 0.54) color = '#a830e8';   // electric purple
+      else if (total > 0.42) color = '#7018b8';   // deep violet
+      else if (total > 0.32) color = '#3a0858';   // outer purple
+      else if (total > 0.24) {
+        // Sparse outer-ionisation pixels
+        const h2 = (col * 0xDEAD + row * 0xBEEF + frame * 0xC0DE) >>> 0;
+        if ((h2 % 100) < 20) color = '#240438';
+      }
+      if (color) {
+        c2.fillStyle = color;
+        px1(col, row);
+      }
+    }
+  }
+
+  // White arc-jumps — 3 random bright pixels reposition every 2 frames,
+  // reads as electricity discharging across the ionised gas.  Avoids
+  // neighbour seams so cluster boundaries stay clean.
+  const arcCount = 3;
+  const arcEpoch = Math.floor(frame / 2);
+  for (let ai = 0; ai < arcCount; ai++) {
+    const h = (arcEpoch * 0x9E37 + ai * 0x85EB) >>> 0;
+    const ac = 2 + (h % 12);
+    const ar = 2 + ((h >>> 4) % 12);
+    if ((N.e && ac >= 14) || (N.w && ac <= 1)) continue;
+    if ((N.s && ar >= 14) || (N.n && ar <= 1)) continue;
+    c2.fillStyle = '#ffffff';
+    px1(ac, ar);
+  }
+}
+
+// POISONED ICE — the Ice + Poison combo.  Ice surface (slightly sickly
+// hue) with toxic green gas wisping up out of every crack endpoint.
+// Each emitter pulses on its own cycle for organic motion.
+function _drawPoisonedIceStatus(c2, x, y, ts, ph, gr, gc) {
+  const { TG, px1 } = _pixHelpers(c2, x, y);
+  const frame = ts ? Math.floor(ts / 70) : 0;     // medium clock — gas moves steadily
+
+  // ── Base ice surface — sickly-tinted palette (less blue, more grey-green) ──
+  for (let row = 0; row < TG; row++) {
+    for (let col = 0; col < TG; col++) {
+      const hash = (col * 0x9E37 + row * 0x85EB) >>> 0;
+      const v = hash % 100;
+      let color;
+      if      (v < 18) color = '#6a8480';
+      else if (v < 50) color = '#92aca4';
+      else if (v < 82) color = '#a8c0b4';
+      else             color = '#c0d0c4';
+      c2.fillStyle = color;
+      px1(col, row);
+    }
+  }
+
+  // ── Contaminated cracks — sickly green-brown instead of dark blue ──
+  c2.fillStyle = '#4a6028';
+  const cracks = [
+    [5,0],[5,1],[6,2],[6,3],[7,4],[8,5],[8,6],[9,7],[10,8],[10,9],[11,10],[11,11],
+    [5,3],[4,3],[3,4],[2,4],[1,5],
+    [10,7],[11,7],[12,7],
+    [13,1],[14,2],[14,3],
+    [2,12],[3,13],[3,14],[4,15],
+    [13,12],[14,13],
+  ];
+  for (const [cc, cr] of cracks) px1(cc, cr);
+  // Crack shadow — darker green
+  c2.fillStyle = '#283010';
+  const shadows = [[7,1],[8,2],[9,3],[6,15]];
+  for (const [cc, cr] of shadows) px1(cc, cr);
+
+  // ── Gas emitters at key crack points — each emits a rising column of
+  // toxic gas particles.  Each emitter has its own phase offset so they
+  // puff at different times for organic / non-mechanical motion.
+  const emitters = [
+    { col: 5,  row: 1,  phaseOff: 0 },   // upper main crack
+    { col: 8,  row: 6,  phaseOff: 3 },   // mid crack
+    { col: 11, row: 10, phaseOff: 6 },   // lower main crack
+    { col: 13, row: 2,  phaseOff: 2 },   // top-right crack
+    { col: 3,  row: 13, phaseOff: 5 },   // bottom-left crack (gas goes up out of cell, but trail is visible)
+    { col: 14, row: 13, phaseOff: 7 },   // bottom-right detail
+  ];
+  // Each emitter spawns a new puff every CYCLE frames; max LIFETIME frames per puff
+  const CYCLE    = 8;
+  const LIFETIME = 18;          // puff lives 18 frames → rises ~6 px
+  const PUFFS    = 3;            // 3 puffs in flight per emitter at any time
+
+  for (let ei = 0; ei < emitters.length; ei++) {
+    const e = emitters[ei];
+    for (let pi = 0; pi < PUFFS; pi++) {
+      // Stagger puffs by CYCLE so they don't overlap on the emitter
+      const age = (frame + e.phaseOff - pi * CYCLE);
+      if (age < 0 || age >= LIFETIME) continue;
+      // Vertical rise: ~1 pixel every 3 frames
+      const dy = -Math.floor(age / 3);
+      // Horizontal drift: gentle sin wobble + per-emitter bias
+      const drift = Math.round(Math.sin(age * 0.4 + e.phaseOff * 1.3) * 1.3);
+      const pcol = e.col + drift;
+      const prow = e.row + dy;
+      if (prow < 0 || prow >= TG || pcol < 0 || pcol >= TG) continue;
+
+      // Colour by age: bright at emission, fading to dark green at top
+      let color;
+      const ageFrac = age / LIFETIME;
+      if      (ageFrac < 0.15) color = '#d8e860';   // bright bilious yellow-green
+      else if (ageFrac < 0.30) color = '#a0d050';   // bright green
+      else if (ageFrac < 0.50) color = '#78b840';   // mid green
+      else if (ageFrac < 0.72) color = '#509030';   // darker
+      else                     color = '#306820';   // dim, about to dissipate
+      c2.fillStyle = color;
+      px1(pcol, prow);
+
+      // Small "wisp" sibling pixel — gas particles are usually
+      // accompanied by a satellite to suggest volume rather than a
+      // single point.  Only for the youngest puff frames.
+      if (age >= 1 && age < 8) {
+        const sCol = pcol + ((age % 2) ? -1 : 1);
+        if (sCol >= 0 && sCol < TG) {
+          // Sibling is slightly dimmer
+          let sColor;
+          if      (ageFrac < 0.30) sColor = '#78b840';
+          else if (ageFrac < 0.60) sColor = '#509030';
+          else                     sColor = '#306820';
+          c2.fillStyle = sColor;
+          px1(sCol, prow);
+        }
+      }
+    }
+  }
+
+  // ── Bubbling/seething pixels right at crack lines — periodic bright
+  // pixels next to cracks make it look like the poison is actively
+  // boiling out of the ice rather than sitting passively.
+  const bubble = frame % 6;
+  if (bubble < 2) {
+    c2.fillStyle = bubble === 0 ? '#d8e860' : '#a0d050';
+    px1(5, 2);   // next to main crack
+    px1(11, 8);  // next to lower crack
+  }
+  if (((frame + 3) % 7) < 2) {
+    c2.fillStyle = '#a0d050';
+    px1(2, 5);
+    px1(13, 12);
+  }
+
+  // ── Faint green tint over the upper rows (where the rising gas
+  // accumulates) — subtle wash, no opaque overlay.
+  c2.fillStyle = 'rgba(80, 160, 60, 0.08)';
+  c2.fillRect(x, y, CELL, Math.floor(CELL * 0.55));
 }
 
 function getGrassTallPattern() {
@@ -2643,7 +3322,7 @@ function render(ts) {
   // Flowing terrain/status (water/lava/blood/fire/ice/lightning/poison) must
   // update every frame for smooth scroll — the 55ms throttle below causes
   // visible stutter on pattern.setTransform. Status overlays need the clear.
-  const _flowing = new Set(['water','lava','blood','fire','ice','lightning','poison']);
+  const _flowing = new Set(['water','lava','blood','fire','ice','lightning','poison','holy']);
   for (const [k,effs] of Object.entries(grid)) {
     if (effs.some(e => _flowing.has(e))) {
       const [r,c]=k.split(',').map(Number);
@@ -4193,8 +4872,8 @@ function getXY(e) {
 }
 
 const _tooltip = document.getElementById('cell-tooltip');
-const _ttColors = {fire:'#E85020',poison:'#50A010',ice:'#3D8FD4',lightning:'#8060FF',holy:'#C0A020'};
-const _ttLabels = {fire:'Fire',poison:'Poison',ice:'Ice',lightning:'Lightning',holy:'Holy'};
+const _ttColors = {fire:'#E85020',poison:'#50A010',ice:'#3D8FD4',lightning:'#8060FF',holy:'#FFC830'};
+const _ttLabels = {fire:'Fire',poison:'Poison',ice:'Ice',lightning:'Lightning',holy:'Radiant'};
 
 function updateTooltip(canvasX, canvasY) {
   const rect = canvas.getBoundingClientRect();
@@ -4849,8 +5528,8 @@ canvas.addEventListener('mouseup',e=>{pointerUp();e.preventDefault();});
 // ── Right-click: remove a single layer from a multi-effect cell ──────────────
 const _layerMenu = document.getElementById('layer-menu');
 const _layerItems = document.getElementById('layer-menu-items');
-const _EFFECT_LABELS = {fire:'🔥 Fire',poison:'☠️ Poison',ice:'❄️ Ice',lightning:'⚡ Lightning',holy:'✨ Holy',water:'💧 Water',grass:'🌿 Grass',grass_tall:'🌾 Tall Grass',grass_dead:'🍂 Dead Grass',grass_jungle:'🌴 Jungle',grass_snow:'❄️ Snow Grass',grass_flowers:'🌸 Flowers',grass_mushrooms:'🍄 Mushrooms',grass_autumn:'🍁 Autumn',lava:'🌋 Lava',stone:'🪨 Stone',difficult:'⚠️ Difficult',blood:'🩸 Blood',web:'🕸️ Web'};
-const _EFFECT_DOT = {fire:'#E85020',poison:'#50A010',ice:'#3080C0',lightning:'#7050EE',holy:'#C0A020',water:'#1870C0',grass:'#3a8818',grass_tall:'#1e5c0a',grass_dead:'#8a6a18',grass_jungle:'#0a6820',grass_snow:'#90b8d0',grass_flowers:'#48a820',grass_mushrooms:'#5a6828',grass_autumn:'#a05c18',lava:'#CC3300',stone:'#8a7a6a',difficult:'#C8A000',blood:'#801020',web:'#8870a0'};
+const _EFFECT_LABELS = {fire:'🔥 Fire',poison:'☠️ Poison',ice:'❄️ Ice',lightning:'⚡ Lightning',holy:'☀️ Radiant',water:'💧 Water',grass:'🌿 Grass',grass_tall:'🌾 Tall Grass',grass_dead:'🍂 Dead Grass',grass_jungle:'🌴 Jungle',grass_snow:'❄️ Snow Grass',grass_flowers:'🌸 Flowers',grass_mushrooms:'🍄 Mushrooms',grass_autumn:'🍁 Autumn',lava:'🌋 Lava',stone:'🪨 Stone',difficult:'⚠️ Difficult',blood:'🩸 Blood',web:'🕸️ Web'};
+const _EFFECT_DOT = {fire:'#E85020',poison:'#50A010',ice:'#3080C0',lightning:'#7050EE',holy:'#FFC830',water:'#1870C0',grass:'#3a8818',grass_tall:'#1e5c0a',grass_dead:'#8a6a18',grass_jungle:'#0a6820',grass_snow:'#90b8d0',grass_flowers:'#48a820',grass_mushrooms:'#5a6828',grass_autumn:'#a05c18',lava:'#CC3300',stone:'#8a7a6a',difficult:'#C8A000',blood:'#801020',web:'#8870a0'};
 
 function openLayerMenu(screenX, screenY, cellKey) {
   const effs = grid[cellKey];
@@ -5918,7 +6597,7 @@ const TOOL_INFO = {
   'pill-poison':      { title: '☠️ Poison',      desc: 'Paint toxic tiles. Use ▾ to choose a shape.' },
   'pill-ice':         { title: '❄️ Ice',          desc: 'Paint frozen tiles. Use ▾ to choose a shape.' },
   'pill-lightning':   { title: '⚡ Lightning',    desc: 'Paint electrified tiles. Use ▾ to choose a shape.' },
-  'pill-holy':        { title: '✨ Holy',         desc: 'Paint radiant tiles. Use ▾ to choose a shape.' },
+  'pill-holy':        { title: '☀️ Radiant',      desc: 'Paint divine radiant tiles that pulse with golden light. Use ▾ to choose a shape.' },
   'pill-grass':       { title: '🌿 Grass',         desc: 'Paint grass terrain tiles with 8-bit top-down texture. Use ▾ to switch Freehand, Cone, Circle, or Square shape.' },
   'pill-water':       { title: '💧 Water',         desc: 'Paint water terrain tiles with 8-bit ripple texture. Use ▾ to switch Freehand, Cone, Circle, or Square shape.' },
   'pill-erase':       { title: '🧹 Erase',        desc: 'Remove effects and walls from tiles. Works with all shapes: Freehand, Cone, Circle, or Square.' },
@@ -10169,7 +10848,7 @@ requestAnimationFrame(render);
 
 // ── Auto-update checker ──────────────────────────────────────────────────────
 (function () {
-  const CURRENT_VERSION  = '1.6';
+  const CURRENT_VERSION  = '1.7';
   // Route through the local server so the WKWebView (file:// origin) can
   // reach an external URL without hitting Same-Origin-Policy restrictions.
   const MANIFEST_URL     = 'http://localhost:8765/api/check_update';

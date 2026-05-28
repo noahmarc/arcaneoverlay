@@ -1,5 +1,5 @@
 {
-  "version": "1.6",
-  "download_url": "https://github.com/noahmarc/arcaneoverlay/releases/download/1.6/ArcaneOverlay-mac.zip",
-  "release_notes": "Fire/poison border fix, ice shimmer sync, auto-update checker"
+  "version": "1.7",
+  "download_url": "https://github.com/noahmarc/arcaneoverlay/releases/download/1.7/ArcaneOverlay-mac.zip",
+  "release_notes": "Radiant rework, combo physics (water/explosion/shocked-ice/plasma/poisoned-ice), smooth ice surface"
 }

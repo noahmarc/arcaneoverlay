@@ -277,7 +277,7 @@ body.fs-mode #init-panel { bottom: 8px; }
 .poison-pill.active    { border-color:#5AAD1E; background:rgba(90,173,30,0.15);  box-shadow:0 0 10px rgba(90,173,30,0.25); }
 .ice-pill.active       { border-color:#3D8FD4; background:rgba(61,143,212,0.15); box-shadow:0 0 10px rgba(61,143,212,0.25); }
 .lightning-pill.active { border-color:#8060FF; background:rgba(128,96,255,0.15); box-shadow:0 0 10px rgba(128,96,255,0.30); }
-.holy-pill.active      { border-color:#9B95E8; background:rgba(155,149,232,0.15);box-shadow:0 0 10px rgba(155,149,232,0.25); }
+.holy-pill.active      { border-color:#FFC830; background:rgba(255,200,48,0.18); box-shadow:0 0 12px rgba(255,200,48,0.35); }
 .water-pill.active     { border-color:#1890E0; background:rgba(24,144,224,0.15); box-shadow:0 0 10px rgba(24,144,224,0.30); }
 .grass-pill.active     { border-color:#46a818; background:rgba(70,168,24,0.15);  box-shadow:0 0 10px rgba(70,168,24,0.28); }
 .erase-pill.active     { border-color:#C0392B; background:rgba(192,57,43,0.15);  box-shadow:0 0 10px rgba(192,57,43,0.25); }
