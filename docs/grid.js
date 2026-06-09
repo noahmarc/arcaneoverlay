@@ -2,6 +2,65 @@
 // D&D 4e Battle Grid — grid.js
 // ============================================================
 
+// ── Projector-mode boot ─────────────────────────────────────
+// When the page is loaded with ?projector=1 in the URL, this is a
+// passive "player view" window — typically Safari pointed at
+// http://localhost:8765/?projector=1 and dragged onto an external
+// display.  We hide all DM UI, fullscreen the canvas, and poll the
+// local server for grid-state updates from the DM's main window.
+(function _arcaneProjectorBoot() {
+  try {
+    const qs = new URLSearchParams(window.location.search);
+    if (qs.get('projector') !== '1') return;
+    window.__arcaneIsProjector = true;
+
+    // Hide every UI surface as soon as the DOM appears.  Using a CSS
+    // <style> rather than per-element hiding so it covers everything,
+    // including elements injected later by the various IIFEs.
+    const css = `
+      body { background:#000 !important; padding:0 !important; overflow:hidden !important; }
+      #toolbar, #hint, #init-panel, #app-dock, #update-banner,
+      #autosave-notice, #pickup-light-btn, #settings-wrap, .modal-overlay,
+      #mp-tab-btn, #statblock-popover, #tooltip { display:none !important; }
+      #app { gap:0 !important; height:100vh !important; }
+      #canvas-wrap {
+        flex:1 !important; border:none !important; border-radius:0 !important;
+        height:100vh !important; display:flex !important;
+        align-items:center !important; justify-content:center !important;
+      }
+      #canvas-wrap canvas {
+        max-width:100vw !important; max-height:100vh !important;
+        object-fit:contain !important; cursor:none !important;
+      }
+    `;
+    const styleEl = document.createElement('style');
+    styleEl.textContent = css;
+    (document.head || document.documentElement).appendChild(styleEl);
+
+    // Poll the local server for the latest published grid state.
+    const POLL_PERIOD = 350;
+    let lastTs = 0;
+    async function _projPoll() {
+      try {
+        const r = await fetch('http://localhost:8765/api/proj_state?t=' + Date.now(), { cache: 'no-store' });
+        if (!r.ok) return;
+        const data = await r.json();
+        if (!data || !data.state) return;
+        if (data.ts === lastTs) return;
+        lastTs = data.ts;
+        if (typeof window.__applyMpGridState === 'function') {
+          window.__applyMpGridState(data.state);
+        }
+      } catch (e) { /* silent */ }
+    }
+    // Start polling after the rest of grid.js boots and registers __applyMpGridState.
+    window.addEventListener('load', () => {
+      setTimeout(_projPoll, 300);   // first fetch
+      setInterval(_projPoll, POLL_PERIOD);
+    });
+  } catch (e) { /* boot must never throw */ }
+})();
+
 // ── Effect definitions ──────────────────────────────────────
 const EFFECTS = {
   fire:      { r:232, g:90,  b:40,  glow:'#FF6030', inkR:'255,110,40'  },
@@ -31,6 +90,11 @@ const EFFECTS = {
   mud:       { r:80,  g:55,  b:30,  glow:'#8B5E2A', inkR:'100,75,40'   },
   web:       { r:200, g:195, b:210, glow:'#D8D0E8', inkR:'210,205,220' },
   swamp:     { r:60,  g:90,  b:30,  glow:'#608020', inkR:'75,110,35'   },
+  tree:      { r:58,  g:107, b:41,  glow:'#52934A', inkR:'58,107,41'   },
+  tree_pine: { r:42,  g:92,  b:46,  glow:'#3f8a4a', inkR:'42,92,46'    },
+  tree_dead: { r:120, g:92,  b:54,  glow:'#9a7a4a', inkR:'120,92,54'   },
+  rock:      { r:113, g:118, b:125, glow:'#9197A0', inkR:'84,88,94'    },
+  rock_large:{ r:113, g:118, b:125, glow:'#9197A0', inkR:'84,88,94'    },
 };
 
 const TOKEN_COLORS = [
@@ -133,6 +197,10 @@ window.__pushTokenForBestiary = function (cr, r, c) {
     exhaustion: 0,
     lightRadius: 0,
     lightDim: 0,
+    aura: null,
+    sight: 0,
+    avatar: null,
+    appearanceOverride: null,
     deathSaves: { successes: 0, failures: 0 },
     // Custom fields surfaced from the bestiary, useful for tooltips/inspect:
     bestiary: {
@@ -141,6 +209,7 @@ window.__pushTokenForBestiary = function (cr, r, c) {
       resistances: cr.resistances, immunities: cr.immunities,
       vulnerabilities: cr.vulnerabilities, condImmunities: cr.condImmunities,
       senses: cr.senses, languages: cr.languages, notes: cr.notes,
+      attacks: Array.isArray(cr.attacks) ? cr.attacks.map(a => ({ ...a })) : [],
     },
   });
 };
@@ -151,20 +220,27 @@ const MAX_UNDO = 40;
 
 function cloneState() {
   return {
+    cols, rows,
     grid: Object.fromEntries(Object.entries(grid).map(([k,v])=>[k,[...v]])),
     tokens: tokens.map(t => ({
       ...t,
       conditions: [...(t.conditions||[])],
+      condDur: { ...(t.condDur||{}) },
       deathSaves: { ...(t.deathSaves || {successes:0,failures:0}) },
       concentrating: !!t.concentrating,
       exhaustion: t.exhaustion||0,
       lightRadius: t.lightRadius||0,
       lightDim: t.lightDim||0,
+      aura: t.aura ? {...t.aura} : null,
+      sight: t.sight||0,
+      avatar: t.avatar ? {...t.avatar} : null,
+      appearanceOverride: t.appearanceOverride ? {...t.appearanceOverride} : null,
     })),
     walls: walls.map(w => ({ ...w })),
     labels: labels.map(l => ({ ...l })),
     lights: lights.map(l => ({ ...l })),
     covers: Object.fromEntries(Object.entries(covers)),
+    drawings: drawings.map(d => ({ color: d.color, width: d.width, pts: d.pts.map(p => ({ ...p })) })),
     traps: Object.fromEntries(Object.entries(traps).map(([k,v])=>[k,{...v}])),
     fogVis:    { ...fogVis },
     fogTarget: { ...fogTarget },
@@ -182,21 +258,33 @@ function applyState(s) {
   tokens = s.tokens.map(t => ({
     ...t,
     conditions: [...(t.conditions||[])],
+    condDur: { ...(t.condDur||{}) },
     deathSaves: { ...(t.deathSaves || {successes:0,failures:0}) },
     concentrating: !!t.concentrating,
     exhaustion: t.exhaustion||0,
     lightRadius: t.lightRadius||0,
     lightDim: t.lightDim||0,
+    aura: t.aura ? {...t.aura} : null,
+    sight: t.sight||0,
+    avatar: t.avatar ? {...t.avatar} : null,
+    appearanceOverride: t.appearanceOverride ? {...t.appearanceOverride} : null,
   }));
   walls = s.walls ? s.walls.map(w => ({ ...w })) : [];
   labels = s.labels ? s.labels.map(l => ({ ...l })) : [];
   lights = s.lights ? s.lights.map(l => ({ ...l })) : [];
   covers = s.covers ? {...s.covers} : {};
+  drawings = s.drawings ? s.drawings.map(d => ({ color: d.color, width: d.width, pts: (d.pts || []).map(p => ({ ...p })) })) : [];
   traps = s.traps ? Object.fromEntries(Object.entries(s.traps).map(([k,v])=>[k,{...v}])) : {};
   if (s.fogVis)    { for (const k in fogVis)    delete fogVis[k];    Object.assign(fogVis,    s.fogVis); }
   if (s.fogTarget) { for (const k in fogTarget) delete fogTarget[k]; Object.assign(fogTarget, s.fogTarget); }
   if (s.darknessZones) darknessZones = s.darknessZones.map(dz => ({ ...dz, cells: [...dz.cells] }));
-  rebuildCells();
+  if (s.cols != null && s.rows != null && (s.cols !== cols || s.rows !== rows)) {
+    cols = s.cols; rows = s.rows;
+    if (typeof _syncBoardUI === 'function') _syncBoardUI();
+    resize();   // resizes canvases + rebuildCells()
+  } else {
+    rebuildCells();
+  }
   // Push the new state to mirrored players (undo/redo by the DM).
   if (window.__mpScheduleSync) window.__mpScheduleSync();
 }
@@ -208,12 +296,26 @@ function resize() {
   const wrap = document.getElementById('canvas-wrap');
   // Both the 1" overlay AND the coords overlay snap cells to a physical
   // 1-inch grid using gridOverlayScale (CSS px per inch).
-  CELL = (gridOverlayVisible || gridCoordsVisible)
-    ? Math.max(16, gridOverlayScale)
+  const cssCell = (gridOverlayVisible || gridCoordsVisible || boardScaleLock)
+    ? Math.max(8, gridOverlayScale)
     : Math.max(16, Math.floor((wrap.clientWidth || 600) / cols));
+  // Render the backing store at the display's pixel density (capped at 2×) so
+  // imported maps and everything else stay crisp on Retina screens. All drawing
+  // uses CELL (backing px); pointer math maps via canvas.width/rect.width, so the
+  // higher resolution is transparent to the rest of the code.
+  const DPR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+  CELL = Math.round(cssCell * DPR);
   const W = cols * CELL, H = rows * CELL;
   canvas.width = W;  canvas.height = H;
   cellCvs.width = W; cellCvs.height = H;
+  // Display at the logical (CSS) size; the extra backing pixels = sharper image.
+  // In fullscreen we let the CSS (max-width/height + object-fit) scale it instead.
+  if (document.body.classList.contains('fs-mode')) {
+    canvas.style.width = ''; canvas.style.height = '';
+  } else {
+    canvas.style.width = (cols * cssCell) + 'px';
+    canvas.style.height = (rows * cssCell) + 'px';
+  }
   // Setting width/height on a canvas resets its context in WebKit, which
   // also invalidates every CanvasPattern previously created from it.
   // Drop the cached patterns so they're re-built against the fresh context.
@@ -291,6 +393,17 @@ function getSquareCells(origin, rad) {
   return cells;
 }
 
+function getLineCells(o, t, width) {
+  const cells=new Set(); const dr=t.r-o.r, dc=t.c-o.c, len=Math.hypot(dr,dc);
+  if(len<0.1){cells.add(o.r+','+o.c);return cells;}
+  const ux=dc/len, uy=dr/len, half=(width||1)/2;
+  for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
+    const vr=r-o.r, vc=c-o.c, along=vc*ux+vr*uy;
+    if(along<-0.25||along>len+0.5)continue;
+    if(Math.abs(vc*(-uy)+vr*ux)<=half+0.25)cells.add(r+','+c);
+  }
+  return cells;
+}
 function initBounds() {
   projBounds = { x1: 0, y1: 0, x2: canvas.width, y2: canvas.height };
 }
@@ -343,10 +456,18 @@ function getPhase(r,c){const k=r+','+c;if(!cellPhase[k])cellPhase[k]=Math.random
 const _effectSpeeds = {fire:120, poison:140, ice:160, lightning:60, holy:130};
 const _effectBg = {fire:[30,5,0], poison:[5,15,3], ice:[3,8,20], lightning:[4,2,18], holy:[28,18,2]};
 _effectBg['difficult'] = [18,16,4];
+_effectBg['difficult_thorns'] = [10,6,2];
+_effectBg['difficult_debris'] = [16,10,4];
+_effectBg['difficult_brush']  = [8,14,4];
+_effectBg['difficult_scree']  = [16,12,8];
 _effectBg['blood'] = [20,2,3];
 _effectBg['web']   = [8, 6, 12];
 const _borderColors = {fire:'#E85020',poison:'#50A010',ice:'#3080C0',lightning:'#7050EE',holy:'#FFC830'};
 _borderColors['difficult'] = '#C8A000';
+_borderColors['difficult_thorns'] = '#5a3018';
+_borderColors['difficult_debris'] = '#8a5a28';
+_borderColors['difficult_brush']  = '#4ea020';
+_borderColors['difficult_scree']  = '#8a7868';
 _borderColors['blood'] = '#801020';
 
 function drawCell(c2, r, c, eff, ts) {
@@ -358,7 +479,7 @@ function drawCell(c2, r, c, eff, ts) {
   // ── Separate terrain (floor) from status (overlay) effects ──────
   const _TERRAIN_SET = new Set(['water','grass','grass_tall','grass_dead','grass_jungle','grass_snow','grass_flowers','grass_mushrooms','grass_autumn','lava','stone','stone_cracked','stone_mossy','stone_dark','stone_sand','stone_brick','mud','swamp']);
   const terrainEffs = effs.filter(e => _TERRAIN_SET.has(e));
-  const statusEffs  = effs.filter(e => !_TERRAIN_SET.has(e));
+  const statusEffs  = effs.filter(e => !_TERRAIN_SET.has(e) && !OBJECT_EFFS.has(e));
   const hasTerrain  = terrainEffs.length > 0;
   const hasStatus   = statusEffs.length > 0;
 
@@ -479,7 +600,7 @@ function drawCell(c2, r, c, eff, ts) {
       let br=0,bg_=0,bb=0;
       for (const e of statusEffs) { const [er,eg,eb]=_effectBg[e]||[5,5,5]; br+=er;bg_+=eg;bb+=eb; }
       br=Math.round(br/statusEffs.length); bg_=Math.round(bg_/statusEffs.length); bb=Math.round(bb/statusEffs.length);
-      c2.fillStyle=`rgba(${br},${bg_},${bb},${bgA})`; c2.fillRect(x,y,CELL,CELL);
+      if (!bgImage && !hasTerrain) { c2.fillStyle=`rgba(${br},${bg_},${bb},${bgA})`; c2.fillRect(x,y,CELL,CELL); }  // back-fill only on blank grid
 
       // ── Procedural combo render ──────────────────────────────────
       // Each effect draws its own pixel art with additive blending
@@ -509,6 +630,14 @@ function drawCell(c2, r, c, eff, ts) {
         && statusEffs.includes('fire') && statusEffs.includes('lightning');
       const hasIcePoison     = statusEffs.length === 2
         && statusEffs.includes('ice') && statusEffs.includes('poison');
+      const hasHolyLightning = statusEffs.length === 2
+        && statusEffs.includes('holy') && statusEffs.includes('lightning');
+      const hasPoisonLightning = statusEffs.length === 2
+        && statusEffs.includes('poison') && statusEffs.includes('lightning');
+      const hasIceHoly       = statusEffs.length === 2
+        && statusEffs.includes('ice') && statusEffs.includes('holy');
+      const hasPoisonHoly    = statusEffs.length === 2
+        && statusEffs.includes('poison') && statusEffs.includes('holy');
 
       // Fire + Ice → Water (physics: ice melts, fire is quenched, the
       // cell becomes a puddle of flowing water).
@@ -581,6 +710,46 @@ function drawCell(c2, r, c, eff, ts) {
         // Ice + Poison → Poisoned Ice (toxic gas seeps up through the
         // cracks in the ice surface).
         _drawPoisonedIceStatus(c2, x, y, ts, ph, r, c);
+      } else if (hasHolyLightning) {
+        // Radiant + Lightning → Divine Lightning (synchronised golden
+        // cross-strike from the heavens).  All adjacent cells strike
+        // in unison so a cluster reads as a single divine smite.
+        const subN = _neighborsOf('holy');
+        for (const eff of statusEffs) {
+          const n2 = _neighborsOf(eff);
+          for (const k of Object.keys(n2)) subN[k] = subN[k] || n2[k];
+        }
+        _drawDivineLightningStatus(c2, x, y, ts, subN);
+      } else if (hasPoisonLightning) {
+        // Poison + Lightning → Toxic Storm (venomous gas cloud crackling
+        // with electricity — acidic arcs jump between discharge nodes).
+        const subN = _neighborsOf('poison');
+        for (const eff of statusEffs) {
+          const n2 = _neighborsOf(eff);
+          for (const k of Object.keys(n2)) subN[k] = subN[k] || n2[k];
+        }
+        _drawToxicStormStatus(c2, x, y, ts, ph, subN);
+      } else if (hasIceHoly) {
+        // Ice + Radiant → Sanctified Frost (blessed ice surface with a
+        // glowing holy star and pulsing halos of divine light).
+        const subN = _neighborsOf('holy');
+        for (const eff of statusEffs) {
+          const n2 = _neighborsOf(eff);
+          for (const k of Object.keys(n2)) subN[k] = subN[k] || n2[k];
+        }
+        _drawSanctifiedFrostStatus(c2, x, y, ts, ph, r, c, subN);
+      } else if (hasPoisonHoly) {
+        // Poison + Radiant → Consecrated Antidote.  Uses a global
+        // gold-flow wave field anchored in world coords, so adjacent
+        // cells in a cluster share continuous flow patterns at their
+        // shared edges — the cluster reads as one broader purified
+        // shape rather than a tiling of independent cells.
+        const subN = _neighborsOf('holy');
+        for (const eff of statusEffs) {
+          const n2 = _neighborsOf(eff);
+          for (const k of Object.keys(n2)) subN[k] = subN[k] || n2[k];
+        }
+        _drawConsecratedPoisonStatus(c2, x, y, ts, ph, r, c, subN);
       } else {
 
       c2.save();
@@ -644,6 +813,7 @@ function drawCell(c2, r, c, eff, ts) {
         c2.setLineDash([]);
         c2.globalAlpha = 1;
       }
+      _drawObjects(c2, x, y, ts, r, c, effs);
       c2.restore();
       return;
 
@@ -651,7 +821,7 @@ function drawCell(c2, r, c, eff, ts) {
       // ── Single status effect ────────────────────────────────────
       const se = statusEffs[0];
       if (se==='fire') {
-        if (!hasTerrain) { c2.fillStyle=`rgba(30,5,0,${bgA})`; c2.fillRect(x,y,CELL,CELL); }
+        if (!hasTerrain && !bgImage) { c2.fillStyle=`rgba(30,5,0,${bgA})`; c2.fillRect(x,y,CELL,CELL); }
         // Adjacent fire cells merge — pass neighbour flags so the draw
         // can sum heat contributions across cell boundaries.
         const _hasFire = (rr, cc) => {
@@ -666,7 +836,7 @@ function drawCell(c2, r, c, eff, ts) {
         };
         _drawFireStatus(c2, x, y, ts, ph, N);
       } else if (se==='poison') {
-        if (!hasTerrain) { c2.fillStyle=`rgba(5,18,4,${bgA})`; c2.fillRect(x,y,CELL,CELL); }
+        if (!hasTerrain && !bgImage) { c2.fillStyle=`rgba(5,18,4,${bgA})`; c2.fillRect(x,y,CELL,CELL); }
         // Adjacent poison tiles merge into one larger cloud — same
         // additive blending approach as fire.
         const _hasPoison = (rr, cc) => {
@@ -681,70 +851,258 @@ function drawCell(c2, r, c, eff, ts) {
         };
         _drawPoisonStatus(c2, x, y, ts, ph, N);
       } else if (se==='ice') {
-        if (!hasTerrain) { c2.fillStyle=`rgba(8,16,38,${bgA})`; c2.fillRect(x,y,CELL,CELL); }
+        if (!hasTerrain && !bgImage) { c2.fillStyle=`rgba(8,16,38,${bgA})`; c2.fillRect(x,y,CELL,CELL); }
         _drawIceStatus(c2, x, y, ts, r, c);
       } else if (se==='lightning') {
-        if (!hasTerrain) { c2.fillStyle=`rgba(4,2,18,${bgA})`; c2.fillRect(x,y,CELL,CELL); }
+        if (!hasTerrain && !bgImage) { c2.fillStyle=`rgba(4,2,18,${bgA})`; c2.fillRect(x,y,CELL,CELL); }
         const cellKey = r + ',' + c;
         const lAng = (lightningCellFlow[cellKey] !== undefined) ? lightningCellFlow[cellKey] : lightningFlowAngle;
         _drawLightningStatus(c2, x, y, ts, ph, lAng);
       } else if (se==='holy') {
-        if (!hasTerrain) { c2.fillStyle=`rgba(28,18,2,${bgA})`; c2.fillRect(x,y,CELL,CELL); }
+        if (!hasTerrain && !bgImage) { c2.fillStyle=`rgba(28,18,2,${bgA})`; c2.fillRect(x,y,CELL,CELL); }
         const _hasHoly = (rr, cc) => { const k = rr+','+cc; return !!(grid[k] && grid[k].includes('holy')); };
         const N = { n: _hasHoly(r-1,c), s: _hasHoly(r+1,c), e: _hasHoly(r,c+1), w: _hasHoly(r,c-1),
                     ne: _hasHoly(r-1,c+1), nw: _hasHoly(r-1,c-1), se: _hasHoly(r+1,c+1), sw: _hasHoly(r+1,c-1) };
         _drawRadiantStatus(c2, x, y, ts, ph, N);
-      } else if (se==='difficult') {
-        c2.fillStyle=`rgba(180,150,30,${bgA*0.45})`; c2.fillRect(x,y,CELL,CELL);
-        c2.save();
-        c2.strokeStyle='rgba(200,170,20,0.65)';
-        c2.lineWidth=Math.max(0.8, CELL*0.04);
-        const hSpacing=Math.max(4, CELL/4);
-        for(let offset=-CELL; offset<CELL*2; offset+=hSpacing){
-          c2.beginPath(); c2.moveTo(x+offset, y); c2.lineTo(x+offset+CELL, y+CELL); c2.stroke();
-        }
-        c2.restore();
+      } else if (se==='difficult'        ) { _drawDifficultStatus      (c2, x, y, ts, r, c, hasTerrain, bgA);
+      } else if (se==='difficult_thorns' ) { _drawDifficultThornsStatus(c2, x, y, ts, r, c, hasTerrain, bgA);
+      } else if (se==='difficult_debris' ) {
+        const dKey = r + ',' + c;
+        const dAng = (debrisCellFlow[dKey] !== undefined) ? debrisCellFlow[dKey] : debrisFlowAngle;
+        _drawDifficultDebrisStatus(c2, x, y, ts, r, c, hasTerrain, bgA, dAng);
+      } else if (se==='difficult_brush'  ) { _drawDifficultBrushStatus (c2, x, y, ts, r, c, hasTerrain, bgA);
+      } else if (se==='difficult_scree'  ) { _drawDifficultScreeStatus (c2, x, y, ts, r, c, hasTerrain, bgA);
       } else if (se==='blood') {
-        const bpat = getBloodPattern();
-        if (bpat) {
-          const cellKey = r + ',' + c;
-          const flowAngle = (bloodCellFlow[cellKey] !== undefined) ? bloodCellFlow[cellKey] : bloodFlowAngle;
-          c2.save();
-          c2.globalAlpha = hasTerrain ? 0.68 : 0.95;
-          if (bpat.setTransform) {
-            if (flowAngle < 0) {
-              bpat.setTransform(new DOMMatrix());
-            } else {
-              const scrollT = ts ? (ts * 0.012) % CELL : 0;   // slow, viscous flow
-              bpat.setTransform(new DOMMatrix().rotate(flowAngle - 90).translate(0, scrollT));
-            }
-          }
-          c2.fillStyle = bpat; c2.fillRect(x, y, CELL, CELL);
-          c2.restore();
-        }
+        const cellKey = r + ',' + c;
+        const flowAngle = (bloodCellFlow[cellKey] !== undefined) ? bloodCellFlow[cellKey] : bloodFlowAngle;
+        _drawBloodStatus(c2, x, y, ts, r, c, hasTerrain, bgA, flowAngle);
       } else if (se==='web') {
-        if (!hasTerrain) { c2.fillStyle=`rgba(6,3,12,${bgA})`; c2.fillRect(x,y,CELL,CELL); }
-        const pat = getWebPattern();
-        if (pat) {
-          c2.save();
-          c2.globalAlpha = hasTerrain ? 0.72 : 0.95;
-          c2.fillStyle = pat; c2.fillRect(x, y, CELL, CELL);
-          c2.restore();
-        }
+        _drawWebStatus(c2, x, y, ts, r, c, hasTerrain, bgA);
       }
     }
   }
 
   // ── Border: status colour takes priority; fall back to terrain ───
-  const _bcMap = {fire:'#E85020',poison:'#50A010',ice:'#3080C0',lightning:'#7050EE',holy:'#FFC830',erase:'#A02020',water:'#1870C0',grass:'#3a8818',grass_tall:'#1e5c0a',grass_dead:'#8a6a18',grass_jungle:'#0a6820',grass_snow:'#90b8d0',grass_flowers:'#48a820',grass_mushrooms:'#5a6828',grass_autumn:'#a05c18',lava:'#CC3300',stone:'#8a7a6a',stone_cracked:'#7a7068',stone_mossy:'#3a8a26',stone_dark:'#3a4054',stone_sand:'#a8804a',stone_brick:'#c25a3a',difficult:'#C8A000',blood:'#801020',mud:'#5a3218',web:'#8870a0',swamp:'#3a5018'};
+  const _bcMap = {fire:'#E85020',poison:'#50A010',ice:'#3080C0',lightning:'#7050EE',holy:'#FFC830',erase:'#A02020',water:'#1870C0',grass:'#3a8818',grass_tall:'#1e5c0a',grass_dead:'#8a6a18',grass_jungle:'#0a6820',grass_snow:'#90b8d0',grass_flowers:'#48a820',grass_mushrooms:'#5a6828',grass_autumn:'#a05c18',lava:'#CC3300',stone:'#8a7a6a',stone_cracked:'#7a7068',stone_mossy:'#3a8a26',stone_dark:'#3a4054',stone_sand:'#a8804a',stone_brick:'#c25a3a',difficult:'#C8A000',difficult_thorns:'#5a3018',difficult_debris:'#8a5a28',difficult_brush:'#4ea020',difficult_scree:'#8a7868',blood:'#801020',mud:'#5a3218',web:'#8870a0',swamp:'#3a5018'};
   const borderEff = hasStatus ? statusEffs[0] : (hasTerrain ? terrainEffs[0] : null);
-  // Lightning, fire, and poison render their own visuals that fill the cell;
-  // a perimeter stroke just adds a distracting colored frame.
-  if (borderEff && borderEff !== 'lightning' && borderEff !== 'fire' && borderEff !== 'poison') {
+  // Suppress the perimeter stroke for effects whose own visuals fill the
+  // cell well enough that an extra colored frame just looks distracting:
+  //   • lightning/fire/poison — full-cell procedural animations
+  //   • web                   — the cobweb pattern reads on its own
+  //   • difficult terrain variants — rubble/thorns/logs/brush/scree are
+  //     already cluttered overlays; a yellow frame around every cell of
+  //     a difficult-terrain patch looks like a UI debug outline.
+  const _NO_BORDER = new Set([
+    'lightning','fire','poison','web',
+    'difficult','difficult_thorns','difficult_debris','difficult_brush','difficult_scree',
+  ]);
+  if (borderEff && !_NO_BORDER.has(borderEff)) {
     c2.globalAlpha=.5; c2.strokeStyle=_bcMap[borderEff]||'#888'; c2.lineWidth=1.2;
     c2.strokeRect(x+.6,y+.6,CELL-1.2,CELL-1.2);
   }
+  _drawObjects(c2, x, y, ts, r, c, effs);   // trees / rocks on top of everything
   c2.restore();
+}
+
+// ── Top-down scenery models (trees & rocks) ─────────────────────────────────
+// Drawn last in each cell so they sit on top of terrain/maps.  Per-cell seeded
+// so every tile looks a little different, but stable frame-to-frame.
+function _objRng(r, c, salt) {
+  let s = (Math.imul(r, 73856093) ^ Math.imul(c, 19349663) ^ salt) >>> 0;
+  return () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+}
+// Global value-noise (continuous across cell borders → seamless merged foliage).
+function _hash2(ix, iy) {
+  let h = (Math.imul(ix | 0, 374761393) ^ Math.imul(iy | 0, 668265263)) >>> 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177) >>> 0;
+  return (h >>> 0) / 4294967296;
+}
+function _vnoise(x, y) {
+  const x0 = Math.floor(x), y0 = Math.floor(y), fx = x - x0, fy = y - y0;
+  const sm = (t) => t * t * (3 - 2 * t);
+  const a = _hash2(x0, y0), b = _hash2(x0 + 1, y0), c = _hash2(x0, y0 + 1), d = _hash2(x0 + 1, y0 + 1);
+  const u = sm(fx), v = sm(fy);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+function _drawObjects(c2, x, y, ts, r, c, effs) {
+  if (!effs || !effs.some(e => OBJECT_EFFS.has(e))) return;
+  c2.save();
+  c2.globalAlpha = 1;   // terrain may have left a reduced alpha; objects are opaque
+  if (effs.includes('rock') || effs.includes('rock_large')) _drawRock(c2, x, y, r, c, effs.includes('rock_large'));
+  if (effs.includes('tree_dead')) _drawDeadTree(c2, x, y, r, c);
+  if (effs.includes('tree_pine')) _drawPine(c2, x, y, r, c);
+  if (effs.includes('tree')) _drawTree(c2, x, y, r, c);   // oak (merges), drawn last
+  c2.restore();
+}
+// Redraw the 8 neighbours of a cell that are trees, so canopies re-merge when a
+// tree is added or removed next to them (trees are static, so they don't
+// otherwise refresh on their own).
+function _refreshObjNeighbors(r, c) {
+  for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+    if (!dr && !dc) continue;
+    const nr = r + dr, nc = c + dc, nk = nr + ',' + nc;
+    if (grid[nk] && grid[nk].some(e => _MERGE_OBJS.has(e))) {
+      cctx.clearRect(nc * CELL, nr * CELL, CELL, CELL);
+      drawCell(cctx, nr, nc, grid[nk], 0);
+    }
+  }
+}
+// Hard-edged pixel filler — snaps to integer bounds so an N×N sprite tiles the
+// cell with no seams or anti-aliasing (true 8-bit look).
+function _pxFiller(c2, x, y, G) {
+  const sx = CELL / G, sy = CELL / G;
+  return (gx, gy, col, w, h) => {
+    w = w || 1; h = h || 1;
+    const X0 = Math.round(x + gx * sx), X1 = Math.round(x + (gx + w) * sx);
+    const Y0 = Math.round(y + gy * sy), Y1 = Math.round(y + (gy + h) * sy);
+    c2.fillStyle = col; c2.fillRect(X0, Y0, X1 - X0, Y1 - Y0);
+  };
+}
+function _drawTree(c2, x, y, r, c) {
+  const G = 12, put = _pxFiller(c2, x, y, G);
+  const OUT = '#0e2c0b', DK1 = '#1a4714', MD = '#2c7522', LT = '#54ab36', LT2 = '#7fd055', TR = '#5a3a1a', SH = 'rgba(0,0,0,0.25)';
+  const isTree = (rr, cc) => { const k = rr + ',' + cc; return !!(grid[k] && grid[k].includes('tree')); };
+  const cx = 5.5, cy = 5.5, R = 6.4;
+  // Canopy centres in GLOBAL tree-grid coords so everything (edge noise, leaf
+  // clumps, lighting) is continuous across cell borders → seamless big tree.
+  const ownX = c * G + cx, ownY = r * G + cy;
+  const centres = [[ownX, ownY]];
+  const bridges = [];     // fill seams / 4-corner holes between adjacent oaks
+  for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+    if ((dr || dc) && isTree(r + dr, c + dc)) {
+      const nx = (c + dc) * G + cx, ny = (r + dr) * G + cy;
+      centres.push([nx, ny]);
+      bridges.push([(ownX + nx) / 2, (ownY + ny) / 2]);
+    }
+  }
+  const baseGX = c * G, baseGY = r * G;
+  const nearestC = (gX, gY) => { let m = 1e9, mc = centres[0]; for (const cc of centres) { const d = Math.hypot(gX - cc[0], gY - cc[1]); if (d < m) { m = d; mc = cc; } } return [m, mc]; };
+  const BRIDGE_R = 5.2;
+  const nearBridge = (gX, gY) => { let m = 1e9; for (const b of bridges) { const d = Math.hypot(gX - b[0], gY - b[1]); if (d < m) m = d; } return m; };
+  // Lumpy boundary: perturb the effective radius with low-freq global noise.
+  const covered = (gX, gY) => {
+    const bump = (_vnoise(gX * 0.42 + 11.3, gY * 0.42 - 5.1) - 0.5) * 3.4;   // ±1.7 px wobble
+    return nearestC(gX, gY)[0] <= R + bump || nearBridge(gX, gY) <= BRIDGE_R + bump;
+  };
+  // soft ground shadow on the lower-right outside edge
+  for (let gy = 0; gy < G; gy++) for (let gx = 0; gx < G; gx++) {
+    const gX = baseGX + gx, gY = baseGY + gy;
+    if (!covered(gX, gY) && covered(gX - 1.6, gY - 1.6)) put(gx, gy, SH);
+  }
+  for (let gy = 0; gy < G; gy++) for (let gx = 0; gx < G; gx++) {
+    const gX = baseGX + gx, gY = baseGY + gy;
+    if (!covered(gX, gY)) continue;
+    const edge = !covered(gX + 1, gY) || !covered(gX - 1, gY) || !covered(gX, gY + 1) || !covered(gX, gY - 1);
+    let col;
+    if (edge) {
+      col = OUT;
+    } else {
+      const [dn, mc] = nearestC(gX, gY);
+      const lx = gX - mc[0], ly = gY - mc[1];                      // offset from this clump's centre
+      // Leaf-clump texture: two noise octaves give blobby light/dark masses.
+      const leaf = _vnoise(gX * 0.85 + 3.2, gY * 0.85 + 7.4) * 0.65 + _vnoise(gX * 1.9 - 4.0, gY * 1.9 + 1.0) * 0.35;
+      // Lighting: each clump is a rounded mound lit from the upper-left.
+      let light = leaf * 0.85 + (1 - dn / R) * 0.30 + (-lx - ly) * 0.035 + 0.05;
+      if (light > 0.92) col = LT2;          // bright leaf catching sun
+      else if (light > 0.66) col = LT;
+      else if (light > 0.42) col = MD;
+      else col = DK1;
+      if (leaf < 0.16) col = OUT;           // deep gaps between leaf masses (dark pockets)
+    }
+    put(gx, gy, col);
+  }
+  if (!isTree(r + 1, c)) put(cx | 0, G - 1, TR);   // trunk only at the cluster's front edge
+}
+// Rocks merge with adjacent rocks/boulders into one bigger boulder mass.
+function _drawRock(c2, x, y, r, c, large) {
+  const G = 12, put = _pxFiller(c2, x, y, G);
+  const OUT = '#23262b', DK = '#3f4248', MD = '#5f636b', LT = '#878d97', LT2 = '#a8aeb8', SH = 'rgba(0,0,0,0.30)';
+  const aOf = (rr, cc) => grid[rr + ',' + cc];
+  const isRock = (rr, cc) => { const a = aOf(rr, cc); return !!(a && (a.includes('rock') || a.includes('rock_large'))); };
+  const isLarge = (rr, cc) => { const a = aOf(rr, cc); return !!(a && a.includes('rock_large')); };
+  const cx = 5.5, cy = 6.0;
+  const Rof = (lg) => lg ? 6.6 : 4.6;
+  const ownX = c * G + cx, ownY = r * G + cy;
+  const centres = [[ownX, ownY, Rof(large)]];   // main centres (used for centroid lighting)
+  const bridges = [];                            // gap-fillers between adjacent rocks
+  for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+    if ((dr || dc) && isRock(r + dr, c + dc)) {
+      const nx = (c + dc) * G + cx, ny = (r + dr) * G + cy;
+      centres.push([nx, ny, Rof(isLarge(r + dr, c + dc))]);
+      bridges.push([(ownX + nx) / 2, (ownY + ny) / 2, 5.2]);   // fill the seam / 4-corner hole
+    }
+  }
+  const allC = centres.concat(bridges);
+  const baseGX = c * G, baseGY = r * G;
+  // Cluster centroid (main centres only) → ONE light gradient across the whole
+  // merged mass, so a block of boulders reads as a single giant rock.
+  let ccx = 0, ccy = 0; for (const cc of centres) { ccx += cc[0]; ccy += cc[1]; } ccx /= centres.length; ccy /= centres.length;
+  const nearestC = (gX, gY) => { let m = 1e9; for (const cc of allC) { const d = Math.hypot(gX - cc[0], gY - cc[1]) - cc[2]; if (d < m) m = d; } return m; };
+  const covered = (gX, gY) => { const bump = (_vnoise(gX * 0.5 + 4.1, gY * 0.5 + 8.8) - 0.5) * 2.2; return nearestC(gX, gY) <= bump; };
+  for (let gy = 0; gy < G; gy++) for (let gx = 0; gx < G; gx++) {  // shadow lower-right
+    const gX = baseGX + gx, gY = baseGY + gy;
+    if (!covered(gX, gY) && covered(gX - 1.4, gY - 1.6)) put(gx, gy, SH);
+  }
+  for (let gy = 0; gy < G; gy++) for (let gx = 0; gx < G; gx++) {
+    const gX = baseGX + gx, gY = baseGY + gy;
+    if (!covered(gX, gY)) continue;
+    const edge = !covered(gX + 1, gY) || !covered(gX - 1, gY) || !covered(gX, gY + 1) || !covered(gX, gY - 1);
+    let col;
+    if (edge) col = OUT;
+    else {
+      const lx = gX - ccx, ly = gY - ccy;                       // relative to whole-cluster centre
+      const tex = _vnoise(gX * 0.9 + 2.0, gY * 0.9 + 5.0);
+      let light = 0.52 + (-lx - ly) * 0.028 + (tex - 0.5) * 0.45;   // single upper-left light + facets
+      col = light > 0.86 ? LT2 : light > 0.62 ? LT : light > 0.40 ? MD : DK;
+      if (_vnoise(gX * 1.6 + 30, gY * 1.6 - 12) > 0.83) col = OUT;  // cracks
+    }
+    put(gx, gy, col);
+  }
+}
+// PINE — TOP-DOWN conifer: a spiky radial star of needles, dark centre.
+function _drawPine(c2, x, y, r, c) {
+  const G = 12, put = _pxFiller(c2, x, y, G);
+  const OUT = '#0b2810', DK = '#15401a', MD = '#1f5a26', LT = '#3a8a3c', CTR = '#3a2a14', SH = 'rgba(0,0,0,0.25)';
+  const cx = 5.5, cy = 5.5, R = 5.3, spikes = 7;
+  const off = _vnoise(c * 3 + 1, r * 3 + 1) * 6.28;   // per-cell rotation of the spikes
+  for (let gy = 0; gy < G; gy++) for (let gx = 0; gx < G; gx++) {
+    const dx = gx - cx, dy = gy - cy, d = Math.hypot(dx, dy);
+    const ang = Math.atan2(dy, dx);
+    const spk = 0.62 + 0.38 * Math.pow((Math.cos((ang - off) * spikes) + 1) / 2, 0.6);   // star edge
+    const Reff = R * spk;
+    // shadow just outside lower-right
+    if (d > Reff && d <= Reff + 1.6 && dx - dy > 0) { put(gx, gy, SH); continue; }
+    if (d > Reff) continue;
+    let col;
+    if (d > Reff - 1) col = OUT;                       // dark needle tips/outline
+    else if (d < R * 0.18) col = CTR;                  // trunk centre
+    else {
+      const ringDk = (Math.cos((ang - off) * spikes) < -0.2);   // shaded between spikes
+      const hl = dx < -0.5 && dy < -0.5 && d < R * 0.6;
+      col = hl ? LT : ringDk ? DK : MD;
+    }
+    put(gx, gy, col);
+  }
+}
+// DEAD — TOP-DOWN bare tree: brown branches radiating/forking from the centre.
+function _drawDeadTree(c2, x, y, r, c) {
+  const rnd = _objRng(r, c, 0x0DEAD);
+  const G = 12, put = _pxFiller(c2, x, y, G);
+  const BK = '#5a4326', DK = '#3e2e18', LT = '#7a5c34', SH = 'rgba(0,0,0,0.2)';
+  const cx = 5.5, cy = 5.5;
+  const plot = (px, py, col) => { const ix = Math.round(px), iy = Math.round(py); if (ix >= 0 && ix < G && iy >= 0 && iy < G) put(ix, iy, col); };
+  plot(cx + 0.6, cy + 0.8, SH);
+  plot(cx, cy, DK); plot(cx + 1, cy, DK); plot(cx, cy + 1, DK); plot(cx + 1, cy + 1, DK);   // central stump
+  const n = 5 + (rnd() * 3 | 0);
+  for (let i = 0; i < n; i++) {
+    const ang = i / n * Math.PI * 2 + (rnd() - 0.5) * 0.5;
+    const len = 3.4 + rnd() * 1.9;
+    const ca = Math.cos(ang), sa = Math.sin(ang);
+    for (let t = 1; t <= len; t += 0.6) plot(cx + ca * t, cy + sa * t, t > len * 0.6 ? LT : BK);
+    // a fork near the tip
+    const ft = len * 0.62, fa = ang + (rnd() < 0.5 ? 0.6 : -0.6);
+    for (let t = 0; t <= 1.8; t += 0.6) plot(cx + ca * ft + Math.cos(fa) * t, cy + sa * ft + Math.sin(fa) * t, LT);
+  }
 }
 
 function rebuildCells() {
@@ -764,10 +1122,13 @@ function putCells(cells, eff) {
   // each cell records exactly which NES tile it should render with on reload.
   if (eff === 'stone') eff = currentStoneVariant || 'stone';
   if (eff === 'grass') eff = currentGrassVariant || 'grass';
+  if (eff === 'difficult') eff = currentDifficultVariant || 'difficult';
+  if (eff === 'tree') eff = currentTreeVariant || 'tree';
+  if (eff === 'rock') eff = currentRockVariant || 'rock';
   for (const k of cells) {
     const [r,c]=k.split(',').map(Number);
     if (eff==='erase') {
-      delete grid[k]; delete waterCellFlow[k]; delete lavaCellFlow[k]; delete bloodCellFlow[k]; delete lightningCellFlow[k];
+      delete grid[k]; delete waterCellFlow[k]; delete lavaCellFlow[k]; delete bloodCellFlow[k]; delete lightningCellFlow[k]; delete debrisCellFlow[k];
       cctx.clearRect(c*CELL,r*CELL,CELL,CELL);
       const ti=tokens.findIndex(t=>t.r===r&&t.c===c); if(ti!==-1) tokens.splice(ti,1);
     } else {
@@ -780,8 +1141,10 @@ function putCells(cells, eff) {
       if (eff === 'lava')  lavaCellFlow[k]  = lavaFlowAngle;
       if (eff === 'blood') bloodCellFlow[k] = bloodFlowAngle;
       if (eff === 'lightning') lightningCellFlow[k] = lightningFlowAngle;
+      if (eff === 'difficult_debris') debrisCellFlow[k] = debrisFlowAngle;
       cctx.clearRect(c*CELL,r*CELL,CELL,CELL);
       drawCell(cctx,r,c,grid[k],0);
+      if (_MERGE_OBJS.has(eff)) _refreshObjNeighbors(r, c);
     }
   }
   if (eff === 'erase') eraseWallsNearCells(cells);
@@ -789,7 +1152,7 @@ function putCells(cells, eff) {
 
 function eraseAt(r,c) {
   const k=r+','+c;
-  if (grid[k]) { delete grid[k]; cctx.clearRect(c*CELL,r*CELL,CELL,CELL); }
+  if (grid[k]) { const hadObj = grid[k].some(e => _MERGE_OBJS.has(e)); delete grid[k]; cctx.clearRect(c*CELL,r*CELL,CELL,CELL); if (hadObj) _refreshObjNeighbors(r, c); }
   const ti = tokens.findIndex(t=>t.r===r && t.c===c);
   if (ti !== -1) tokens.splice(ti, 1);
   // Erase cover markers on all edges of this cell
@@ -879,32 +1242,39 @@ function drawToken(tok) {
   ctx.globalAlpha=.32; ctx.fillStyle='rgba(0,0,0,0.8)';
   ctx.beginPath(); ctx.ellipse(x,y+rad*.55,rad*.65,rad*.25,0,0,Math.PI*2); ctx.fill();
   ctx.globalAlpha=1;
-  // Body
-  const grad=ctx.createRadialGradient(x-rad*.28,y-rad*.28,0,x,y,rad);
-  grad.addColorStop(0,lighten(tok.color,.38)); grad.addColorStop(1,tok.color);
-  ctx.fillStyle=grad; ctx.beginPath(); ctx.arc(x,y,rad,0,Math.PI*2); ctx.fill();
-  // Bloodied overlay (bottom half, red)
+  const hasAvatar = !!(tok.avatar && window.ArcaneAvatar);
   const hp=tok.hp, maxHp=tok.maxHp;
-  if(hp!=null&&maxHp!=null&&maxHp>0&&hp<=maxHp/2){
-    ctx.save(); ctx.globalAlpha=.5; ctx.fillStyle='#CC1020';
-    ctx.beginPath(); ctx.arc(x,y,rad,0,Math.PI); ctx.closePath(); ctx.fill();
-    ctx.globalAlpha=.92; ctx.fillStyle='#fff';
-    ctx.font=`bold ${Math.max(7,Math.round(rad*.5))}px system-ui`;
-    ctx.textAlign='center'; ctx.textBaseline='middle';
-    ctx.fillText('B',x,y+rad*.55); ctx.restore();
+  if (hasAvatar) {
+    // Layered paper-doll / monster skin instead of the colored disc.
+    const av = window.ArcaneAvatar.merge(tok.avatar, tok.appearanceOverride);
+    window.ArcaneAvatar.render(ctx, dc*CELL, dr*CELL, s*CELL, av, {noShadow:true});
+  } else {
+    // Body
+    const grad=ctx.createRadialGradient(x-rad*.28,y-rad*.28,0,x,y,rad);
+    grad.addColorStop(0,lighten(tok.color,.38)); grad.addColorStop(1,tok.color);
+    ctx.fillStyle=grad; ctx.beginPath(); ctx.arc(x,y,rad,0,Math.PI*2); ctx.fill();
+    // Bloodied overlay (bottom half, red)
+    if(hp!=null&&maxHp!=null&&maxHp>0&&hp<=maxHp/2){
+      ctx.save(); ctx.globalAlpha=.5; ctx.fillStyle='#CC1020';
+      ctx.beginPath(); ctx.arc(x,y,rad,0,Math.PI); ctx.closePath(); ctx.fill();
+      ctx.globalAlpha=.92; ctx.fillStyle='#fff';
+      ctx.font=`bold ${Math.max(7,Math.round(rad*.5))}px system-ui`;
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText('B',x,y+rad*.55); ctx.restore();
+    }
+    // Rim
+    ctx.strokeStyle='rgba(255,255,255,0.32)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.arc(x,y,rad,0,Math.PI*2); ctx.stroke();
+    // Highlight
+    const hl=ctx.createRadialGradient(x-rad*.32,y-rad*.38,0,x-rad*.2,y-rad*.2,rad*.6);
+    hl.addColorStop(0,'rgba(255,255,255,0.42)'); hl.addColorStop(1,'rgba(255,255,255,0)');
+    ctx.fillStyle=hl; ctx.beginPath(); ctx.arc(x,y,rad,0,Math.PI*2); ctx.fill();
+    // Label
+    const label=tok.name?(tok.name.length>3?tok.name.slice(0,3):tok.name):'?';
+    ctx.fillStyle=isDark(tok.color)?'#fff':'#111';
+    ctx.font=`bold ${Math.max(8,Math.floor(s*CELL*.28))}px system-ui,sans-serif`;
+    ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(label,x,y);
   }
-  // Rim
-  ctx.strokeStyle='rgba(255,255,255,0.32)'; ctx.lineWidth=1;
-  ctx.beginPath(); ctx.arc(x,y,rad,0,Math.PI*2); ctx.stroke();
-  // Highlight
-  const hl=ctx.createRadialGradient(x-rad*.32,y-rad*.38,0,x-rad*.2,y-rad*.2,rad*.6);
-  hl.addColorStop(0,'rgba(255,255,255,0.42)'); hl.addColorStop(1,'rgba(255,255,255,0)');
-  ctx.fillStyle=hl; ctx.beginPath(); ctx.arc(x,y,rad,0,Math.PI*2); ctx.fill();
-  // Label
-  const label=tok.name?(tok.name.length>3?tok.name.slice(0,3):tok.name):'?';
-  ctx.fillStyle=isDark(tok.color)?'#fff':'#111';
-  ctx.font=`bold ${Math.max(8,Math.floor(s*CELL*.28))}px system-ui,sans-serif`;
-  ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(label,x,y);
   // HP bar
   if(hp!=null&&maxHp!=null&&maxHp>0&&hp>0){
     const ratio=Math.max(0,Math.min(1,hp/maxHp));
@@ -1232,6 +1602,723 @@ function _pixHelpers(c2, x, y) {
 // centre plus every adjacent fire cell's centre — so a group of fire
 // tiles fuses into one larger blob with the seams becoming white-hot
 // instead of fading to dark.
+// Common pre-render: paint a solid Minecraft-style base background so
+// the difficult-terrain icon reads clearly even when no terrain sits
+// under it.  Returns a seeded RNG keyed off the cell position.
+function _difficultBase(c2, x, y, gr, gc, hasTerrain, bgA, baseRgb, hexSeed) {
+  // Strong opaque-ish wash when no terrain — solid enough to make the
+  // icon obvious, but semi-translucent over terrain so the floor still
+  // hints through.
+  // Only back-fill on a blank grid (no terrain, no map) so the icon reads on the
+  // dark grid. Over terrain OR a map, draw just the rubble/thorn/brush pixels so
+  // nothing tints the tile beneath.
+  if (!bgImage && !hasTerrain) {
+    c2.fillStyle = `rgba(${baseRgb}, ${bgA * 0.85})`;
+    c2.fillRect(x, y, CELL, CELL);
+  }
+  let s = (gr * 0x9E37 + gc * 0x85EB + hexSeed) | 0;
+  return {
+    rnd: () => { s = (Math.imul(s, 1664525) + 1013904223) | 0; return (s >>> 0) / 0x100000000; },
+  };
+}
+
+// Stamp a filled "round Minecraft-style" rock at (cx, cy) with given
+// radius and 3-tone shading (highlight TL, mid, shadow BR).
+function _stampRock(c2, px1, TG, cx, cy, radius, hi, mid, sh) {
+  const r2 = radius * radius + 0.25;
+  const iR = Math.ceil(radius + 0.5);
+  for (let dy = -iR; dy <= iR; dy++) {
+    for (let dx = -iR; dx <= iR; dx++) {
+      if (dx * dx + dy * dy > r2) continue;
+      const ccol = cx + dx, crow = cy + dy;
+      if (ccol < 0 || ccol >= TG || crow < 0 || crow >= TG) continue;
+      // TL pixels = highlight, BR pixels = shadow, otherwise mid
+      let col = mid;
+      if      (dx < 0 && dy < 0) col = hi;
+      else if (dx > 0 && dy > 0) col = sh;
+      c2.fillStyle = col;
+      px1(ccol, crow);
+    }
+  }
+}
+
+// RUBBLE — dense pile of stones blocking the cell.  4 big rock clumps
+// + tightly-packed gravel between them.  Drifting dust mote stays as a
+// subtle "this terrain is loose" hint.
+// BLOOD — overlay that doesn't darken the underlying terrain (only the
+// bright red pixels are drawn; everything else stays transparent).
+//
+// Has two clearly-distinct modes driven by flowAngle:
+//   • -1 (Still)   → STATIC splatter: pools + droplets in fixed spots.
+//                     Nothing moves frame-to-frame.  This is the default.
+//   • 0..360       → FLOWING river: streaming particles travel across
+//                     the cell in the chosen direction with trailing
+//                     streaks.  The splatter pools become elongated
+//                     teardrops pointing in the flow direction.
+function _drawBloodStatus(c2, x, y, ts, gr, gc, hasTerrain, bgA, flowAngle) {
+  const { TG, px1 } = _pixHelpers(c2, x, y);
+  const flowing = (flowAngle != null && flowAngle >= 0);
+
+  if (!hasTerrain && !bgImage) {        // skip the dark backing over a background map
+    c2.fillStyle = `rgba(14, 2, 4, ${bgA * 0.92})`;
+    c2.fillRect(x, y, CELL, CELL);
+  }
+
+  // Per-cell seeded RNG
+  let s = (gr * 0x9E37 + gc * 0xB1C8 + 0xB100D9) | 0;
+  const rnd  = () => { s = (Math.imul(s, 1664525) + 1013904223) | 0; return (s >>> 0) / 0x100000000; };
+  const irnd = (n) => Math.floor(rnd() * n);
+
+  const BR_BRIGHT = '#d42030';
+  const BR_MID    = '#a81420';
+  const BR_DARK   = '#601018';
+  const BR_DEEP   = '#2c0608';
+
+  // ══════════════════════════════════════════════════════════════
+  // STATIC MODE — fixed splatter, NO animation
+  // ══════════════════════════════════════════════════════════════
+  if (!flowing) {
+    // 2 main pools — completely static, same every frame.
+    for (let pi = 0; pi < 2; pi++) {
+      const cx = 3 + irnd(TG - 6);
+      const cy = 3 + irnd(TG - 6);
+      const size = 2 + irnd(2);
+      for (let dy = -size; dy <= size; dy++) {
+        for (let dx = -size; dx <= size; dx++) {
+          const d = Math.sqrt(dx * dx + dy * dy);
+          if (d > size + 0.3) continue;
+          if (d > size - 0.7 && rnd() < 0.4) continue;
+          const cc = cx + dx, cr = cy + dy;
+          if (cc < 0 || cc >= TG || cr < 0 || cr >= TG) continue;
+          c2.fillStyle = d < size * 0.35 ? BR_DEEP
+                       : d < size * 0.65 ? BR_DARK
+                       : d < size * 0.90 ? BR_MID
+                       :                   BR_BRIGHT;
+          px1(cc, cr);
+        }
+      }
+    }
+    // 8 scattered static droplets
+    for (let di = 0; di < 8; di++) {
+      const cc = irnd(TG), cr = irnd(TG);
+      const pick = rnd();
+      c2.fillStyle = pick < 0.30 ? BR_BRIGHT
+                   : pick < 0.65 ? BR_MID
+                   :               BR_DARK;
+      px1(cc, cr);
+      if (rnd() < 0.4 && cc + 1 < TG) px1(cc + 1, cr);
+    }
+    return;
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // FLOWING MODE — slow viscous ooze in the flow direction
+  // ══════════════════════════════════════════════════════════════
+  // Direction vectors (atan2 convention: 0=Right, 90=Down). flowAngle maps
+  // directly to the vector angle so the stream travels the chosen direction.
+  const rad = flowAngle * Math.PI / 180;
+  const dirX = Math.cos(rad);
+  const dirY = Math.sin(rad);
+  // Perpendicular for "spread" across the flow
+  const perpX = -dirY, perpY = dirX;
+  // Slow continuous time (FLOAT, not integer frames) — gives sub-pixel
+  // smoothness and a much slower pace than the old per-frame stepping.
+  // Total cycle takes ~5 s at 60 fps — that's the "oozy" tempo.
+  const flowT = ts ? ts * 0.005 : 0;   // ~5x slower than before
+  const wrap = (n, max) => ((n % max) + max) % max;
+
+  // Helper — draws a "thick band" pixel cluster at world (cx, cy):
+  // the centre pixel plus 1-2 pixels offset along the perpendicular axis
+  // so the stream has a noticeable cross-section.
+  const fillBand = (cx, cy, halfWidth, color) => {
+    c2.fillStyle = color;
+    for (let off = -halfWidth; off <= halfWidth; off++) {
+      const pc = Math.round(cx + perpX * off);
+      const pr = Math.round(cy + perpY * off);
+      if (pc >= 0 && pc < TG && pr >= 0 && pr < TG) px1(pc, pr);
+    }
+  };
+
+  // ── CONTINUOUS cross-cell river ──────────────────────────────────────────
+  // Everything below is computed in GLOBAL grid-pixel coordinates (TG px per
+  // cell) projected onto the flow axis, so strands, wobble and the moving
+  // highlights line up exactly at cell borders — adjacent flowing-blood cells
+  // join into one seamless stream.
+  const cellGX = gc * TG, cellGY = gr * TG;
+  // (along, perp) in the flow basis → this cell's local pixel.
+  const toLocal = (along, perp) => [along * dirX + perp * perpX - cellGX, along * dirY + perp * perpY - cellGY];
+  // Project the 4 cell corners to find the along/perp span this cell covers.
+  let pMin = Infinity, pMax = -Infinity, aMin = Infinity, aMax = -Infinity;
+  for (const [X, Y] of [[cellGX, cellGY], [cellGX + TG, cellGY], [cellGX, cellGY + TG], [cellGX + TG, cellGY + TG]]) {
+    const pp = X * perpX + Y * perpY, aa = X * dirX + Y * dirY;
+    if (pp < pMin) pMin = pp; if (pp > pMax) pMax = pp;
+    if (aa < aMin) aMin = aa; if (aa > aMax) aMax = aa;
+  }
+  const laneHash = (m) => { let h = (Math.imul(m, 2654435761)) >>> 0; return (h % 1000) / 1000; };
+  const LANE_SP = 2;          // px between strands across the flow
+  const DOT_SP = 6;           // px between moving highlights along a strand
+  for (let m = Math.floor(pMin / LANE_SP); m <= Math.ceil(pMax / LANE_SP); m++) {
+    const perp = m * LANE_SP;
+    const r0 = laneHash(m);
+    const sj = 0.8 + r0 * 0.6;                       // per-lane speed variation
+    // Strand body — a continuous dark line down the whole lane (static, so the
+    // river bed is solid); a deterministic global wobble keeps it continuous.
+    for (let a = Math.floor(aMin) - 1; a <= Math.ceil(aMax) + 1; a++) {
+      const w = Math.sin(a * 0.35 + r0 * 6.28) * 0.7;
+      const [lx, ly] = toLocal(a, perp + w);
+      const ic = Math.round(lx), ir = Math.round(ly);
+      if (ic < 0 || ic >= TG || ir < 0 || ir >= TG) continue;
+      c2.fillStyle = ((a + m) & 3) === 0 ? BR_MID : BR_DARK;
+      px1(ic, ir);
+      // half-step fill toward the next lane so the bed reads as a full sheet
+      const [lx2, ly2] = toLocal(a, perp + 1 + w);
+      const ic2 = Math.round(lx2), ir2 = Math.round(ly2);
+      if (ic2 >= 0 && ic2 < TG && ir2 >= 0 && ir2 < TG) { c2.fillStyle = BR_DEEP; px1(ic2, ir2); }
+    }
+    // Moving bright highlights travelling along the lane (global phase → they
+    // cross cell borders seamlessly).
+    const phase = flowT * sj + r0 * 40;
+    for (let k = Math.floor((aMin - phase) / DOT_SP) - 1; k <= Math.ceil((aMax - phase) / DOT_SP) + 1; k++) {
+      const along = k * DOT_SP + phase;
+      const w = Math.sin(along * 0.35 + r0 * 6.28) * 0.7;
+      const [lx, ly] = toLocal(along, perp + w);
+      const ic = Math.round(lx), ir = Math.round(ly);
+      if (ic < 0 || ic >= TG || ir < 0 || ir >= TG) continue;
+      c2.fillStyle = BR_BRIGHT; px1(ic, ir);
+      const [lx2, ly2] = toLocal(along - 1.4, perp + w);          // short bright trail behind the head
+      const ic2 = Math.round(lx2), ir2 = Math.round(ly2);
+      if (ic2 >= 0 && ic2 < TG && ir2 >= 0 && ir2 < TG) { c2.fillStyle = '#ee4858'; px1(ic2, ir2); }
+    }
+  }
+}
+
+// WEB — sparse organic spider-web overlay that connects to adjacent web
+// cells.  Spokes use slight pixel-wobble (Bresenham-ish stepping) instead
+// of straight axis-aligned lines so they read as organic threads, not
+// drawn lines.  Spiral chord segments connect adjacent spokes at two
+// radii, giving the iconic "concentric spiral" spider-web look.
+function _drawWebStatus(c2, x, y, ts, gr, gc, hasTerrain, bgA) {
+  const { TG, px1 } = _pixHelpers(c2, x, y);
+
+  if (!hasTerrain && !bgImage) {
+    c2.fillStyle = `rgba(6,3,12, ${bgA * 0.28})`;
+    c2.fillRect(x, y, CELL, CELL);
+  }
+
+  const SILK_HI = '#e8dcf8';
+  const SILK    = '#b8a8dc';
+  const SILK_DK = '#786ca0';
+
+  const has = (rr, cc) => {
+    const k = rr + ',' + cc;
+    return !!(grid[k] && grid[k].includes('web'));
+  };
+  const N = {
+    n:  has(gr-1, gc),    s:  has(gr+1, gc),
+    e:  has(gr,   gc+1),  w:  has(gr,   gc-1),
+    ne: has(gr-1, gc+1),  nw: has(gr-1, gc-1),
+    se: has(gr+1, gc+1),  sw: has(gr+1, gc-1),
+  };
+
+  // ── Helper: draw a path of pixels, optionally truncated.  When the
+  // neighbour in that direction has no web, only the inner portion of
+  // the path is drawn (so isolated webs stay compact instead of poking
+  // hairlines out into empty space).
+  function drawPath(path, connected) {
+    const stop = connected ? path.length : Math.ceil(path.length * 0.35);
+    for (let i = 0; i < stop; i++) {
+      const [pc, pr] = path[i];
+      if (pc >= 0 && pc < TG && pr >= 0 && pr < TG) px1(pc, pr);
+    }
+  }
+
+  // ── Wobbly cardinal spokes (slight pixel-drift so they read organic,
+  // not rigid).  Each entry: [col, row] from hub-adjacent → edge.
+  c2.fillStyle = SILK;
+  // North: drifts slightly east-west as it goes up — looks like a hanging strand
+  drawPath([[7,6],[7,5],[8,4],[7,3],[8,2],[7,1],[7,0]], N.n);
+  drawPath([[8,9],[8,10],[7,11],[8,12],[7,13],[8,14],[8,15]], N.s);
+  drawPath([[9,8],[10,8],[11,7],[12,8],[13,7],[14,8],[15,8]], N.e);
+  drawPath([[6,7],[5,7],[4,8],[3,7],[2,8],[1,7],[0,7]], N.w);
+
+  // ── Diagonal spokes — perfect 45° already looks "organic" because
+  // each pixel-step is a natural staircase.  These get the dimmer silk
+  // tone so they recede slightly behind the cardinals.
+  c2.fillStyle = SILK_DK;
+  drawPath([[6,6],[5,5],[4,4],[3,3],[2,2],[1,1],[0,0]], N.nw);
+  drawPath([[9,6],[10,5],[11,4],[12,3],[13,2],[14,1],[15,0]], N.ne);
+  drawPath([[9,9],[10,10],[11,11],[12,12],[13,13],[14,14],[15,15]], N.se);
+  drawPath([[6,9],[5,10],[4,11],[3,12],[2,13],[1,14],[0,15]], N.sw);
+
+  // ── Inner spiral chord — small angled segments connecting adjacent
+  // spokes at radius ~3.  These are the iconic "spiral threads" of a
+  // spider web.  Drawn as short diagonal runs (not perfect arcs, but
+  // close enough at 16-px resolution) so they read as curves rather
+  // than as a square ring.
+  c2.fillStyle = SILK_DK;
+  // Top-right quadrant: N → NE → E
+  px1(8, 5); px1(9, 5); px1(10, 6); px1(11, 6); px1(11, 7);
+  // Bottom-right: E → SE → S
+  px1(11, 8); px1(11, 9); px1(10, 10); px1(9, 10); px1(8, 11);
+  // Bottom-left: S → SW → W
+  px1(7, 11); px1(6, 10); px1(5, 10); px1(4, 9); px1(4, 8);
+  // Top-left: W → NW → N
+  px1(4, 7); px1(5, 6); px1(5, 5); px1(6, 5); px1(7, 5);
+
+  // ── Outer spiral chord (radius ~6) — drawn ONLY if the cell has at
+  // least one connection.  Adds richness to webs in a cluster but keeps
+  // isolated webs compact.
+  const connections = N.n+N.s+N.e+N.w+N.ne+N.nw+N.se+N.sw;
+  if (connections > 0) {
+    c2.fillStyle = SILK_DK;
+    // Top-right quadrant arc
+    px1(8, 2); px1(9, 2); px1(11, 3); px1(12, 4); px1(13, 5); px1(13, 6);
+    // Bottom-right quadrant arc
+    px1(13, 9); px1(13, 10); px1(12, 11); px1(11, 12); px1(9, 13); px1(8, 13);
+    // Bottom-left quadrant arc
+    px1(7, 13); px1(6, 13); px1(4, 12); px1(3, 11); px1(2, 10); px1(2, 9);
+    // Top-left quadrant arc
+    px1(2, 6); px1(2, 5); px1(3, 4); px1(4, 3); px1(6, 2); px1(7, 2);
+  }
+
+  // ── A single dewdrop highlight (deterministic per cell) — tiny touch
+  // of organic detail that makes webs feel alive rather than mechanical.
+  const seed = ((gr * 0x9E37 + gc * 0x85EB + 0xDEC0DE) >>> 0);
+  const dewPoints = [[6,5],[10,5],[11,7],[10,10],[6,10],[5,7],[5,10],[10,6]];
+  const dew = dewPoints[seed % dewPoints.length];
+  c2.fillStyle = SILK_HI;
+  px1(dew[0], dew[1]);
+
+  // ── Centre hub — drawn LAST so it sits on top of any chord pixel ──
+  c2.fillStyle = SILK_HI;
+  px1(7, 7); px1(8, 7); px1(7, 8); px1(8, 8);
+}
+
+function _drawDifficultStatus(c2, x, y, ts, gr, gc, hasTerrain, bgA) {
+  const { TG, px1 } = _pixHelpers(c2, x, y);
+  const { rnd } = _difficultBase(c2, x, y, gr, gc, hasTerrain, bgA, '60,48,18', 0x12345678);
+  const irnd = (n) => Math.floor(rnd() * n);
+
+  // ── Heavy gravel pebble carpet (16 single-px pebbles in 4 shades) ──
+  const SHADES = ['#a08c70', '#806c50', '#5c4830', '#382818'];
+  for (let i = 0; i < 16; i++) {
+    c2.fillStyle = SHADES[irnd(4)];
+    px1(irnd(TG), irnd(TG));
+  }
+
+  // ── 4 big round rocks — these dominate the tile ──
+  const rockPositions = [];
+  for (let i = 0; i < 4; i++) {
+    let cx, cy, tries = 0;
+    do {
+      cx = 3 + irnd(TG - 6);
+      cy = 3 + irnd(TG - 6);
+      tries++;
+    } while (tries < 10 && rockPositions.some(p => Math.abs(p[0] - cx) + Math.abs(p[1] - cy) < 5));
+    rockPositions.push([cx, cy]);
+    const r = 1.6 + (irnd(2) ? 0.5 : 0);  // some bigger than others
+    _stampRock(c2, px1, TG, cx, cy, r, '#a89880', '#7a6850', '#3c2c18');
+    // Dark shadow pixel directly south of the rock — top-down lighting cue
+    if (cy + 2 < TG) {
+      c2.fillStyle = '#2a1c0c';
+      px1(cx, cy + 2);
+      if (cx + 1 < TG) px1(cx + 1, cy + 2);
+    }
+  }
+
+  // ── Drifting dust mote (kept for life) ──
+  if (ts) {
+    const phaseOff = ((gr * 3 + gc * 5) & 31);
+    const frame    = Math.floor(ts / 110);
+    const cycle    = 26;
+    const t        = (frame + phaseOff) % cycle;
+    if (t < 16) {
+      const mRow = (TG - 2) - Math.floor(t * 0.8);
+      const mCol = 4 + irnd(8);
+      if (mRow >= 0 && mCol >= 0 && mCol < TG) {
+        c2.fillStyle = (t < 4) ? '#e0d0a0' : (t < 10 ? '#b8a888' : '#806848');
+        px1(mCol, mRow);
+      }
+    }
+  }
+}
+
+// THORNS — twisting brambles + sharp triangular thorn points + a few
+// drops of dark blood.  Per-cell seeded so each tile has a different vine
+// layout; static, no per-frame animation needed.
+// THORNS — dense tangled brambles spanning the tile.  A "+" shape main
+// vine in dark wood-brown anchors the look, secondary side-branches
+// fill the corners, and bright red triangular thorn-tips and blood
+// drops make the danger obvious.
+function _drawDifficultThornsStatus(c2, x, y, ts, gr, gc, hasTerrain, bgA) {
+  const { TG, px1 } = _pixHelpers(c2, x, y);
+  const { rnd } = _difficultBase(c2, x, y, gr, gc, hasTerrain, bgA, '36,22,8', 0xDEC0DE);
+  const irnd = (n) => Math.floor(rnd() * n);
+
+  const VINE_HI  = '#7a4a22';   // raised side of vine
+  const VINE_MID = '#4a2c14';   // body
+  const VINE_DK  = '#241208';   // shadow outline
+  const THORN    = '#c83824';   // bright red thorn point
+  const THORN_DK = '#601410';   // thorn shadow
+  const BLOOD    = '#4a0810';
+
+  // ── Main "+" vine spanning the tile (always present so the shape reads) ──
+  // Horizontal trunk through row 7-8 with slight wobble
+  for (let col = 0; col < TG; col++) {
+    const wob = (irnd(3) - 1);
+    const row = 7 + wob;
+    if (row >= 0 && row < TG) {
+      c2.fillStyle = VINE_MID; px1(col, row);
+      // Highlight pixel above
+      if (row - 1 >= 0) { c2.fillStyle = VINE_HI; px1(col, row - 1); }
+      // Shadow pixel below
+      if (row + 1 < TG) { c2.fillStyle = VINE_DK; px1(col, row + 1); }
+    }
+  }
+  // Vertical trunk through col 7-8
+  for (let row = 0; row < TG; row++) {
+    const wob = (irnd(3) - 1);
+    const col = 7 + wob;
+    if (col >= 0 && col < TG) {
+      c2.fillStyle = VINE_MID; px1(col, row);
+      if (col - 1 >= 0) { c2.fillStyle = VINE_HI; px1(col - 1, row); }
+      if (col + 1 < TG) { c2.fillStyle = VINE_DK; px1(col + 1, row); }
+    }
+  }
+
+  // ── 4 corner side-branches (diagonal-ish vines reaching into corners) ──
+  const branches = [
+    { sc: 7, sr: 7, dc: -1, dr: -1 },   // toward NW
+    { sc: 8, sr: 7, dc:  1, dr: -1 },   // toward NE
+    { sc: 7, sr: 8, dc: -1, dr:  1 },   // toward SW
+    { sc: 8, sr: 8, dc:  1, dr:  1 },   // toward SE
+  ];
+  for (const b of branches) {
+    let bc = b.sc, br = b.sr;
+    for (let step = 0; step < 5; step++) {
+      bc += b.dc + (irnd(3) - 1);
+      br += b.dr;
+      if (bc < 0 || bc >= TG || br < 0 || br >= TG) break;
+      c2.fillStyle = step === 4 ? VINE_HI : VINE_MID;
+      px1(bc, br);
+    }
+  }
+
+  // ── 8 bright red thorn tips (a 2-pixel "L" shape — point + shadow) ──
+  for (let i = 0; i < 8; i++) {
+    const tc = irnd(TG);
+    const tr = irnd(TG);
+    c2.fillStyle = THORN;     px1(tc, tr);
+    c2.fillStyle = THORN_DK;
+    if (tc + 1 < TG) px1(tc + 1, tr);
+    if (tr + 1 < TG) px1(tc, tr + 1);
+  }
+
+  // ── 3 dark blood drops scattered ──
+  for (let i = 0; i < 3; i++) {
+    const dc = 1 + irnd(TG - 2);
+    const dr = 1 + irnd(TG - 2);
+    c2.fillStyle = BLOOD;     px1(dc, dr);
+    c2.fillStyle = '#1a0204';
+    if (dr + 1 < TG) px1(dc, dr + 1);
+  }
+
+  // ── Subtle slow sway: shift one vine highlight between frames ──
+  if (ts) {
+    const t = Math.floor(ts / 280) % 2;
+    c2.fillStyle = '#a05a2c';
+    const swayCol = 3 + irnd(10);
+    const swayRow = 3 + irnd(10);
+    if (swayCol + t < TG) px1(swayCol + t, swayRow);
+  }
+}
+
+// DEBRIS — broken wooden planks (2×1 brown rectangles) + splinter pixels
+// + a couple of darker burnt marks.  Suggests a destroyed structure or
+// battlefield wreckage.
+// DEBRIS — a giant fallen log.  Horizontal by default; flips to
+// vertical when angle === 90.  Adjacent debris cells with matching
+// orientation FUSE into one continuous log: the cut-end rings are
+// suppressed on the connecting side and continuous bark is drawn
+// across the seam instead.  This lets you paint a 4-cell horizontal
+// row that reads as one giant trunk, or stack 3 vertically for a
+// totem-style obstacle.
+let _dbgC = null;   // offscreen buffer for rotating the debris log to any angle
+function _drawDifficultDebrisStatus(realC2, x, y, ts, gr, gc, hasTerrain, bgA, flowAngle) {
+  // Base wash on the real (unrotated) context.
+  const { rnd } = _difficultBase(realC2, x, y, gr, gc, hasTerrain, bgA, '40,28,16', 0xC0FFEE);
+  const irnd = (n) => Math.floor(rnd() * n);
+  const dir = (flowAngle != null && flowAngle >= 0) ? flowAngle : 0;   // any of the 8 compass angles
+  const rad = dir * Math.PI / 180;
+
+  // Draw the log HORIZONTALLY into an offscreen buffer, then blit it rotated by
+  // `dir` so debris can face any direction.
+  const S = Math.max(16, Math.round(CELL));
+  if (!_dbgC) _dbgC = document.createElement('canvas');
+  if (_dbgC.width !== S) { _dbgC.width = S; _dbgC.height = S; }
+  const c2 = _dbgC.getContext('2d');
+  c2.clearRect(0, 0, S, S);
+  const { TG, px1 } = _pixHelpers(c2, 0, 0);
+  const pxL = (a, p) => px1(a, p);          // always horizontal into the buffer
+
+  // Palette
+  const BARK_DK = '#1c0e04';
+  const BARK    = '#3a2410';
+  const BARK_HI = '#5a3818';
+  const WOOD_DK = '#6a4020';
+  const WOOD    = '#8a5a28';
+  const WOOD_HI = '#c89058';
+  const RING_DK = '#3a1c08';
+  const MOSS_DK = '#284018';
+  const MOSS    = '#487028';
+
+  // Continuity: a log fuses with the neighbour cell that lies along its flow
+  // direction (rounded to one of the 8 cells) if that cell has debris facing
+  // the same way — suppress the cut-end rings there.
+  const ndc = Math.round(Math.cos(rad)), ndr = Math.round(Math.sin(rad));
+  const _connects = (rr, cc) => {
+    if (!ndr && !ndc) return false;
+    const k = rr + ',' + cc;
+    if (!grid[k] || !grid[k].includes('difficult_debris')) return false;
+    const nAng = (debrisCellFlow[k] !== undefined) ? debrisCellFlow[k] : debrisFlowAngle;
+    return ((nAng >= 0 ? nAng : 0) === dir);
+  };
+  const connectB = _connects(gr + ndr, gc + ndc);    // +flow end (right of horizontal)
+  const connectA = _connects(gr - ndr, gc - ndc);    // −flow end (left)
+
+  // ── Log silhouette: top/bottom bark outlines (perp = 4 and 11) ──
+  c2.fillStyle = BARK_DK;
+  for (let a = 0; a < TG; a++) { pxL(a, 4); pxL(a, 11); }
+
+  // ── Top + bottom bark texture rows (5 & 10) — alternating ──
+  for (let a = 0; a < TG; a++) {
+    c2.fillStyle = (a % 2) ? BARK_HI : BARK; pxL(a, 5);
+    c2.fillStyle = (a % 2) ? BARK    : BARK_HI; pxL(a, 10);
+  }
+
+  // ── Wood body (perp = 6..9) ──
+  for (let a = 0; a < TG; a++) {
+    c2.fillStyle = WOOD_DK; pxL(a, 6);
+    c2.fillStyle = WOOD;    pxL(a, 7);
+    c2.fillStyle = WOOD_HI; pxL(a, 8);
+    c2.fillStyle = WOOD;    pxL(a, 9);
+  }
+
+  // ── Wood-grain dashes along the body (skip extreme ends if rings
+  // are NOT suppressed, since the rings occupy axis 0-2 / 13-15) ──
+  c2.fillStyle = WOOD_DK;
+  const grainStart = connectA ? 1 : 3;
+  const grainEnd   = connectB ? TG - 1 : TG - 3;
+  for (let a = grainStart; a < grainEnd; a += 3) {
+    pxL(a, 7);
+    if (a + 1 < grainEnd) pxL(a + 1, 9);
+  }
+
+  // ── Cut-end rings — ONLY drawn on sides facing open space (no
+  // matching-orientation neighbour).  Where suppressed, continuous bark
+  // already fills those columns from the loops above.
+  if (!connectA) {
+    // Side A: axis 0..2 (left for horiz, top for vert)
+    for (let p = 5; p <= 10; p++) {
+      c2.fillStyle = BARK_DK; pxL(0, p);
+      c2.fillStyle = RING_DK; pxL(1, p);
+      c2.fillStyle = (p === 5 || p === 10) ? WOOD_DK : WOOD; pxL(2, p);
+    }
+    c2.fillStyle = WOOD_HI; pxL(2, 8);
+  }
+  if (!connectB) {
+    // Side B: axis 13..15 (right for horiz, bottom for vert)
+    for (let p = 5; p <= 10; p++) {
+      c2.fillStyle = BARK_DK; pxL(TG - 1, p);
+      c2.fillStyle = RING_DK; pxL(TG - 2, p);
+      c2.fillStyle = (p === 5 || p === 10) ? WOOD_DK : WOOD; pxL(TG - 3, p);
+    }
+    c2.fillStyle = WOOD_HI; pxL(TG - 3, 8);
+  }
+
+  // ── Knot on the body (always inside the wood area) ──
+  const knotAxis = 5 + irnd(6);
+  c2.fillStyle = BARK_DK;  pxL(knotAxis, 8);
+  c2.fillStyle = WOOD_DK;
+  if (knotAxis > 0) pxL(knotAxis - 1, 8);
+  if (knotAxis < TG - 1) pxL(knotAxis + 1, 8);
+  pxL(knotAxis, 7);
+
+  // ── Moss patches on the long edges (50% chance, 2 spots) ──
+  if (rnd() < 0.5) {
+    for (let mi = 0; mi < 2; mi++) {
+      const mAxis  = 3 + irnd(10);
+      const onTop  = irnd(2);
+      const basePerp = onTop ? 4 : 11;
+      const tuftPerp = onTop ? 3 : 12;
+      c2.fillStyle = MOSS;    pxL(mAxis, basePerp);
+      c2.fillStyle = MOSS_DK;
+      if (mAxis + 1 < TG) pxL(mAxis + 1, basePerp);
+      if (tuftPerp >= 0 && tuftPerp < TG) pxL(mAxis, tuftPerp);
+    }
+  }
+
+  // ── Small mushroom growing on the trunk (35% chance) ──
+  if (rnd() < 0.35) {
+    const mAxis = 4 + irnd(8);
+    c2.fillStyle = '#a8201c'; pxL(mAxis, 3);
+    if (mAxis + 1 < TG) pxL(mAxis + 1, 3);
+    c2.fillStyle = '#f8f0e0'; pxL(mAxis, 3);
+    c2.fillStyle = '#e8d8b8'; pxL(mAxis, 4);
+  }
+
+  // ── Twigs and chips scattered in the background bands (perp 0..3,
+  // 12..15) — only where no neighbour log is fusing across that edge,
+  // so the background between connected log segments stays clean.
+  for (let i = 0; i < 4; i++) {
+    const tAxis = irnd(TG);
+    const top   = irnd(4) < 2;
+    const tPerp = top ? irnd(3) : 12 + irnd(3);
+    c2.fillStyle = irnd(2) ? BARK : WOOD_DK;
+    if (tPerp >= 0 && tPerp < TG) pxL(tAxis, tPerp);
+  }
+  c2.fillStyle = WOOD_HI;
+  for (let i = 0; i < 2; i++) {
+    const cAxis = irnd(TG);
+    const cPerp = irnd(4) < 2 ? irnd(3) : 12 + irnd(3);
+    if (cPerp < TG) pxL(cAxis, cPerp);
+  }
+
+  // Blit the horizontal log buffer rotated to the chosen direction.
+  realC2.save();
+  realC2.imageSmoothingEnabled = false;
+  realC2.translate(x + CELL / 2, y + CELL / 2);
+  realC2.rotate(rad);
+  realC2.drawImage(_dbgC, -CELL / 2, -CELL / 2, CELL, CELL);
+  realC2.restore();
+}
+
+// BRUSH — tall grass tufts: 6-8 small vertical stalks of bright/dark green.
+// Subtle per-cell sway so adjacent cells rustle together gently.
+// BRUSH — DENSE overgrown grass tufts.  Many tall stalks (3-4 px each)
+// cover most of the cell, with low ground tufts filling the gaps and
+// 2-3 flowers scattered on top.  Subtle sway makes the field rustle.
+function _drawDifficultBrushStatus(c2, x, y, ts, gr, gc, hasTerrain, bgA) {
+  const { TG, px1 } = _pixHelpers(c2, x, y);
+  const { rnd } = _difficultBase(c2, x, y, gr, gc, hasTerrain, bgA, '28,52,12', 0xC4F315);
+  const irnd = (n) => Math.floor(rnd() * n);
+
+  const STALK_TIP = '#a8e060';
+  const STALK_HI  = '#80c038';
+  const STALK_MID = '#5a9028';
+  const STALK_DK  = '#284810';
+  const TUFT_DK   = '#1e3808';
+
+  // Sway phase (1 or 0)
+  const sway = ts ? (Math.floor(ts / 280) % 2 ? 1 : 0) : 0;
+
+  // ── Carpet of dim ground tufts (16 dark-green single px) ──
+  c2.fillStyle = TUFT_DK;
+  for (let i = 0; i < 16; i++) {
+    px1(irnd(TG), 8 + irnd(8));
+  }
+
+  // ── 14 tall stalks: each is 3-4 pixels vertically with shaded tip ──
+  for (let i = 0; i < 14; i++) {
+    const baseCol = irnd(TG);
+    const baseRow = 4 + irnd(TG - 6);
+    const height  = 3 + irnd(2);
+    const stalkSway = (irnd(2) ? sway : -sway);
+    for (let h = 0; h < height; h++) {
+      const cc = baseCol + (h >= height - 1 ? stalkSway : 0);
+      const cr = baseRow - h;
+      if (cc < 0 || cc >= TG || cr < 0 || cr >= TG) continue;
+      let col;
+      if (h === height - 1)      col = STALK_TIP;
+      else if (h === height - 2) col = STALK_HI;
+      else if (h === 0)          col = STALK_DK;
+      else                       col = STALK_MID;
+      c2.fillStyle = col;
+      px1(cc, cr);
+    }
+  }
+
+  // ── Mid-height bush clumps — 2 brighter green 2×2 blobs ──
+  for (let i = 0; i < 2; i++) {
+    const bc = 2 + irnd(TG - 4);
+    const br = 5 + irnd(TG - 8);
+    c2.fillStyle = STALK_HI;
+    px1(bc, br);
+    c2.fillStyle = STALK_MID;
+    if (bc + 1 < TG) px1(bc + 1, br);
+    if (br + 1 < TG) px1(bc, br + 1);
+    c2.fillStyle = STALK_DK;
+    if (bc + 1 < TG && br + 1 < TG) px1(bc + 1, br + 1);
+  }
+
+  // ── 3 small wildflowers (yellow/white/pink dots) ──
+  const FLOWERS = ['#f8f0a0', '#e8d860', '#f0a0a0', '#ffffff'];
+  for (let i = 0; i < 3; i++) {
+    c2.fillStyle = FLOWERS[irnd(FLOWERS.length)];
+    px1(irnd(TG), 3 + irnd(TG - 5));
+  }
+}
+
+// SCREE — loose gravel: dense scatter of small stones in 4 shades, plus a
+// few larger 2×2 rocks.  Slightly noisier than RUBBLE; reads as a sloped
+// pile of sliding stones rather than scattered debris.
+// SCREE — fully carpeted loose gravel slope.  Every pixel is some shade
+// of stone (no empty background), plus 4 larger rocks with proper
+// top-down shading.  A "tumbling stone" pixel slides diagonally to
+// reinforce the unstable-slope reading.
+function _drawDifficultScreeStatus(c2, x, y, ts, gr, gc, hasTerrain, bgA) {
+  const { TG, px1 } = _pixHelpers(c2, x, y);
+  const { rnd } = _difficultBase(c2, x, y, gr, gc, hasTerrain, bgA, '46,34,20', 0x5CCEEE);
+  const irnd = (n) => Math.floor(rnd() * n);
+
+  const SHADES = ['#b0a088', '#8a7864', '#605040', '#3c2c1c', '#241808'];
+
+  // ── DENSE gravel carpet — every pixel gets a stone shade.  Uses a
+  // smooth gradient bias so the bottom-right looks darker (slope shading).
+  for (let row = 0; row < TG; row++) {
+    for (let col = 0; col < TG; col++) {
+      // Slope bias: darker toward bottom-right
+      const slope = (col + row) / (TG * 2);   // 0..1
+      const idx   = Math.min(4, Math.floor(slope * 3) + irnd(2));
+      c2.fillStyle = SHADES[idx];
+      px1(col, row);
+    }
+  }
+
+  // ── 4 larger rocks (2×2 with 4-tone shading) scattered ──
+  for (let i = 0; i < 4; i++) {
+    const rc = 1 + irnd(TG - 3);
+    const rr = 1 + irnd(TG - 3);
+    c2.fillStyle = '#c8b898';
+    px1(rc, rr);
+    c2.fillStyle = '#8a7864';
+    px1(rc + 1, rr);
+    px1(rc, rr + 1);
+    c2.fillStyle = '#241808';
+    px1(rc + 1, rr + 1);
+  }
+
+  // ── 4 dark grit shadows scattered ──
+  c2.fillStyle = '#180c04';
+  for (let i = 0; i < 4; i++) px1(irnd(TG), irnd(TG));
+
+  // ── Periodic "slide" — single tumbling bright pixel diagonally down-left,
+  // per-cell phase so the whole field doesn't slide in lockstep.
+  if (ts) {
+    const phaseOff = ((gr * 7 + gc * 11) & 31);
+    const cycle = 22;
+    const t = (Math.floor(ts / 120) + phaseOff) % cycle;
+    if (t < 12) {
+      const tc = (TG - 2) - t;
+      const tr = 2 + Math.floor(t * 0.6);
+      if (tc >= 0 && tc < TG && tr >= 0 && tr < TG) {
+        c2.fillStyle = (t < 4) ? '#f0e0c8' : (t < 8 ? '#b0a088' : '#8a7864');
+        px1(tc, tr);
+      }
+    }
+  }
+}
+
 function _drawFireStatus(c2, x, y, ts, ph, neighbors) {
   const { TG, px1 } = _pixHelpers(c2, x, y);
   const frame = ts ? Math.floor(ts / 80) : 0;
@@ -1580,48 +2667,167 @@ function _drawPoisonStatus(c2, x, y, ts, ph, neighbors) {
     }
   }
 
-  // ── Bubbles popping inside the cloud ──────────────────────────
-  // 5 bubbles at fixed interior positions, each with its own period
-  // and phase offset (seeded by ph for per-cell variety).
-  const bubbles = [
-    { col: 4,  row: 5,  period: 18 },
-    { col: 11, row: 4,  period: 22 },
-    { col: 6,  row: 10, period: 20 },
-    { col: 12, row: 11, period: 26 },
-    { col: 8,  row: 7,  period: 24 },
-  ];
+  // ── Round Minecraft-style bubbles with a ring-burst pop ──────
+  // Bubbles use proper circular octagon shapes (top-down view) — they
+  // form, swell, then burst outward as an expanding ring with droplets
+  // flying off in 8 directions.  Small "fizz" bubbles fill the gaps.
   const phS = Math.floor(ph * 16);
-  for (let bi = 0; bi < bubbles.length; bi++) {
-    const b = bubbles[bi];
-    const phase = (frame + bi * 4 + phS) % b.period;
-    if (phase < 2) {
-      // Forming — single bright dot
-      c2.fillStyle = '#c8e860';
-      px1(b.col, b.row);
-    } else if (phase < 5) {
-      // Small bubble (2×2) with bright spot
-      c2.fillStyle = '#a0d050';
-      pxR(b.col, b.row, 2, 2);
-      c2.fillStyle = '#ffffff';
-      px1(b.col, b.row);
-    } else if (phase < 9) {
-      // Full bubble (3×3) with shadow + bright highlight
-      c2.fillStyle = '#a0d050';
-      pxR(b.col - 1, b.row - 1, 3, 3);
-      c2.fillStyle = '#509030';
-      px1(b.col + 1, b.row + 1);
-      c2.fillStyle = '#ffffff';
-      px1(b.col - 1, b.row - 1);
-    } else if (phase < 11) {
-      // POP — bright cross splash
-      c2.fillStyle = '#c8e860';
-      px1(b.col, b.row);
-      if (b.row >= 2)        px1(b.col, b.row - 2);
-      if (b.col >= 2)        px1(b.col - 2, b.row);
-      if (b.col <= TG - 3)   px1(b.col + 2, b.row);
-      if (b.row <= TG - 3)   px1(b.col, b.row + 2);
+
+  // Filled round (octagon-ish) of given radius centred at (cx,cy).
+  //   r=1.0  → 5-pixel plus       (small forming bubble)
+  //   r=1.5  → 3×3 filled square  (early growth)
+  //   r=2.5  → 5×5 octagon        (medium)
+  //   r=3.5  → 7×7 octagon        (peak)
+  const fillRound = (cx, cy, r, color) => {
+    c2.fillStyle = color;
+    const r2 = r * r + 0.25;
+    const iR = Math.ceil(r + 0.5);
+    for (let dy = -iR; dy <= iR; dy++) {
+      for (let dx = -iR; dx <= iR; dx++) {
+        if (dx*dx + dy*dy > r2) continue;
+        const cc = cx + dx, cr = cy + dy;
+        if (cc >= 0 && cc < TG && cr >= 0 && cr < TG) px1(cc, cr);
+      }
     }
-    // else: bubble dispersed (gas remains)
+  };
+  // Ring (outer radius minus inner radius) — used for the burst shockwave
+  const fillRing = (cx, cy, rOuter, rInner, color) => {
+    c2.fillStyle = color;
+    const r2  = rOuter * rOuter + 0.25;
+    const ir2 = rInner * rInner;
+    const iR  = Math.ceil(rOuter + 0.5);
+    for (let dy = -iR; dy <= iR; dy++) {
+      for (let dx = -iR; dx <= iR; dx++) {
+        const d2 = dx*dx + dy*dy;
+        if (d2 > r2 || d2 < ir2) continue;
+        const cc = cx + dx, cr = cy + dy;
+        if (cc >= 0 && cc < TG && cr >= 0 && cr < TG) px1(cc, cr);
+      }
+    }
+  };
+
+  // ── Big bubbles — 6 positions spaced for round peak shapes ──
+  const bigBubbles = [
+    { col: 4,  row: 4,  period: 22 },
+    { col: 11, row: 3,  period: 26 },
+    { col: 8,  row: 8,  period: 20 },
+    { col: 3,  row: 12, period: 24 },
+    { col: 13, row: 10, period: 28 },
+    { col: 11, row: 13, period: 22 },
+  ];
+
+  for (let bi = 0; bi < bigBubbles.length; bi++) {
+    const b = bigBubbles[bi];
+    const phase = (frame + bi * 4 + phS) % b.period;
+
+    if (phase < 2) {
+      // FORM (0–1): single bright pip
+      fillRound(b.col, b.row, 0.5, '#c8e860');
+    } else if (phase < 5) {
+      // SMALL (2–4): 5-pixel plus + white spot at top-left
+      fillRound(b.col, b.row, 1.0, '#a0d050');
+      c2.fillStyle = '#ffffff';
+      px1(b.col, b.row);
+    } else if (phase < 8) {
+      // MEDIUM (5–7): 5×5 octagon with white specular + dark rim
+      fillRound(b.col, b.row, 2.5, '#a0d050');
+      // White specular highlight at top-left
+      c2.fillStyle = '#ffffff';
+      if (b.col > 0 && b.row > 0) px1(b.col - 1, b.row - 1);
+      if (b.col > 0)              px1(b.col - 1, b.row);
+      // Darker rim shadow at bottom-right curve
+      c2.fillStyle = '#509030';
+      if (b.col < TG - 1 && b.row < TG - 1) px1(b.col + 1, b.row + 1);
+      if (b.col < TG - 1 && b.row < TG - 2) px1(b.col + 2, b.row + 1);
+      if (b.row < TG - 1 && b.col < TG - 2) px1(b.col + 1, b.row + 2);
+    } else if (phase < 11) {
+      // PEAK (8–10): 7×7 octagon, tense and full
+      fillRound(b.col, b.row, 3.5, '#a0d050');
+      // Bright bilious highlight crescent at top-left
+      c2.fillStyle = '#c8e860';
+      if (b.col >= 1 && b.row >= 1) px1(b.col - 1, b.row - 1);
+      if (b.col >= 2 && b.row >= 1) px1(b.col - 2, b.row - 1);
+      if (b.col >= 1 && b.row >= 2) px1(b.col - 1, b.row - 2);
+      // Crisp white specular
+      c2.fillStyle = '#ffffff';
+      if (b.col >= 1 && b.row >= 1) px1(b.col - 1, b.row - 1);
+      // Dark rim shadow (lower-right octagon edge)
+      c2.fillStyle = '#509030';
+      if (b.col < TG - 1 && b.row < TG - 2) px1(b.col + 2, b.row + 2);
+      if (b.col < TG - 2 && b.row < TG - 1) px1(b.col + 3, b.row + 1);
+      if (b.row < TG - 2 && b.col < TG - 1) px1(b.col + 1, b.row + 3);
+    } else if (phase === 11) {
+      // BURST FLASH (11): the entire 7×7 octagon goes pure white
+      fillRound(b.col, b.row, 3.5, '#ffffff');
+    } else if (phase === 12) {
+      // BURST RING (12): bright shockwave ring + droplets in 8 dirs
+      fillRing(b.col, b.row, 3.5, 2.0, '#c8e860');
+      // 8-way droplets flying further out
+      c2.fillStyle = '#a0d050';
+      if (b.row >= 5)      px1(b.col,     b.row - 5);
+      if (b.row <= TG - 6) px1(b.col,     b.row + 5);
+      if (b.col >= 5)      px1(b.col - 5, b.row);
+      if (b.col <= TG - 6) px1(b.col + 5, b.row);
+      if (b.col >= 4 && b.row >= 4)            px1(b.col - 4, b.row - 4);
+      if (b.col <= TG - 5 && b.row >= 4)       px1(b.col + 4, b.row - 4);
+      if (b.col >= 4 && b.row <= TG - 5)       px1(b.col - 4, b.row + 4);
+      if (b.col <= TG - 5 && b.row <= TG - 5)  px1(b.col + 4, b.row + 4);
+    } else if (phase < 15) {
+      // AFTERMATH (13–14): broken ring fragments + drifting droplets
+      c2.fillStyle = '#78b840';
+      // Crescent fragments (broken shockwave)
+      if (b.row >= 3) px1(b.col, b.row - 3);
+      if (b.row <= TG - 4) px1(b.col, b.row + 3);
+      if (b.col >= 3) px1(b.col - 3, b.row);
+      if (b.col <= TG - 4) px1(b.col + 3, b.row);
+      // Faded droplets further out
+      c2.fillStyle = '#509030';
+      if (b.col >= 4 && b.row >= 4)            px1(b.col - 4, b.row - 4);
+      if (b.col <= TG - 5 && b.row <= TG - 5)  px1(b.col + 4, b.row + 4);
+    } else if (phase < 17) {
+      // SETTLED (15–16): small dark remnant where the bubble was
+      c2.fillStyle = '#306820';
+      px1(b.col, b.row);
+    }
+    // else: empty downtime before next cycle
+  }
+
+  // ── Small round fizz bubbles — fast-cycle single-pixel plus shapes,
+  // ensure constant activity between big-bubble cycles ──
+  const fizzPos = [
+    [ 6,  2], [14,  6], [ 2,  7], [15, 12],
+    [ 6, 10], [10, 14], [ 1, 11], [ 7, 14],
+    [11,  6], [ 5, 14], [13,  2],
+  ];
+  for (let fi = 0; fi < fizzPos.length; fi++) {
+    const [fc, fr] = fizzPos[fi];
+    const phase = (frame + fi * 3 + phS) % 12;
+    if (phase === 0) {
+      // Forming pip
+      c2.fillStyle = '#c8e860';
+      px1(fc, fr);
+    } else if (phase === 1 || phase === 2) {
+      // Small round (plus shape)
+      fillRound(fc, fr, 1.0, '#a0d050');
+      if (phase === 2) {
+        c2.fillStyle = '#ffffff';
+        px1(fc, fr);
+      }
+    } else if (phase === 3) {
+      // Burst — tiny ring with 4 droplets
+      c2.fillStyle = '#ffffff';
+      px1(fc, fr);
+      c2.fillStyle = '#c8e860';
+      if (fc > 0)      px1(fc - 1, fr);
+      if (fc < TG - 1) px1(fc + 1, fr);
+      if (fr > 0)      px1(fc, fr - 1);
+      if (fr < TG - 1) px1(fc, fr + 1);
+    } else if (phase === 4) {
+      // Quick fade
+      c2.fillStyle = '#509030';
+      px1(fc, fr);
+    }
+    // else: empty
   }
 }
 
@@ -2120,100 +3326,769 @@ function _drawPoisonedIceStatus(c2, x, y, ts, ph, gr, gc) {
     }
   }
 
-  // ── Contaminated cracks — sickly green-brown instead of dark blue ──
-  c2.fillStyle = '#4a6028';
-  const cracks = [
-    [5,0],[5,1],[6,2],[6,3],[7,4],[8,5],[8,6],[9,7],[10,8],[10,9],[11,10],[11,11],
-    [5,3],[4,3],[3,4],[2,4],[1,5],
-    [10,7],[11,7],[12,7],
-    [13,1],[14,2],[14,3],
-    [2,12],[3,13],[3,14],[4,15],
-    [13,12],[14,13],
+  // ── Toxic pits — small depressions in the ice where poison wells up.
+  // Each pit has a permanent dark crater (so the contamination is visible
+  // even between bubble cycles); a bubble grows in the centre, swells,
+  // pops with a bright flash, then a column of gas rises out before the
+  // cycle resets.  Each pit runs on its own phase so they're never
+  // synchronised — gives the surface a constantly-stirring, organic feel.
+  const pits = [
+    { col: 4,  row: 4,  phaseOff: 0  },
+    { col: 11, row: 5,  phaseOff: 7  },
+    { col: 7,  row: 10, phaseOff: 13 },
+    { col: 12, row: 12, phaseOff: 4  },
+    { col: 3,  row: 12, phaseOff: 17 },
+    { col: 13, row: 2,  phaseOff: 10 },
   ];
-  for (const [cc, cr] of cracks) px1(cc, cr);
-  // Crack shadow — darker green
-  c2.fillStyle = '#283010';
-  const shadows = [[7,1],[8,2],[9,3],[6,15]];
-  for (const [cc, cr] of shadows) px1(cc, cr);
+  const PIT_CYCLE = 22;  // frames per full bubble→pop→rise→reset
 
-  // ── Gas emitters at key crack points — each emits a rising column of
-  // toxic gas particles.  Each emitter has its own phase offset so they
-  // puff at different times for organic / non-mechanical motion.
-  const emitters = [
-    { col: 5,  row: 1,  phaseOff: 0 },   // upper main crack
-    { col: 8,  row: 6,  phaseOff: 3 },   // mid crack
-    { col: 11, row: 10, phaseOff: 6 },   // lower main crack
-    { col: 13, row: 2,  phaseOff: 2 },   // top-right crack
-    { col: 3,  row: 13, phaseOff: 5 },   // bottom-left crack (gas goes up out of cell, but trail is visible)
-    { col: 14, row: 13, phaseOff: 7 },   // bottom-right detail
-  ];
-  // Each emitter spawns a new puff every CYCLE frames; max LIFETIME frames per puff
-  const CYCLE    = 8;
-  const LIFETIME = 18;          // puff lives 18 frames → rises ~6 px
-  const PUFFS    = 3;            // 3 puffs in flight per emitter at any time
+  for (let pi = 0; pi < pits.length; pi++) {
+    const p = pits[pi];
+    const t = (frame + p.phaseOff) % PIT_CYCLE;
 
-  for (let ei = 0; ei < emitters.length; ei++) {
-    const e = emitters[ei];
-    for (let pi = 0; pi < PUFFS; pi++) {
-      // Stagger puffs by CYCLE so they don't overlap on the emitter
-      const age = (frame + e.phaseOff - pi * CYCLE);
-      if (age < 0 || age >= LIFETIME) continue;
-      // Vertical rise: ~1 pixel every 3 frames
-      const dy = -Math.floor(age / 3);
-      // Horizontal drift: gentle sin wobble + per-emitter bias
-      const drift = Math.round(Math.sin(age * 0.4 + e.phaseOff * 1.3) * 1.3);
-      const pcol = e.col + drift;
-      const prow = e.row + dy;
-      if (prow < 0 || prow >= TG || pcol < 0 || pcol >= TG) continue;
+    // Permanent pit crater — 5-pixel "plus" shape with darker centre.
+    // Sits underneath the bubble/gas overlay so even quiet pits read as
+    // contaminated divots, not flat ice.
+    c2.fillStyle = '#3a4818';            // crater rim (sickly olive)
+    if (p.col > 0)      px1(p.col - 1, p.row);
+    if (p.col < TG - 1) px1(p.col + 1, p.row);
+    if (p.row > 0)      px1(p.col, p.row - 1);
+    if (p.row < TG - 1) px1(p.col, p.row + 1);
+    c2.fillStyle = '#1a2008';            // crater shadow (centre)
+    px1(p.col, p.row);
 
-      // Colour by age: bright at emission, fading to dark green at top
-      let color;
-      const ageFrac = age / LIFETIME;
-      if      (ageFrac < 0.15) color = '#d8e860';   // bright bilious yellow-green
-      else if (ageFrac < 0.30) color = '#a0d050';   // bright green
-      else if (ageFrac < 0.50) color = '#78b840';   // mid green
-      else if (ageFrac < 0.72) color = '#509030';   // darker
-      else                     color = '#306820';   // dim, about to dissipate
-      c2.fillStyle = color;
-      px1(pcol, prow);
-
-      // Small "wisp" sibling pixel — gas particles are usually
-      // accompanied by a satellite to suggest volume rather than a
-      // single point.  Only for the youngest puff frames.
-      if (age >= 1 && age < 8) {
-        const sCol = pcol + ((age % 2) ? -1 : 1);
-        if (sCol >= 0 && sCol < TG) {
-          // Sibling is slightly dimmer
-          let sColor;
-          if      (ageFrac < 0.30) sColor = '#78b840';
-          else if (ageFrac < 0.60) sColor = '#509030';
-          else                     sColor = '#306820';
-          c2.fillStyle = sColor;
-          px1(sCol, prow);
+    // ── Phase windows ───────────────────────────────────────────
+    if (t < 4) {
+      // (0–3) Quiet — bubble forming as dim pip in the centre
+      c2.fillStyle = '#509030';
+      px1(p.col, p.row);
+    } else if (t < 8) {
+      // (4–7) Growing bubble — bright green, single bright highlight
+      c2.fillStyle = '#a0d050';
+      px1(p.col, p.row);
+      if (t >= 6 && p.col > 0 && p.row > 0) {
+        c2.fillStyle = '#d8e860';        // tiny shine on the bubble
+        px1(p.col - 1, p.row - 1);
+      }
+    } else if (t < 11) {
+      // (8–10) Full bubble — 3×3 with highlight
+      c2.fillStyle = '#a0d050';
+      if (p.col > 0)      px1(p.col - 1, p.row);
+      if (p.col < TG - 1) px1(p.col + 1, p.row);
+      if (p.row > 0)      px1(p.col, p.row - 1);
+      c2.fillStyle = '#d8e860';
+      px1(p.col, p.row);
+      if (p.col > 0 && p.row > 0) {
+        c2.fillStyle = '#ffffff';        // bubble specular highlight
+        px1(p.col - 1, p.row - 1);
+      }
+    } else if (t === 11) {
+      // (11) POP! Bright cross flash + ring fragments
+      c2.fillStyle = '#ffffff';
+      px1(p.col, p.row);
+      c2.fillStyle = '#d8e860';
+      if (p.col > 0)      px1(p.col - 1, p.row);
+      if (p.col < TG - 1) px1(p.col + 1, p.row);
+      if (p.row > 0)      px1(p.col, p.row - 1);
+      if (p.row < TG - 1) px1(p.col, p.row + 1);
+      // Diagonal pop fragments
+      c2.fillStyle = '#78b840';
+      if (p.col > 0 && p.row > 0)             px1(p.col - 1, p.row - 1);
+      if (p.col < TG - 1 && p.row > 0)        px1(p.col + 1, p.row - 1);
+      if (p.col > 0 && p.row < TG - 1)        px1(p.col - 1, p.row + 1);
+      if (p.col < TG - 1 && p.row < TG - 1)   px1(p.col + 1, p.row + 1);
+    } else if (t < PIT_CYCLE) {
+      // (12–21) Gas escaping — column of pixels rising above the pit,
+      // each one further along (older) as we go up.
+      const riseFrames = t - 11;          // 1..10
+      const maxRise    = Math.min(6, riseFrames);
+      for (let rh = 0; rh < maxRise; rh++) {
+        const riseAge = riseFrames - rh;   // older particle = higher
+        const drift   = Math.round(Math.sin(riseAge * 0.5 + p.phaseOff) * 1.2);
+        const gc2     = p.col + drift;
+        const gr2     = p.row - 1 - rh;
+        if (gr2 < 0 || gc2 < 0 || gc2 >= TG) continue;
+        let color;
+        if      (riseAge < 2) color = '#d8e860';
+        else if (riseAge < 4) color = '#a0d050';
+        else if (riseAge < 6) color = '#78b840';
+        else if (riseAge < 8) color = '#509030';
+        else                  color = '#306820';
+        c2.fillStyle = color;
+        px1(gc2, gr2);
+        // Sibling pixel for the youngest 2 particles — gives the gas volume
+        if (rh < 2 && riseAge < 6) {
+          const sc = gc2 + (rh % 2 ? -1 : 1);
+          if (sc >= 0 && sc < TG) {
+            c2.fillStyle = rh === 0 ? '#78b840' : '#509030';
+            px1(sc, gr2);
+          }
         }
       }
     }
-  }
-
-  // ── Bubbling/seething pixels right at crack lines — periodic bright
-  // pixels next to cracks make it look like the poison is actively
-  // boiling out of the ice rather than sitting passively.
-  const bubble = frame % 6;
-  if (bubble < 2) {
-    c2.fillStyle = bubble === 0 ? '#d8e860' : '#a0d050';
-    px1(5, 2);   // next to main crack
-    px1(11, 8);  // next to lower crack
-  }
-  if (((frame + 3) % 7) < 2) {
-    c2.fillStyle = '#a0d050';
-    px1(2, 5);
-    px1(13, 12);
   }
 
   // ── Faint green tint over the upper rows (where the rising gas
   // accumulates) — subtle wash, no opaque overlay.
   c2.fillStyle = 'rgba(80, 160, 60, 0.08)';
   c2.fillRect(x, y, CELL, Math.floor(CELL * 0.55));
+}
+
+// DIVINE LIGHTNING — Radiant + Lightning combo.
+// A synchronised cross-strike from the heavens: gold radiant glow with a
+// jagged cross of lightning bolts striking from the cell edges down to a
+// white-hot core, then dissipating into an afterglow.  All cells share
+// one global clock (no per-cell phase) so a cluster smites in unison —
+// reads as a single divine event, not random bolts.
+function _drawDivineLightningStatus(c2, x, y, ts, neighbors) {
+  const { TG, px1 } = _pixHelpers(c2, x, y);
+  const frame = ts ? Math.floor(ts / 55) : 0;
+  const N = neighbors || {};
+  const cx = 7.5, cy = 7.5;
+
+  // 16-frame strike cycle, globally synced.
+  //   0–1   STRIKE   — peak white flash, bolts at max brightness
+  //   2–4   AFTERGLOW — bolts cooling, halo dimming
+  //   5–9   GLOW      — steady golden ambient
+  //   10–13 CHARGE    — slowly brightening core, anticipation
+  //   14–15 PRE-STRIKE— bright flicker before the smite
+  const STRIKE_CYCLE = 16;
+  const t = frame % STRIKE_CYCLE;
+
+  // Strike intensity boost (applied to the radial-glow background)
+  let strikeBoost = 0.04;          // baseline glow always present
+  if      (t < 2)  strikeBoost = 0.42;
+  else if (t < 5)  strikeBoost = 0.22;
+  else if (t < 10) strikeBoost = 0.08;
+  else if (t < 14) strikeBoost = 0.06 + (t - 10) * 0.025;
+  else             strikeBoost = 0.20;   // pre-strike flicker
+
+  // Additive linear-falloff "halo" function for neighbour merging
+  const halo = (dx, dy) => {
+    const d = Math.sqrt(dx * dx + dy * dy);
+    return d < 16 ? 1 - d / 16 : 0;
+  };
+
+  // ── Base golden radial glow ──
+  for (let row = 0; row < TG; row++) {
+    for (let col = 0; col < TG; col++) {
+      const dx = col - cx;
+      const dy = row - cy;
+      const r  = Math.sqrt(dx * dx + dy * dy);
+      // Edge fade — keep cluster boundaries seamless
+      const edgeDist = Math.min(
+        N.e ? (TG - 1 - col) : 99, N.w ? col           : 99,
+        N.s ? (TG - 1 - row) : 99, N.n ? row           : 99
+      );
+      const symFactor = edgeDist < 3 ? edgeDist / 3 : 1;
+
+      let total = Math.max(0, 1 - r / 16) + strikeBoost * symFactor;
+
+      if (N.e)  total += halo(dx - TG, dy);
+      if (N.w)  total += halo(dx + TG, dy);
+      if (N.s)  total += halo(dx,      dy - TG);
+      if (N.n)  total += halo(dx,      dy + TG);
+      if (N.se) total += halo(dx - TG, dy - TG);
+      if (N.sw) total += halo(dx + TG, dy - TG);
+      if (N.ne) total += halo(dx - TG, dy + TG);
+      if (N.nw) total += halo(dx + TG, dy + TG);
+
+      let color = null;
+      if      (total > 0.97) color = '#ffffff';
+      else if (total > 0.86) color = '#fff8c0';
+      else if (total > 0.74) color = '#ffe680';
+      else if (total > 0.62) color = '#ffc830';
+      else if (total > 0.50) color = '#e09818';
+      else if (total > 0.38) color = '#a07010';
+      else if (total > 0.28) color = '#603808';
+      else if (total > 0.20) color = '#2c1804';
+      if (color) { c2.fillStyle = color; px1(col, row); }
+    }
+  }
+
+  // ── Divine cross — four lightning bolts striking inward to the core.
+  // Each bolt has a jagged path (NES-style stair-step zigzag) so it
+  // reads as electricity, not a straight beam.
+  const northBolt = [[8,0],[7,1],[8,2],[7,3],[8,4],[7,5],[8,6]];
+  const southBolt = [[7,9],[8,10],[7,11],[8,12],[7,13],[8,14],[7,15]];
+  const eastBolt  = [[9,7],[10,8],[11,7],[12,8],[13,7],[14,8],[15,7]];
+  const westBolt  = [[0,8],[1,7],[2,8],[3,7],[4,8],[5,7],[6,8]];
+
+  // Bolt brightness by cycle phase
+  let boltMain, boltGlow;
+  if (t < 2)       { boltMain = '#ffffff'; boltGlow = '#fff8c0'; }
+  else if (t < 5)  { boltMain = '#fff8c0'; boltGlow = '#ffe680'; }
+  else if (t < 10) { boltMain = '#ffe680'; boltGlow = '#ffc830'; }
+  else if (t < 14) { boltMain = '#ffc830'; boltGlow = '#d89818'; }
+  else             { boltMain = '#fff8c0'; boltGlow = '#ffe680'; }   // pre-strike flicker
+
+  // Glow halo around each bolt — drawn first (under the bolt itself)
+  c2.fillStyle = boltGlow;
+  for (const bolt of [northBolt, southBolt, eastBolt, westBolt]) {
+    for (const [bc, br] of bolt) {
+      if (bc - 1 >= 0)  px1(bc - 1, br);
+      if (bc + 1 < TG)  px1(bc + 1, br);
+    }
+  }
+  // Main bolt pixels (brightest on top)
+  c2.fillStyle = boltMain;
+  for (const bolt of [northBolt, southBolt, eastBolt, westBolt]) {
+    for (const [bc, br] of bolt) {
+      if (bc >= 0 && bc < TG && br >= 0 && br < TG) px1(bc, br);
+    }
+  }
+
+  // ── White-hot core ──
+  if (t < 5 || t >= 14) {
+    c2.fillStyle = '#ffffff';
+    px1(7, 7); px1(8, 7); px1(7, 8); px1(8, 8);
+    if (t < 2) {
+      // Strike peak — slightly larger plus around core
+      px1(6, 7); px1(9, 7); px1(7, 6); px1(7, 9);
+      px1(8, 6); px1(8, 9); px1(6, 8); px1(9, 8);
+    }
+  }
+
+  // ── Diagonal starburst sparks during peak strike ──
+  if (t < 2) {
+    c2.fillStyle = '#ffffff';
+    const diagSparks = [
+      [5,5],[4,4],[3,3],[2,2],
+      [10,5],[11,4],[12,3],[13,2],
+      [5,10],[4,11],[3,12],[2,13],
+      [10,10],[11,11],[12,12],[13,13],
+    ];
+    for (const [sc, sr] of diagSparks) px1(sc, sr);
+  }
+  // Fading diagonal embers during afterglow
+  if (t === 2 || t === 3) {
+    c2.fillStyle = t === 2 ? '#fff8c0' : '#ffe680';
+    const diagFade = [[4,4],[11,4],[4,11],[11,11]];
+    for (const [sc, sr] of diagFade) px1(sc, sr);
+  }
+
+  // ── Continuous scintillation along the bolt arms (rapid flicker) ──
+  const sparkleCount = (t < 2 || t >= 14) ? 5 : 2;
+  for (let si = 0; si < sparkleCount; si++) {
+    const h = (frame * 0x9E37 + si * 0x85EB) >>> 0;
+    const armBolt = [northBolt, eastBolt, southBolt, westBolt][h % 4];
+    const idx = (h >>> 4) % armBolt.length;
+    const [sc, sr] = armBolt[idx];
+    c2.fillStyle = '#ffffff';
+    px1(sc, sr);
+  }
+}
+
+// TOXIC STORM — Poison + Lightning combo.
+// A venomous green-yellow gas cloud crackling with acidic electricity.
+// Five discharge nodes (4 cardinals + a centre hub) sit in the cloud;
+// electric arcs jump between the hub and the cardinals each frame,
+// rotating around the cell.  Periodic full-cell discharges flash all
+// arcs and nodes brightly, then quiet back into ambient crackling.
+function _drawToxicStormStatus(c2, x, y, ts, ph, neighbors) {
+  const { TG, px1 } = _pixHelpers(c2, x, y);
+  const frame = ts ? Math.floor(ts / 55) : 0;
+  const N = neighbors || {};
+  const cx = 7.5, cy = 7.5;
+
+  // Discharge cycle — synced across all toxic-storm cells.
+  const DISCHARGE_CYCLE = 14;
+  const t = frame % DISCHARGE_CYCLE;
+  const discharging = t < 2;         // peak discharge (full flash)
+  const afterglow   = t >= 2 && t < 4; // brief afterglow
+
+  // Additive falloff for neighbour merging
+  const glow = (dx, dy) => {
+    const d = Math.sqrt(dx * dx + dy * dy);
+    return d < 16 ? 1 - d / 16 : 0;
+  };
+
+  // ── Venomous gas cloud background ──
+  for (let row = 0; row < TG; row++) {
+    for (let col = 0; col < TG; col++) {
+      const dx = col - cx;
+      const dy = row - cy;
+      const r  = Math.sqrt(dx * dx + dy * dy);
+      const edgeDist = Math.min(
+        N.e ? (TG - 1 - col) : 99, N.w ? col           : 99,
+        N.s ? (TG - 1 - row) : 99, N.n ? row           : 99
+      );
+      const symFactor = edgeDist < 3 ? edgeDist / 3 : 1;
+
+      let total = Math.max(0, 1 - r / 16) * 0.78;
+      if (discharging) total += 0.32 * symFactor;
+      else if (afterglow) total += 0.14 * symFactor;
+
+      if (N.e)  total += glow(dx - TG, dy);
+      if (N.w)  total += glow(dx + TG, dy);
+      if (N.s)  total += glow(dx,      dy - TG);
+      if (N.n)  total += glow(dx,      dy + TG);
+      if (N.se) total += glow(dx - TG, dy - TG);
+      if (N.sw) total += glow(dx + TG, dy - TG);
+      if (N.ne) total += glow(dx - TG, dy + TG);
+      if (N.nw) total += glow(dx + TG, dy + TG);
+
+      let color = null;
+      if (discharging) {
+        // Brighter, more electric palette during peak
+        if      (total > 0.95) color = '#ffffff';
+        else if (total > 0.80) color = '#ffff90';
+        else if (total > 0.66) color = '#e0ff60';
+        else if (total > 0.52) color = '#a0d050';
+        else if (total > 0.38) color = '#509030';
+        else if (total > 0.26) color = '#205018';
+      } else {
+        if      (total > 0.92) color = '#d8e860';
+        else if (total > 0.78) color = '#a0d050';
+        else if (total > 0.62) color = '#78b840';
+        else if (total > 0.46) color = '#509030';
+        else if (total > 0.32) color = '#306820';
+        else if (total > 0.22) color = '#184010';
+      }
+      if (color) { c2.fillStyle = color; px1(col, row); }
+    }
+  }
+
+  // ── Discharge nodes — 4 cardinals + centre hub ──
+  // Arcs always emanate from the centre to one or more cardinal nodes,
+  // rotating around the cell so something is always crackling.
+  const nodes = [
+    [8,  3],   // 0  N
+    [12, 8],   // 1  E
+    [8,  12],  // 2  S
+    [3,  8],   // 3  W
+    [8,  8],   // 4  C  hub
+  ];
+
+  // ── Arc renderer (jagged zigzag from one node to another) ──
+  const drawArc = (nIdx1, nIdx2, mainColor, glowColor) => {
+    const [x1, y1] = nodes[nIdx1];
+    const [x2, y2] = nodes[nIdx2];
+    const steps = Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1));
+    if (steps === 0) return;
+    const dxSeg = x2 - x1, dySeg = y2 - y1;
+    const dist  = Math.sqrt(dxSeg * dxSeg + dySeg * dySeg);
+    const pdx   = -dySeg / dist;
+    const pdy   =  dxSeg / dist;
+
+    // Pre-compute the jagged path pixels (zigzag perpendicular offset)
+    const path = [];
+    for (let s = 0; s <= steps; s++) {
+      const tt = s / steps;
+      const ax = x1 + dxSeg * tt;
+      const ay = y1 + dySeg * tt;
+      const h  = ((s * 0x9E37 + frame * 0xC2B2 + nIdx1 * 0xDEAD + nIdx2 * 0xBEEF) >>> 0) % 3 - 1;
+      const fx = Math.round(ax + pdx * h);
+      const fy = Math.round(ay + pdy * h);
+      path.push([fx, fy]);
+    }
+
+    // Pass 1: glow halos (drawn under the main arc pixels)
+    c2.fillStyle = glowColor;
+    for (const [fx, fy] of path) {
+      if (fx - 1 >= 0 && fy >= 0 && fy < TG) px1(fx - 1, fy);
+      if (fx + 1 < TG && fy >= 0 && fy < TG) px1(fx + 1, fy);
+      if (fy - 1 >= 0 && fx >= 0 && fx < TG) px1(fx, fy - 1);
+      if (fy + 1 < TG && fx >= 0 && fx < TG) px1(fx, fy + 1);
+    }
+    // Pass 2: main arc pixels (brightest, on top)
+    c2.fillStyle = mainColor;
+    for (const [fx, fy] of path) {
+      if (fx >= 0 && fx < TG && fy >= 0 && fy < TG) px1(fx, fy);
+    }
+  };
+
+  // Pick which arcs are active this frame
+  if (discharging) {
+    // Peak — all 4 spokes light up + perimeter ring arcs
+    for (let i = 0; i < 4; i++) {
+      drawArc(4, i, '#ffffff', '#e0ff60');   // hub to each cardinal
+    }
+    // Diagonal perimeter arcs N↔E↔S↔W (chain around the rim)
+    drawArc(0, 1, '#ffff90', '#a0d050');
+    drawArc(1, 2, '#ffff90', '#a0d050');
+    drawArc(2, 3, '#ffff90', '#a0d050');
+    drawArc(3, 0, '#ffff90', '#a0d050');
+  } else if (afterglow) {
+    // Afterglow — 2 random spokes still crackling
+    drawArc(4, t % 4,       '#e0ff60', '#a0d050');
+    drawArc(4, (t + 2) % 4, '#d8e860', '#78b840');
+  } else {
+    // Ambient — one rotating spoke + occasional perimeter chain
+    const activeSpoke = t % 4;
+    drawArc(4, activeSpoke, '#d8e860', '#a0d050');
+    if (t % 2 === 0) {
+      // Brief perimeter snap on alternating frames
+      const peri = [[0,1],[1,2],[2,3],[3,0]][((t / 2) | 0) % 4];
+      drawArc(peri[0], peri[1], '#a0d050', '#78b840');
+    }
+  }
+
+  // ── Node terminals — always slightly bright, flare during discharge ──
+  for (let ni = 0; ni < nodes.length; ni++) {
+    const [nc, nr] = nodes[ni];
+    if (discharging) {
+      // Bright white core with bilious halo
+      c2.fillStyle = '#e0ff60';
+      if (nc > 0)      px1(nc - 1, nr);
+      if (nc < TG - 1) px1(nc + 1, nr);
+      if (nr > 0)      px1(nc, nr - 1);
+      if (nr < TG - 1) px1(nc, nr + 1);
+      c2.fillStyle = '#ffffff';
+      px1(nc, nr);
+    } else {
+      // Steady-state node — single bright dot
+      c2.fillStyle = '#d8e860';
+      px1(nc, nr);
+    }
+  }
+
+  // ── Random scintillation pixels across the cloud ──
+  const sparkCount = discharging ? 7 : 3;
+  for (let si = 0; si < sparkCount; si++) {
+    const h = (frame * 0x9E37 + si * 0x85EB) >>> 0;
+    const sc = 1 + (h % 14);
+    const sr = 1 + ((h >>> 4) % 14);
+    c2.fillStyle = discharging ? '#ffffff' : '#e0ff60';
+    px1(sc, sr);
+  }
+}
+
+// SANCTIFIED FROST — Ice + Radiant combo.
+// Pale frost surface (warmer than regular ice) with a golden 8-pointed
+// holy star inscribed in the centre that pulses on a sync'd cycle:
+// peak bless flash → afterglow halo rings → quiet glow → slow charge.
+// The classic ice diagonal glint still sweeps across, and twinkling
+// sparkles alternate between icy-cyan and divine-gold.
+function _drawSanctifiedFrostStatus(c2, x, y, ts, ph, gr, gc, neighbors) {
+  const { TG, px1 } = _pixHelpers(c2, x, y);
+  const frame = ts ? Math.floor(ts / 70) : 0;
+  const N = neighbors || {};
+  const cx = 7.5, cy = 7.5;
+
+  // 14-frame bless cycle — synced across all cells
+  const BLESS_CYCLE = 14;
+  const t = frame % BLESS_CYCLE;
+
+  // Phase parameters
+  let starMain, starCore, haloRadius, haloColor, glowBoost;
+  if (t < 2)        { starMain='#ffffff'; starCore='#ffffff'; haloRadius= 5 + t; haloColor='#fff8c0'; glowBoost=0.20; }
+  else if (t < 5)   { starMain='#fff8c0'; starCore='#ffffff'; haloRadius= 6 + (t-2); haloColor='#ffe680'; glowBoost=0.12; }
+  else if (t === 5) { starMain='#ffe680'; starCore='#fff8c0'; haloRadius= 0;        haloColor=null;     glowBoost=0.05; }
+  else if (t < 10)  { starMain='#ffc830'; starCore='#fff8c0'; haloRadius= 0;        haloColor=null;     glowBoost=0.03; }
+  else if (t < 14)  { starMain='#ffe680'; starCore='#fff8c0'; haloRadius= 0;        haloColor=null;     glowBoost=0.04 + (t-10)*0.02; }
+
+  // ── Base frost surface — paler than regular ice, slight warm tint ──
+  for (let row = 0; row < TG; row++) {
+    for (let col = 0; col < TG; col++) {
+      const hash = (col * 0x9E37 + row * 0x85EB) >>> 0;
+      const v = hash % 100;
+      let color;
+      if      (v < 18) color = '#a0b8c8';
+      else if (v < 50) color = '#c8dce4';
+      else if (v < 82) color = '#dceaf0';
+      else             color = '#f0f5f8';
+      c2.fillStyle = color;
+      px1(col, row);
+    }
+  }
+
+  // ── Pulsing radial gold glow (synced; merges across cluster) ──
+  if (glowBoost > 0.03) {
+    const halo = (dx, dy) => {
+      const d = Math.sqrt(dx * dx + dy * dy);
+      return d < 16 ? 1 - d / 16 : 0;
+    };
+    for (let row = 0; row < TG; row++) {
+      for (let col = 0; col < TG; col++) {
+        const dx = col - cx;
+        const dy = row - cy;
+        const r  = Math.sqrt(dx * dx + dy * dy);
+        const edgeDist = Math.min(
+          N.e ? (TG - 1 - col) : 99, N.w ? col           : 99,
+          N.s ? (TG - 1 - row) : 99, N.n ? row           : 99
+        );
+        const symFactor = edgeDist < 3 ? edgeDist / 3 : 1;
+
+        let intensity = Math.max(0, 1 - r / 16) * glowBoost * symFactor;
+        if (N.e)  intensity += halo(dx - TG, dy)      * glowBoost * 0.6;
+        if (N.w)  intensity += halo(dx + TG, dy)      * glowBoost * 0.6;
+        if (N.s)  intensity += halo(dx,      dy - TG) * glowBoost * 0.6;
+        if (N.n)  intensity += halo(dx,      dy + TG) * glowBoost * 0.6;
+
+        let color = null;
+        if      (intensity > 0.16) color = '#fff8c0';
+        else if (intensity > 0.11) color = '#ffe680';
+        else if (intensity > 0.06) color = '#e8d088';
+        else if (intensity > 0.03) color = '#c8b878';
+        if (color) { c2.fillStyle = color; px1(col, row); }
+      }
+    }
+  }
+
+  // ── Sweeping diagonal glint (carries over from regular ice) ──
+  const globalGlint = (frame * 2) % 260;
+  const localGlint  = globalGlint - TG * (gr + gc);
+  if (localGlint > -3 && localGlint < TG * 2 + 3) {
+    for (let row = 0; row < TG; row++) {
+      for (let col = 0; col < TG; col++) {
+        const dist = Math.abs((col + row) - localGlint);
+        if (dist < 0.6) {
+          c2.fillStyle = '#ffffff';
+          px1(col, row);
+        } else if (dist < 1.6) {
+          c2.fillStyle = '#f0f8fc';
+          px1(col, row);
+        }
+      }
+    }
+  }
+
+  // ── Expanding halo ring (during bless peak + afterglow) ──
+  if (haloRadius > 0 && haloColor) {
+    c2.fillStyle = haloColor;
+    for (let row = 0; row < TG; row++) {
+      for (let col = 0; col < TG; col++) {
+        const dx = col - cx;
+        const dy = row - cy;
+        const r  = Math.sqrt(dx * dx + dy * dy);
+        if (Math.abs(r - haloRadius) < 0.7) px1(col, row);
+      }
+    }
+  }
+
+  // ── Holy 8-pointed star inscribed in the centre ──
+  // Cross arms (long, cardinal directions)
+  const crossArms = [
+    [7, 3], [7, 4], [7, 5], [7, 6],   // N
+    [7, 9], [7,10], [7,11], [7,12],   // S
+    [3, 7], [4, 7], [5, 7], [6, 7],   // W
+    [9, 7], [10,7], [11,7], [12,7],   // E
+    [8, 3], [8, 4], [8, 5], [8, 6],   // N (right column for symmetry around 7.5)
+    [8, 9], [8,10], [8,11], [8,12],   // S
+    [3, 8], [4, 8], [5, 8], [6, 8],   // W
+    [9, 8], [10,8], [11,8], [12,8],   // E
+  ];
+  // Diagonal arms (shorter)
+  const diagArms = [
+    [6, 6], [5, 5], [4, 4],   // NW
+    [9, 6], [10, 5], [11, 4], // NE
+    [6, 9], [5, 10], [4, 11], // SW
+    [9, 9], [10, 10], [11, 11], // SE
+  ];
+  c2.fillStyle = starMain;
+  for (const [sc, sr] of crossArms) px1(sc, sr);
+  for (const [sc, sr] of diagArms) px1(sc, sr);
+
+  // 2×2 bright core
+  c2.fillStyle = starCore;
+  px1(7, 7); px1(8, 7); px1(7, 8); px1(8, 8);
+
+  // ── Twinkling sparkles — alternate icy-cyan and divine-gold ──
+  // Spread around the cell perimeter so the star stays uncluttered.
+  const sparkles = [
+    [13, 5], [4, 11], [12, 14], [3, 3], [13, 12], [2, 5], [14, 2],
+  ];
+  for (let si = 0; si < sparkles.length; si++) {
+    const [sc, sr] = sparkles[si];
+    const phase = (frame + si * 5) % 20;
+    if (phase === 0) {
+      // Icy-cyan twinkle
+      c2.fillStyle = '#ffffff';
+      px1(sc, sr);
+      c2.fillStyle = '#c0e0f0';
+      if (sc > 0)      px1(sc - 1, sr);
+      if (sc < TG - 1) px1(sc + 1, sr);
+    } else if (phase === 1) {
+      c2.fillStyle = '#dceaf4';
+      px1(sc, sr);
+    } else if (phase === 7) {
+      // Divine-gold twinkle (offset from the cyan one)
+      c2.fillStyle = '#ffffff';
+      px1(sc, sr);
+      c2.fillStyle = '#fff0a0';
+      if (sc > 0)      px1(sc - 1, sr);
+      if (sc < TG - 1) px1(sc + 1, sr);
+    } else if (phase === 8) {
+      c2.fillStyle = '#fff8c0';
+      px1(sc, sr);
+    }
+  }
+}
+
+// CONSECRATED ANTIDOTE — Poison + Radiant combo.
+// Toxic gas being actively purified by 3 golden light-orbs orbiting
+// through the cell.  Each orb illuminates the gas around it (gold
+// outshines green), leaves a fading trail of cleansed air, and on the
+// periodic "consecration pulse" the entire cell flashes brighter as
+// the divine light surges.  Purified motes drift upward — the
+// neutralised poison escaping as harmless light.
+function _drawConsecratedPoisonStatus(c2, x, y, ts, ph, gr, gc, neighbors) {
+  const { TG, px1 } = _pixHelpers(c2, x, y);
+  const frame = ts ? Math.floor(ts / 60) : 0;
+  const N = neighbors || {};
+  const cx = 7.5, cy = 7.5;
+
+  // 18-frame consecration cycle — synced across cluster
+  const PULSE_CYCLE = 18;
+  const t = frame % PULSE_CYCLE;
+  const consecrating = t < 2;
+  const afterglow    = t >= 2 && t < 5;
+
+  // ── GLOBAL GOLD-FLOW WAVE FIELD ────────────────────────────────
+  // Two interfering sine waves at different angles & speeds in WORLD
+  // pixel coordinates (independent of which cell we're in).  Because
+  // the field depends only on world (col,row) and frame, adjacent
+  // cells in a cluster compute the SAME wave value at their shared
+  // boundary pixels — so gold streamers flow seamlessly across the
+  // entire cluster as one broader shape.
+  const goldFlow = (worldX, worldY) => {
+    const a = Math.sin(worldX * 0.18 + worldY * 0.13 + frame * 0.12);
+    const b = Math.sin(worldX * 0.09 - worldY * 0.22 - frame * 0.09);
+    return (a + b) * 0.5;        // -1 .. +1
+  };
+
+  // Falloff for neighbour merging
+  const halo = (dx, dy) => {
+    const d = Math.sqrt(dx * dx + dy * dy);
+    return d < 16 ? 1 - d / 16 : 0;
+  };
+
+  // ── Toxic gas + flowing gold purification ──
+  for (let row = 0; row < TG; row++) {
+    for (let col = 0; col < TG; col++) {
+      const dx = col - cx;
+      const dy = row - cy;
+      const r  = Math.sqrt(dx * dx + dy * dy);
+
+      const edgeDist = Math.min(
+        N.e ? (TG - 1 - col) : 99, N.w ? col           : 99,
+        N.s ? (TG - 1 - row) : 99, N.n ? row           : 99
+      );
+      const symFactor = edgeDist < 3 ? edgeDist / 3 : 1;
+
+      // Pixel's GLOBAL position in TG-units across the grid
+      const worldX = gc * TG + col;
+      const worldY = gr * TG + row;
+
+      // Goldness from the global flow field (0=pure poison, 1=cleansed)
+      const flow = goldFlow(worldX, worldY);
+      let goldness = Math.max(0, flow);
+
+      // Baseline gas density + brightness boost from gold flow
+      let total = Math.max(0, 1 - r / 16) * 0.55 + 0.18;
+      total += goldness * 0.65;
+
+      if (consecrating) { total += 0.32 * symFactor; goldness = Math.max(goldness, 0.55); }
+      else if (afterglow) total += 0.14 * symFactor;
+
+      // Neighbour cluster contributions (additive halo at shared edges)
+      if (N.e)  total += halo(dx - TG, dy)      * 0.5;
+      if (N.w)  total += halo(dx + TG, dy)      * 0.5;
+      if (N.s)  total += halo(dx,      dy - TG) * 0.5;
+      if (N.n)  total += halo(dx,      dy + TG) * 0.5;
+      if (N.se) total += halo(dx - TG, dy - TG) * 0.4;
+      if (N.sw) total += halo(dx + TG, dy - TG) * 0.4;
+      if (N.ne) total += halo(dx - TG, dy + TG) * 0.4;
+      if (N.nw) total += halo(dx + TG, dy + TG) * 0.4;
+
+      // Tri-band palette based on goldness
+      let color = null;
+      if (goldness > 0.55) {
+        // Cleansed
+        if      (total > 1.10) color = '#ffffff';
+        else if (total > 0.95) color = '#fff8c0';
+        else if (total > 0.80) color = '#ffe680';
+        else if (total > 0.65) color = '#ffc830';
+        else if (total > 0.50) color = '#d89818';
+        else if (total > 0.36) color = '#a07020';
+        else if (total > 0.24) color = '#583808';
+      } else if (goldness > 0.25) {
+        // Conversion zone (murky gold-green) — bridges adjacent gold/green pixels
+        if      (total > 1.00) color = '#fff080';
+        else if (total > 0.85) color = '#d8d050';
+        else if (total > 0.70) color = '#a8a830';
+        else if (total > 0.55) color = '#788818';
+        else if (total > 0.40) color = '#3e5010';
+        else if (total > 0.28) color = '#1c2808';
+      } else {
+        // Pure poison
+        if      (total > 0.92) color = '#d8e860';
+        else if (total > 0.78) color = '#a0d050';
+        else if (total > 0.62) color = '#78b840';
+        else if (total > 0.46) color = '#509030';
+        else if (total > 0.32) color = '#306820';
+        else if (total > 0.22) color = '#184010';
+      }
+      if (color) { c2.fillStyle = color; px1(col, row); }
+    }
+  }
+
+  // ── "Comet heads" — bright white pixels at wave-field LOCAL MAXIMA.
+  // Walks a coarse 5×5 grid of sample points across the cell; at each,
+  // checks if the wave value is higher than its 4 neighbours and above
+  // a high threshold.  Because the field is in world coords, the
+  // local-max points themselves flow continuously between cells —
+  // a "comet" can emerge from one cell's edge and continue into the
+  // next cell's adjacent edge on the same global wave peak.
+  for (let psi = 1; psi <= 4; psi++) {
+    for (let psj = 1; psj <= 4; psj++) {
+      const sCol  = Math.floor(psi * (TG - 1) / 5);
+      const sRow  = Math.floor(psj * (TG - 1) / 5);
+      const swX   = gc * TG + sCol;
+      const swY   = gr * TG + sRow;
+      const v     = goldFlow(swX, swY);
+      if (v < 0.75) continue;
+      const vL = goldFlow(swX - 2, swY);
+      const vR = goldFlow(swX + 2, swY);
+      const vU = goldFlow(swX, swY - 2);
+      const vD = goldFlow(swX, swY + 2);
+      if (v > vL && v > vR && v > vU && v > vD) {
+        // Bright cream halo
+        c2.fillStyle = '#fff8c0';
+        if (sCol > 0)      px1(sCol - 1, sRow);
+        if (sCol < TG - 1) px1(sCol + 1, sRow);
+        if (sRow > 0)      px1(sCol, sRow - 1);
+        if (sRow < TG - 1) px1(sCol, sRow + 1);
+        // White-hot core
+        c2.fillStyle = '#ffffff';
+        px1(sCol, sRow);
+      }
+    }
+  }
+
+  // ── Consecration sparkles during the synced pulse ──
+  if (consecrating) {
+    c2.fillStyle = '#ffffff';
+    for (let si = 0; si < 6; si++) {
+      // Seed includes cell coords so sparkles don't all land at the
+      // same positions across cells (some per-cell variation is
+      // welcome during the burst — it reads as flashing brightness,
+      // not a repeating pattern).
+      const h = (frame * 0x9E37 + si * 0x85EB + gr * 0xDEAD + gc * 0xBEEF) >>> 0;
+      const sc = 1 + (h % 14);
+      const sr = 1 + ((h >>> 4) % 14);
+      px1(sc, sr);
+    }
+  }
+
+  // ── Rising cleansed motes — per-cell variation in timing keeps
+  // motes from all rising in lockstep when adjacent cells are placed.
+  const moteCount = 3;
+  for (let mi = 0; mi < moteCount; mi++) {
+    const moteAge = (frame + mi * 7 + gc * 3 + gr * 5) % 26;
+    if (moteAge < 0 || moteAge >= 16) continue;
+    const moteCol = 2 + mi * 4 + Math.round(Math.sin(moteAge * 0.4 + mi + gc) * 1);
+    const moteRow = 14 - Math.floor(moteAge / 1.5);
+    if (moteRow < 0 || moteRow >= TG || moteCol < 0 || moteCol >= TG) continue;
+    let color;
+    if      (moteAge < 4)  color = '#fff8c0';
+    else if (moteAge < 8)  color = '#ffd860';
+    else if (moteAge < 12) color = '#a87010';
+    else                   color = '#583808';
+    c2.fillStyle = color;
+    px1(moteCol, moteRow);
+  }
 }
 
 function getGrassTallPattern() {
@@ -2376,37 +4251,71 @@ function getLavaPattern() {
 function getMudPattern() {
   if (_mudPattern && _mudCELL === CELL) return _mudPattern;
   _mudCELL = CELL;
-  const TG = 8; // 8x8 NES pixel grid
-  const px = Math.max(1, Math.round(Math.max(8, CELL) / TG));
-  const tc = document.createElement('canvas'); tc.width = px*TG; tc.height = px*TG;
-  const tx = tc.getContext('2d');
+  // Minecraft-style 16×16 mud — dark damp earth with wet pockets, mud
+  // clumps, and small puddle highlights.  Built on the shared _mcGrassTile
+  // noise scaffold so the tile matches the grass/stone/swamp aesthetic.
+  const { tc, tx, px, S, TG } = _mcGrassTile([
+    '#1a0a04','#1a0a04',                 // deepest shadow
+    '#2c1808','#2c1808','#2c1808',       // dark mud
+    '#432010','#432010','#432010',       // mid-dark
+    '#5a3018','#5a3018',                 // mid
+    '#6c3a1c',                            // highlight mud
+    '#7c4628',                            // raised clump highlight
+    '#2c1808',                            // base bias
+  ], 0xd1ec5e7a);
 
-  // 5-color NES mud palette
-  const C = [
-    '#0f0700', // 0 near-black base
-    '#3a1808', // 1 dark mud
-    '#5c2c12', // 2 mid mud
-    '#7a4020', // 3 highlight mud
-    '#090400', // 4 wet/puddle
-  ];
+  // Seeded RNG for deterministic overlay placement
+  let s = 0xb00b1e57;
+  const r = () => { s = (Math.imul(s, 1664525) + 1013904223) | 0; return (s >>> 0) / 0x100000000; };
 
-  // Hand-crafted 8x8 NES pixel tile — dark clumpy earth with wet pockets
-  // 0=base,1=dark,2=mid,3=hi,4=wet
-  const T = [
-    [1,2,2,3,2,1,2,1],
-    [2,3,1,2,1,2,3,2],
-    [2,1,4,4,2,3,2,2],
-    [1,2,4,4,1,2,1,3],
-    [2,2,1,2,2,4,4,2],
-    [3,1,2,3,2,4,4,1],
-    [2,2,3,1,2,1,2,2],
-    [1,3,2,2,3,2,1,2],
-  ];
-  for (let r = 0; r < TG; r++)
-    for (let c = 0; c < TG; c++) {
-      tx.fillStyle = C[T[r][c]];
-      tx.fillRect(c*px, r*px, px, px);
-    }
+  // ── Wet pockets — 2×2 dark patches with near-black centre.
+  // 3 pockets at varied positions, each with a darker centre + ring
+  // around it to suggest depression in the mud surface.
+  const POCKETS = 3;
+  const placed = [];
+  for (let i = 0; i < POCKETS; i++) {
+    let col, row, tries = 0;
+    do {
+      col = 1 + Math.floor(r() * (TG - 3));
+      row = 1 + Math.floor(r() * (TG - 3));
+      tries++;
+    } while (tries < 10 && placed.some(p => Math.abs(p[0]-col) + Math.abs(p[1]-row) < 4));
+    placed.push([col, row]);
+
+    // 2×2 dark wet base
+    tx.fillStyle = '#0a0402';
+    tx.fillRect(col * px, row * px, px * 2, px * 2);
+    // Single bright sheen pixel (where water reflects light)
+    tx.fillStyle = '#5c3a20';
+    tx.fillRect(col * px, row * px, px, px);
+    // Damp ring around the pocket (slightly darker than surrounding mud)
+    tx.fillStyle = '#1a0a04';
+    if (col > 0)             tx.fillRect((col - 1) * px, row * px, px, px);
+    if (col + 2 < TG)        tx.fillRect((col + 2) * px, (row + 1) * px, px, px);
+    if (row + 2 < TG)        tx.fillRect((col + 1) * px, (row + 2) * px, px, px);
+  }
+
+  // ── Raised mud clumps — small lighter dots scattered between pockets,
+  // giving the surface a lumpy, textured feel.
+  const CLUMPS = 8;
+  for (let i = 0; i < CLUMPS; i++) {
+    const col = Math.floor(r() * TG);
+    const row = Math.floor(r() * TG);
+    // Skip if overlapping a pocket
+    if (placed.some(p => col >= p[0] - 1 && col <= p[0] + 2 && row >= p[1] - 1 && row <= p[1] + 2)) continue;
+    tx.fillStyle = (r() < 0.5) ? '#8a5430' : '#6c3a1c';
+    tx.fillRect(col * px, row * px, px, px);
+  }
+
+  // ── Cracked-dirt detail pixels — a few near-black single pixels
+  // suggesting hairline cracks/grit in the mud.
+  const GRIT = 5;
+  for (let i = 0; i < GRIT; i++) {
+    const col = Math.floor(r() * TG);
+    const row = Math.floor(r() * TG);
+    tx.fillStyle = '#0a0402';
+    tx.fillRect(col * px, row * px, px, px);
+  }
 
   _mudPattern = cctx.createPattern(tc, 'repeat');
   return _mudPattern;
@@ -2961,79 +4870,221 @@ function getStoneBrickPattern() {
   return _stoneBrickPattern;
 }
 
+function _NUKED_wallStrokeStone(x1, y1, x2, y2, thick) {
+  const pat = getCobblestonePattern();
+  const path = () => { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); };
+  ctx.shadowColor = 'rgba(0,0,0,0.72)'; ctx.shadowBlur = 7;
+  ctx.strokeStyle = 'rgba(3,2,1,0.88)'; ctx.lineWidth = thick + 8; path(); ctx.stroke();
+  ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
+  ctx.strokeStyle = '#0c0a06'; ctx.lineWidth = thick + 4; path(); ctx.stroke();
+  ctx.strokeStyle = 'rgba(55,45,30,0.90)'; ctx.lineWidth = thick + 1; path(); ctx.stroke();
+  ctx.strokeStyle = pat; ctx.lineWidth = thick; path(); ctx.stroke();
+  ctx.strokeStyle = 'rgba(220,185,125,0.22)'; ctx.lineWidth = thick * 0.62; path(); ctx.stroke();
+  ctx.strokeStyle = 'rgba(5,3,1,0.68)'; ctx.lineWidth = 1.5; path(); ctx.stroke();
+}
+function _wallStrokeWood(x1, y1, x2, y2, thick) {
+  const path = () => { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); };
+  ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 6;
+  ctx.strokeStyle = '#170d04'; ctx.lineWidth = thick + 4; path(); ctx.stroke();
+  ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
+  ctx.strokeStyle = '#5a3a18'; ctx.lineWidth = thick; path(); ctx.stroke();
+  ctx.strokeStyle = '#7a5226'; ctx.lineWidth = thick * 0.6; path(); ctx.stroke();
+  ctx.strokeStyle = 'rgba(190,150,95,0.5)'; ctx.lineWidth = 1.5; path(); ctx.stroke();
+  // plank seams across the run
+  const len = Math.hypot(x2 - x1, y2 - y1), ux = (x2 - x1) / len, uy = (y2 - y1) / len, px = -uy, py = ux;
+  ctx.strokeStyle = 'rgba(20,10,2,0.7)'; ctx.lineWidth = 1.5;
+  for (let d = thick; d < len; d += thick * 0.9) {
+    const cx = x1 + ux * d, cy = y1 + uy * d;
+    ctx.beginPath(); ctx.moveTo(cx + px * thick / 2, cy + py * thick / 2); ctx.lineTo(cx - px * thick / 2, cy - py * thick / 2); ctx.stroke();
+  }
+}
+function _wallStrokeMetal(x1, y1, x2, y2, thick) {
+  const path = () => { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); };
+  ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 6;
+  ctx.strokeStyle = '#0c0e12'; ctx.lineWidth = thick + 4; path(); ctx.stroke();
+  ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
+  ctx.strokeStyle = '#4a4f57'; ctx.lineWidth = thick; path(); ctx.stroke();
+  ctx.strokeStyle = '#7e858f'; ctx.lineWidth = thick * 0.5; path(); ctx.stroke();
+  ctx.strokeStyle = 'rgba(220,230,240,0.7)'; ctx.lineWidth = 1.2; path(); ctx.stroke();
+  // rivets
+  const len = Math.hypot(x2 - x1, y2 - y1), ux = (x2 - x1) / len, uy = (y2 - y1) / len;
+  ctx.fillStyle = '#cfd6df';
+  for (let d = thick * 0.6; d < len; d += thick * 1.1) { ctx.beginPath(); ctx.arc(x1 + ux * d, y1 + uy * d, Math.max(1.2, thick * 0.10), 0, Math.PI * 2); ctx.fill(); }
+}
+function _wallStrokeWindow(x1, y1, x2, y2, thick) {
+  const path = () => { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); };
+  // low/see-through wall: thin stone sill + translucent glass band
+  ctx.strokeStyle = '#2a2620'; ctx.lineWidth = thick * 0.7; path(); ctx.stroke();
+  ctx.strokeStyle = 'rgba(150,210,235,0.40)'; ctx.lineWidth = thick * 0.5; path(); ctx.stroke();
+  ctx.strokeStyle = 'rgba(235,250,255,0.65)'; ctx.lineWidth = 1.4; path(); ctx.stroke();
+  // mullions
+  const len = Math.hypot(x2 - x1, y2 - y1), ux = (x2 - x1) / len, uy = (y2 - y1) / len, px = -uy, py = ux;
+  ctx.strokeStyle = 'rgba(40,36,30,0.85)'; ctx.lineWidth = 1.6;
+  for (let d = thick; d < len; d += thick * 1.3) {
+    const cx = x1 + ux * d, cy = y1 + uy * d;
+    ctx.beginPath(); ctx.moveTo(cx + px * thick * 0.32, cy + py * thick * 0.32); ctx.lineTo(cx - px * thick * 0.32, cy - py * thick * 0.32); ctx.stroke();
+  }
+}
+function _wallDoor(x1, y1, x2, y2, thick, open) {
+  const len = Math.hypot(x2 - x1, y2 - y1), ux = (x2 - x1) / len, uy = (y2 - y1) / len, px = -uy, py = ux;
+  // stone jambs at both ends
+  ctx.strokeStyle = '#0c0a06'; ctx.lineWidth = thick + 3;
+  for (const t of [0.0, 1.0]) { const jx = x1 + ux * len * t, jy = y1 + uy * len * t; ctx.beginPath(); ctx.moveTo(jx + px * 2, jy + py * 2); ctx.lineTo(jx - px * 2, jy - py * 2); ctx.stroke(); }
+  if (open) {
+    // door leaf swung 80° out from the hinge (start point), opening empty
+    const ang = Math.atan2(uy, ux) - 1.4;
+    const lx = x1 + Math.cos(ang) * len, ly = y1 + Math.sin(ang) * len;
+    ctx.strokeStyle = '#170d04'; ctx.lineWidth = thick + 2; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(lx, ly); ctx.stroke();
+    ctx.strokeStyle = '#6b4a26'; ctx.lineWidth = thick * 0.7; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(lx, ly); ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,235,190,0.35)'; ctx.lineWidth = 1.2; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); ctx.setLineDash([]);
+  } else {
+    // closed door panel across the gap
+    ctx.strokeStyle = '#170d04'; ctx.lineWidth = thick; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    ctx.strokeStyle = '#6b4a26'; ctx.lineWidth = thick * 0.7; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    ctx.strokeStyle = 'rgba(190,150,95,0.5)'; ctx.lineWidth = 1.3; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    // handle near the far end
+    const hx = x1 + ux * len * 0.78, hy = y1 + uy * len * 0.78;
+    ctx.fillStyle = '#e8c850'; ctx.beginPath(); ctx.arc(hx, hy, Math.max(1.6, thick * 0.12), 0, Math.PI * 2); ctx.fill();
+  }
+}
+function _wallSecret(x1, y1, x2, y2, thick) {
+  if (window.__arcaneIsProjector) return;   // hidden from players/projector
+  ctx.setLineDash([6, 5]);
+  ctx.strokeStyle = 'rgba(190,90,230,0.85)'; ctx.lineWidth = Math.max(3, thick * 0.55);
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  ctx.setLineDash([]);
+  const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+  ctx.fillStyle = 'rgba(190,90,230,0.9)'; ctx.font = 'bold 11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('?', mx, my);
+}
+// ── NES 8-bit walls ─────────────────────────────────────────────────────────
+// Each wall is rendered as pixel art into an offscreen buffer in its LOCAL
+// horizontal space (length × thickness), cached, then blitted rotated to the
+// wall's angle.  This keeps crisp blocky pixels at any orientation.
+function _wpx(g, x, y, w, h, col) { g.fillStyle = col; g.fillRect(x | 0, y | 0, Math.ceil(w), Math.ceil(h)); }
+function _whash(a, b) { let h = (Math.imul(a | 0, 374761393) ^ Math.imul(b | 0, 668265263)) >>> 0; return ((h ^ (h >>> 13)) >>> 0) / 4294967296; }
+function _paintWallSprite(g, W, H, PX, w) {
+  const type = w.type || 'stone';
+  const cols = Math.ceil(W / PX), rows = Math.max(1, Math.round(H / PX));
+  const blk = (cx, ry, col, cw, ch) => _wpx(g, cx * PX, ry * PX, (cw || 1) * PX, (ch || 1) * PX, col);
+  if (type === 'stone') {
+    const MORT = '#15120e', A = '#736a5f', B = '#5e554b', DK = '#473f37', HI = '#8f8579';
+    for (let ry = 0; ry < rows; ry++) {
+      const off = (ry % 2);
+      for (let cx = 0; cx < cols; cx++) {
+        const vmort = (((cx + off) % 2) === 0);
+        if (vmort) { blk(cx, ry, MORT); continue; }
+        const t = _whash(cx, ry); blk(cx, ry, t < 0.3 ? DK : t < 0.65 ? B : A);
+        _wpx(g, cx * PX, ry * PX, PX, Math.max(1, PX * 0.3), HI);   // top highlight
+      }
+      _wpx(g, 0, ry * PX, W, Math.max(1, PX * 0.22), MORT);          // horizontal mortar
+    }
+  } else if (type === 'wood' || (type === 'door')) {
+    const SEAM = '#160c03', A = '#5a3a18', B = '#6e4920', HI = '#8a5c2a', GR = '#3e2810';
+    for (let ry = 0; ry < rows; ry++) {
+      const plank = Math.floor(ry / 2);
+      for (let cx = 0; cx < cols; cx++) {
+        const t = _whash(cx + plank * 11, plank);
+        blk(cx, ry, (plank % 2 ? A : B));
+        if (t < 0.18) blk(cx, ry, GR);                               // grain fleck
+      }
+      if (ry % 2 === 0) _wpx(g, 0, ry * PX, W, Math.max(1, PX * 0.22), SEAM);   // plank seam
+      else _wpx(g, 0, ry * PX, W, Math.max(1, PX * 0.2), HI);
+    }
+    // plank-end seams
+    for (let cx = 0; cx < cols; cx += 4) _wpx(g, cx * PX, 0, Math.max(1, PX * 0.2), H, SEAM);
+    if (type === 'door') {   // handle near the far end, centered vertically
+      const hc = cols - 3, hr = (rows / 2) | 0;
+      blk(hc, hr, '#e8c850'); blk(hc, hr - 1 < 0 ? 0 : hr - 1, '#b89020');
+    }
+  } else if (type === 'metal') {
+    const EDGE = '#0d0f13', DK = '#3a3f47', MD = '#565c65', HI = '#828a95', SP = '#cfd6df';
+    for (let ry = 0; ry < rows; ry++) {
+      const band = ry === 0 ? HI : ry === rows - 1 ? EDGE : ((ry % 2) ? DK : MD);
+      for (let cx = 0; cx < cols; cx++) blk(cx, ry, band);
+    }
+    for (let cx = 1; cx < cols; cx += 3) { blk(cx, 0, SP); blk(cx, rows - 1, SP); }   // rivets
+    for (let cx = 4; cx < cols; cx += 4) _wpx(g, cx * PX, 0, Math.max(1, PX * 0.2), H, EDGE);  // panel seams
+  } else if (type === 'window') {
+    const STONE = '#4a4640', STDK = '#2a2620', GLASS = 'rgba(150,210,235,0.5)', GHI = 'rgba(235,250,255,0.8)', MULL = '#241f18';
+    for (let ry = 0; ry < rows; ry++) {
+      for (let cx = 0; cx < cols; cx++) {
+        if (ry === 0 || ry === rows - 1) blk(cx, ry, ry === 0 ? STONE : STDK);   // sill top/bottom
+        else { blk(cx, ry, GLASS); if (_whash(cx, ry) < 0.18) blk(cx, ry, GHI); }
+      }
+    }
+    for (let cx = 2; cx < cols; cx += 4) _wpx(g, cx * PX, 0, Math.max(1, PX * 0.28), H, MULL);  // mullions
+  } else if (type === 'secret') {
+    const M = '#b85ae6';
+    for (let cx = 0; cx < cols; cx++) {
+      if (Math.floor(cx / 2) % 2 === 0) for (let ry = 0; ry < rows; ry++) blk(cx, ry, M);   // dashed
+    }
+  }
+}
+function _buildWallSprite(w, L, thick) {
+  const isDoorLeaf = (w.type === 'door');
+  const key = (w.type || 'stone') + '|' + (w.open ? 'o' : 'c') + '|' + Math.round(L) + '|' + Math.round(thick);
+  if (w._sprKey === key && w._spr) return w._spr;
+  const W = Math.max(1, Math.round(L)), H = Math.max(2, Math.round(thick));
+  const cv = (w._spr && w._spr.getContext) ? w._spr : document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  const g = cv.getContext('2d'); g.imageSmoothingEnabled = false; g.clearRect(0, 0, W, H);
+  const PX = Math.max(2, Math.round(thick / 6));
+  _paintWallSprite(g, W, H, PX, w);
+  w._spr = cv; w._sprKey = key; return cv;
+}
 function drawWalls() {
   if (!walls.length && !(wallActive && wallStart)) return;
-
-  const pat   = getCobblestonePattern();
   const thick = Math.max(10, CELL * 0.52);
-
-  // Helper: draw the wall path once then stroke — reused across layers
-  const wallPath = (x1, y1, x2, y2) => {
-    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
-  };
-
   for (const w of walls) {
-    const x1 = w.fx1*canvas.width,  y1 = w.fy1*canvas.height;
-    const x2 = w.fx2*canvas.width,  y2 = w.fy2*canvas.height;
-    if (Math.hypot(x2-x1, y2-y1) < 1) continue;
-
-    ctx.save();
-    ctx.lineCap  = 'round';
-    ctx.lineJoin = 'round';
-
-    // ── 1. Drop-shadow halo — lifts the wall off the map floor ──────────
-    ctx.shadowColor = 'rgba(0,0,0,0.72)';
-    ctx.shadowBlur  = 7;
-    ctx.shadowOffsetX = 0; ctx.shadowOffsetY = 0;
-    ctx.strokeStyle = 'rgba(3,2,1,0.88)';
-    ctx.lineWidth   = thick + 8;
-    wallPath(x1,y1,x2,y2); ctx.stroke();
-    ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
-
-    // ── 2. Crisp dark outer border — defines the wall perimeter ─────────
-    ctx.strokeStyle = '#0c0a06';
-    ctx.lineWidth   = thick + 4;
-    wallPath(x1,y1,x2,y2); ctx.stroke();
-
-    // ── 3. Slightly lighter framing band — creates visible edge inset ───
-    ctx.strokeStyle = 'rgba(55,45,30,0.90)';
-    ctx.lineWidth   = thick + 1;
-    wallPath(x1,y1,x2,y2); ctx.stroke();
-
-    // ── 4. Cobblestone body ──────────────────────────────────────────────
-    ctx.strokeStyle = pat;
-    ctx.lineWidth   = thick;
-    wallPath(x1,y1,x2,y2); ctx.stroke();
-
-    // ── 5. Warm top-face tint — simulates ambient light on stone top ────
-    ctx.strokeStyle = 'rgba(220,185,125,0.22)';
-    ctx.lineWidth   = thick * 0.62;
-    wallPath(x1,y1,x2,y2); ctx.stroke();
-
-    // ── 6. Centre mortar crease — thin dark seam across the top face ────
-    ctx.strokeStyle = 'rgba(5,3,1,0.68)';
-    ctx.lineWidth   = 1.5;
-    wallPath(x1,y1,x2,y2); ctx.stroke();
-
+    if (w.type === 'secret' && window.__arcaneIsProjector) continue;   // hidden from players
+    const x1 = w.fx1 * canvas.width, y1 = w.fy1 * canvas.height;
+    const x2 = w.fx2 * canvas.width, y2 = w.fy2 * canvas.height;
+    const L = Math.hypot(x2 - x1, y2 - y1); if (L < 1) continue;
+    const ang = Math.atan2(y2 - y1, x2 - x1);
+    ctx.save(); ctx.imageSmoothingEnabled = false;
+    if (w.type === 'door' && w.open) {
+      // door leaf swung 80° from the hinge (start), plus a dotted threshold
+      const spr = _buildWallSprite(w, L, thick);
+      ctx.save(); ctx.translate(x1, y1); ctx.rotate(ang - 1.4); ctx.drawImage(spr, 0, -thick / 2); ctx.restore();
+      ctx.strokeStyle = 'rgba(150,110,60,0.5)'; ctx.lineWidth = 2; ctx.setLineDash([5, 4]);
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); ctx.setLineDash([]);
+    } else {
+      const spr = _buildWallSprite(w, L, thick);
+      ctx.translate(x1, y1); ctx.rotate(ang); ctx.drawImage(spr, 0, -thick / 2);
+    }
     ctx.restore();
+    if (w.type === 'secret') {   // DM marker
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+      ctx.fillStyle = 'rgba(190,90,230,0.95)'; ctx.font = 'bold 12px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('?', mx, my);
+    }
   }
-
   // Ghost preview while drawing
   if (wallActive && wallStart) {
-    const thick2 = Math.max(10, CELL * 0.52);
     ctx.save();
-    ctx.strokeStyle = 'rgba(110,90,55,0.45)';
-    ctx.lineWidth   = thick2;
-    ctx.lineCap     = 'round';
-    ctx.setLineDash([Math.ceil(thick2 * 0.9), Math.ceil(thick2 * 0.55)]);
-    ctx.beginPath();
-    ctx.moveTo(wallStart.x, wallStart.y); ctx.lineTo(mouseX, mouseY);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.restore();
+    ctx.strokeStyle = (WALL_TYPES.find(t => t.type === currentWallType) || {}).ghost || 'rgba(110,90,55,0.45)';
+    ctx.lineWidth = thick; ctx.lineCap = 'round';
+    ctx.setLineDash([Math.ceil(thick * 0.9), Math.ceil(thick * 0.55)]);
+    ctx.beginPath(); ctx.moveTo(wallStart.x, wallStart.y); ctx.lineTo(mouseX, mouseY); ctx.stroke();
+    ctx.setLineDash([]); ctx.restore();
   }
 }
 
+function _pointSegDist(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+  let t = l2 ? ((px - ax) * dx + (py - ay) * dy) / l2 : 0; t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+function _doorAt(x, y) {
+  const thr = Math.max(12, CELL * 0.45); let best = null, bd = thr;
+  for (const w of walls) {
+    if (w.type !== 'door') continue;
+    const d = _pointSegDist(x, y, w.fx1 * canvas.width, w.fy1 * canvas.height, w.fx2 * canvas.width, w.fy2 * canvas.height);
+    if (d < bd) { bd = d; best = w; }
+  }
+  return best;
+}
 function deleteNearestWall(x, y, skipUndo=false) {
   let best=null, bd=CELL*2;
   for(const w of walls){
@@ -3067,6 +5118,7 @@ function _segCross(ax,ay,bx,by,cx,cy,dx,dy){
 function _wallBlocksPt(ax,ay,bx,by){
   if(!walls.length) return false;
   for(const w of walls){
+    if(!_wallBlocksSight(w)) continue;   // windows / open doors don't block sight
     if(_segCross(ax,ay,bx,by, w.fx1*cols,w.fy1*rows, w.fx2*cols,w.fy2*rows)) return true;
   }
   return false;
@@ -3322,7 +5374,7 @@ function render(ts) {
   // Flowing terrain/status (water/lava/blood/fire/ice/lightning/poison) must
   // update every frame for smooth scroll — the 55ms throttle below causes
   // visible stutter on pattern.setTransform. Status overlays need the clear.
-  const _flowing = new Set(['water','lava','blood','fire','ice','lightning','poison','holy']);
+  const _flowing = new Set(['water','lava','blood','fire','ice','lightning','poison','holy','difficult','difficult_thorns','difficult_debris','difficult_brush','difficult_scree']);
   for (const [k,effs] of Object.entries(grid)) {
     if (effs.some(e => _flowing.has(e))) {
       const [r,c]=k.split(',').map(Number);
@@ -3358,18 +5410,19 @@ function render(ts) {
 
   // Background map image
   if (bgImage) {
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';   // best downscale of high-res source maps
     ctx.drawImage(bgImage, 0, 0, canvas.width, canvas.height);
   }
 
-  ctx.save(); ctx.strokeStyle = bgImage ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.05)'; ctx.lineWidth=.5;
-  for(let c=0;c<=cols;c++){ctx.beginPath();ctx.moveTo(c*CELL,0);ctx.lineTo(c*CELL,rows*CELL);ctx.stroke();}
-  for(let r=0;r<=rows;r++){ctx.beginPath();ctx.moveTo(0,r*CELL);ctx.lineTo(cols*CELL,r*CELL);ctx.stroke();}
-  ctx.restore();
+  // (always-on thin cell grid is deferred — see below, after the
+  //  projection mirror — so the projector stays clean and only shows
+  //  the 1" or coords overlay when the DM explicitly enables it.)
 
   ctx.drawImage(cellCvs,0,0);
 
   // Terrain particle overlays (embers, bubbles, mist — drawn on main canvas)
-  drawTerrainParticles(ts);
+  if (!window.__reduceMotion) drawTerrainParticles(ts);
 
   // Walls (below tokens)
   drawWalls();
@@ -3395,8 +5448,11 @@ function render(ts) {
     if (currentShape==='square' && mouseInside && currentEffect) previewCells(getSquareCells(cellFromXY(mouseX,mouseY),circleRadius),currentEffect,.45);
   }
 
+  // Auras (under tokens, move with them)
+  drawAuras();
   // Tokens
   for (const tok of tokens) drawToken(tok);
+  drawAnnotations();   // freehand DM marks on top of tokens
 
   // Drag ghost
   if (draggingToken && dragHasMoved) {
@@ -3425,6 +5481,7 @@ function render(ts) {
 
   // Cover indicators
   drawCovers();
+  drawCoverAnalysis();
 
   // Traps (only revealed ones on main canvas)
   drawTraps(false);
@@ -3503,8 +5560,9 @@ function render(ts) {
       // a Darkvision dwarf doesn't shrink to torch range by holding one.
       const visionR = VISION_RADIUS[tok.vision];
       const equipR  = tok.equippedLight && Number(tok.equippedLight.radius) || 0;
-      if (visionR === undefined && equipR === 0) continue;
-      const R = Math.max(visionR ?? 0, equipR);
+      const sightR  = Number(tok.sight) || 0;
+      if (visionR === undefined && equipR === 0 && sightR === 0) continue;
+      const R = Math.max(visionR ?? 0, equipR, sightR);
       const sz = tok.size || 1;
       const r0 = tok.r, r1 = tok.r + sz - 1;
       const c0 = tok.c, c1 = tok.c + sz - 1;
@@ -3577,6 +5635,9 @@ function render(ts) {
       }
     }
 
+    // Accumulate seen cells for Dynamic-LoS memory (dim "remembered" areas).
+    if (losVisionMode) { for (const k of visionReveal) exploredCells.add(k); }
+
     // ── Torchlight pools (drawn BEFORE fog — fog naturally covers unexplored areas) ──
     _drawLightPools(ctx, t, 'torch');
 
@@ -3588,13 +5649,22 @@ function render(ts) {
     const playerVision = _buildPlayerVisionMask();
 
     ctx.save();
+    // Fog must remain visible regardless of ambient light, otherwise it
+    // looks broken with the default "full daylight" preset.  Ambient just
+    // lightly tones the fog down — it never makes it invisible.
+    //   ambient 0 → fog at full strength (×1.00)
+    //   ambient 1 → fog still dominant   (×0.75)
+    const fogStrength = Math.max(0.75, 1 - ambientLight);
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
         const k = r+','+c;
         if (visionReveal.has(k)) continue;     // visible thanks to a token's vision
-        if (playerVision && !playerVision.has(k)) {
-          // Player can't see here → solid fog, ignoring DM's painted reveal
-          const fogAlpha = 1 - ambientLight;
+        if ((playerVision && !playerVision.has(k)) || losVisionMode) {
+          // Not currently in any token's line of sight → fog. Cells that have
+          // been seen before (Dynamic-LoS memory) are only dimmed so the layout
+          // is "remembered"; never-seen cells stay fully dark.
+          const remembered = losVisionMode && exploredCells.has(k);
+          const fogAlpha = remembered ? fogStrength * 0.55 : fogStrength;
           if (fogAlpha > 0.005) {
             ctx.fillStyle = `rgba(8,6,20,${fogAlpha})`;
             ctx.fillRect(c*CELL, r*CELL, CELL, CELL);
@@ -3602,13 +5672,13 @@ function render(ts) {
           continue;
         }
         const vis = fogVis[k] ?? 0;
-        const fogAlpha = (1 - vis) * (1 - ambientLight);
+        const fogAlpha = (1 - vis) * fogStrength;
         if (fogAlpha > 0.005) {
           ctx.fillStyle = `rgba(8,6,20,${fogAlpha})`;
           ctx.fillRect(c*CELL, r*CELL, CELL, CELL);
-          // Amber shimmer at the reveal edge (scaled by ambient)
+          // Amber shimmer at the reveal edge — also independent of ambient
           if (vis > 0.01 && vis < 0.99) {
-            const shimmer = Math.sin(vis * Math.PI) * 0.22 * (1 - ambientLight);
+            const shimmer = Math.sin(vis * Math.PI) * 0.22 * fogStrength;
             if (shimmer > 0.01) {
               ctx.fillStyle = `rgba(120,55,10,${shimmer})`;
               ctx.fillRect(c*CELL, r*CELL, CELL, CELL);
@@ -3621,8 +5691,9 @@ function render(ts) {
     for (const tok of tokens) {
       const visionR = VISION_RADIUS[tok.vision];
       const equipR  = tok.equippedLight && Number(tok.equippedLight.radius) || 0;
-      if (visionR === undefined && equipR === 0) continue;
-      const R = Math.max(visionR ?? 0, equipR);
+      const sightR  = Number(tok.sight) || 0;
+      if (visionR === undefined && equipR === 0 && sightR === 0) continue;
+      const R = Math.max(visionR ?? 0, equipR, sightR);
       const sz = tok.size || 1;
       const cx = (tok.c + sz/2) * CELL;
       const cy = (tok.r + sz/2) * CELL;
@@ -3853,16 +5924,52 @@ function render(ts) {
   // Bright 1-inch grid lines — used by both the 1" overlay and the
   // coords overlay. Inch labels are drawn only in 1" overlay mode.
   if (gridOverlayVisible || gridCoordsVisible) drawGridOverlay();
+  if (hexOverlayVisible) drawHexOverlay();
 
-  // Mirror to projection window before cursor is drawn
+  // Mirror to projection window before cursor is drawn — and BEFORE the
+  // editor-only thin cell grid is drawn, so players never see the cell
+  // boundaries unless the DM has explicitly enabled the 1" or coords
+  // overlay (which mirrors normally because it's drawn above).
   if (projWindow && !projWindow.closed) {
     const pc = projWindow.__projCanvas;
+    // Expose the live grid dimensions so the projector's scale ruler knows
+    // how many squares span the canvas (window.opener can be null for the
+    // native popup, so we push these directly).
+    projWindow.__cols = cols; projWindow.__rows = rows;
     if (pc) {
       if (pc.width !== canvas.width || pc.height !== canvas.height) {
         pc.width = canvas.width; pc.height = canvas.height;
       }
-      pc.getContext('2d').drawImage(canvas, 0, 0);
+      const pctx = pc.getContext('2d');
+      // CRITICAL: clear first.  Without this, transparent regions of the
+      // editor canvas (cells with no terrain / no bg image) don't
+      // overwrite the projection's previous frame, so flickering torch
+      // light and animated effects leave ghost trails that pile up over
+      // time and look "messed up".  A solid black fill matches the
+      // background of the projector window and avoids any compositing
+      // surprises with semi-transparent overlays (fog, light pools).
+      pctx.save();
+      pctx.globalCompositeOperation = 'copy';
+      pctx.drawImage(canvas, 0, 0);
+      pctx.restore();
     }
+  }
+
+  // Editor-only thin cell grid — drawn AFTER the projection mirror so it
+  // shows for the DM (easier to paint precisely) but never reaches the
+  // projector view.  Skip when the DM has the explicit GRID overlay on
+  // (it draws bolder lines that already serve this purpose).
+  if (!gridOverlayVisible && !gridCoordsVisible) {
+    ctx.save();
+    ctx.strokeStyle = bgImage ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.05)';
+    ctx.lineWidth = 0.5;
+    for (let c = 0; c <= cols; c++) {
+      ctx.beginPath(); ctx.moveTo(c * CELL, 0); ctx.lineTo(c * CELL, rows * CELL); ctx.stroke();
+    }
+    for (let r = 0; r <= rows; r++) {
+      ctx.beginPath(); ctx.moveTo(0, r * CELL); ctx.lineTo(cols * CELL, r * CELL); ctx.stroke();
+    }
+    ctx.restore();
   }
 
   drawCursor();
@@ -3871,7 +5978,11 @@ function render(ts) {
 
 // ── 1-inch grid overlay ───────────────────────────────────────
 let gridOverlayVisible = false;
+let hexOverlayVisible = false;   // pointy-top hex grid overlay (one hex per board square)
 let gridOverlayScale = 96; // CSS px per grid square (default = 1 physical inch at 96dpi)
+let boardScaleLock = false; // when true, force CELL = gridOverlayScale (fixed physical square size) without drawing the overlay
+let losVisionMode = false;  // Dynamic line-of-sight: darken everything tokens can't currently see (DM view too)
+let exploredCells = new Set();   // cells ever seen this session → shown dimly (memory) when out of sight
 
 function drawGridOverlay() {
   const rect = canvas.getBoundingClientRect();
@@ -3913,27 +6024,61 @@ function drawGridOverlay() {
   ctx.restore();
 }
 
-// ── Ruler (Feature 5) ─────────────────────────────────────────
-function drawRuler() {
-  if (!rulerMode || !rulerStart) return;
-  const x1=rulerStart.x, y1=rulerStart.y, x2=mouseX, y2=mouseY;
+// Pointy-top hex grid overlay. Sized so one hex ≈ one board square (CELL wide),
+// laid out in offset rows. Purely a visual overlay; tokens still snap to squares.
+function drawHexOverlay() {
+  const w = CELL;                 // hex width (flat-to-flat horizontally)
+  const r = w / Math.sqrt(3);     // circumradius
+  const h = 2 * r;                // hex height (point-to-point)
+  const vStep = r * 1.5;          // vertical distance between row centers
   ctx.save();
-  ctx.setLineDash([5,3]);
-  ctx.strokeStyle='#FFD700'; ctx.lineWidth=1.5;
-  ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
-  ctx.setLineDash([]);
-  ctx.fillStyle='#FFD700';
-  ctx.beginPath(); ctx.arc(x1,y1,4,0,Math.PI*2); ctx.fill();
-  ctx.beginPath(); ctx.arc(x2,y2,4,0,Math.PI*2); ctx.fill();
-  const distSq=Math.hypot(x2-x1,y2-y1)/CELL;
-  const distFt=Math.round(distSq*5);
-  const lbl=`${distSq.toFixed(1)} sq · ${distFt} ft`;
-  const mx=(x1+x2)/2, my=(y1+y2)/2;
-  ctx.font='bold 11px system-ui,sans-serif';
-  ctx.textAlign='center'; ctx.textBaseline='middle';
-  const tw=ctx.measureText(lbl).width;
-  ctx.fillStyle='rgba(0,0,0,0.72)'; ctx.fillRect(mx-tw/2-4,my-8,tw+8,16);
-  ctx.fillStyle='#FFD700'; ctx.fillText(lbl,mx,my);
+  ctx.strokeStyle = 'rgba(255,255,255,0.28)';
+  ctx.lineWidth = 0.9;
+  let row = 0;
+  for (let cy = 0; cy - h < canvas.height; cy += vStep, row++) {
+    const xOff = (row % 2) ? w / 2 : 0;
+    for (let cx = xOff; cx - w < canvas.width; cx += w) {
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a = Math.PI / 180 * (60 * i - 90);   // pointy-top
+        const px = cx + r * Math.cos(a), py = cy + r * Math.sin(a);
+        i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+      }
+      ctx.closePath(); ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+// ── Ruler (Feature 5) ─────────────────────────────────────────
+function _rlabel(text, cx, cy, color, size) {
+  ctx.font = `bold ${size}px system-ui,sans-serif`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const tw = ctx.measureText(text).width;
+  ctx.fillStyle = 'rgba(0,0,0,0.72)'; ctx.fillRect(cx - tw / 2 - 4, cy - size / 2 - 2, tw + 8, size + 4);
+  ctx.fillStyle = color; ctx.fillText(text, cx, cy);
+}
+function drawRuler() {
+  if (!rulerMode || !rulerPts.length) return;
+  const pts = rulerPts.slice();
+  if (!rulerDone) pts.push({ x: mouseX, y: mouseY });   // live segment to the cursor
+  ctx.save();
+  ctx.setLineDash([5, 3]); ctx.strokeStyle = '#FFD700'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+  ctx.stroke(); ctx.setLineDash([]);
+  ctx.fillStyle = '#FFD700';
+  for (const p of pts) { ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI * 2); ctx.fill(); }
+  // per-segment distance labels + running total
+  let total = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const segSq = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y) / CELL;
+    total += segSq;
+    const mx = (pts[i].x + pts[i - 1].x) / 2, my = (pts[i].y + pts[i - 1].y) / 2;
+    _rlabel(`${Math.round(segSq * 5)} ft`, mx, my, '#ffe9a0', 10);
+  }
+  const lp = pts[pts.length - 1];
+  _rlabel(`Σ ${total.toFixed(1)} sq · ${Math.round(total * 5)} ft`, lp.x, lp.y - 16, '#FFD700', 11);
   ctx.restore();
 }
 
@@ -3956,6 +6101,37 @@ function drawGridCoords() {
 }
 
 // ── Cover (Feature 9) ─────────────────────────────────────────
+function drawCoverAnalysis() {
+  if (!coverMode || coverAttacker == null) return;
+  const att = tokens.find(t => t.id === coverAttacker);
+  if (!att) return;
+  const sz = att.size || 1;
+  ctx.save();
+  const acx = (att.c + sz / 2) * CELL, acy = (att.r + sz / 2) * CELL, aR = CELL * 0.5 * sz;
+  ctx.strokeStyle = '#5fd0ff'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(acx, acy, aR, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = '#5fd0ff'; ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText('SHOOTER', acx, acy - aR - 5);
+  for (const t of tokens) {
+    if (t.id === att.id) continue;
+    const tier = coverTier(att, t.r, t.c), info = COVER_INFO[tier];
+    const bx = (t.c + (t.size || 1) / 2) * CELL, by = t.r * CELL + 9;
+    if (!info) { ctx.fillStyle = 'rgba(80,220,120,0.95)'; ctx.beginPath(); ctx.arc(bx, by, 5, 0, Math.PI * 2); ctx.fill(); continue; }
+    ctx.font = 'bold 11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const tw = ctx.measureText(info.lbl).width;
+    ctx.fillStyle = 'rgba(0,0,0,0.82)'; ctx.fillRect(bx - tw / 2 - 4, by - 8, tw + 8, 16);
+    ctx.strokeStyle = info.col; ctx.lineWidth = 1.5; ctx.strokeRect(bx - tw / 2 - 4, by - 8, tw + 8, 16);
+    ctx.fillStyle = info.col; ctx.fillText(info.lbl, bx, by);
+  }
+  const hov = (typeof tokenAt === 'function') ? tokenAt(mouseX, mouseY) : null;
+  if (hov && hov.id !== att.id) {
+    ctx.setLineDash([4, 3]); ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 1;
+    for (const [ex, ey] of [[0.12, 0.12], [0.88, 0.12], [0.12, 0.88], [0.88, 0.88]]) {
+      ctx.beginPath(); ctx.moveTo(acx, acy); ctx.lineTo((hov.c + ex) * CELL, (hov.r + ey) * CELL); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+  }
+  ctx.restore();
+}
 function drawCovers() {
   if (!Object.keys(covers).length) return;
   ctx.save();
@@ -3985,6 +6161,24 @@ function drawCovers() {
 }
 
 // ── Token Lights ──────────────────────────────────────────────
+function drawAuras() {
+  for (const tok of tokens) {
+    if (!tok.aura || !(tok.aura.radius > 0)) continue;
+    const sz = tok.size || 1;
+    const cx = (_tokenDispC(tok) + sz / 2) * CELL, cy = (_tokenDispR(tok) + sz / 2) * CELL;
+    const R = (tok.aura.radius + sz / 2) * CELL;   // radius measured from the token's edge outward
+    const col = tok.aura.color || '#ffd24a';
+    const rgb = _hex2rgb(col);
+    ctx.save();
+    const g = ctx.createRadialGradient(cx, cy, Math.max(1, R * 0.25), cx, cy, R);
+    g.addColorStop(0, `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.28)`);
+    g.addColorStop(1, `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.06)`);
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.85)`; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+    ctx.restore();
+  }
+}
 function drawTokenLights() {
   for (const tok of tokens) {
     if (!tok.lightRadius || tok.lightRadius <= 0) continue;
@@ -4063,6 +6257,7 @@ function drawLoS() {
   const p1 = losStart, p2 = { x: mouseX, y: mouseY };
   const hitWalls = [];
   for (const w of walls) {
+    if (!_wallBlocksSight(w)) continue;   // windows / open doors don't block the LoS check
     const wx1 = w.fx1 * canvas.width, wy1 = w.fy1 * canvas.height;
     const wx2 = w.fx2 * canvas.width, wy2 = w.fy2 * canvas.height;
     if (segmentsIntersect(p1, p2, { x: wx1, y: wy1 }, { x: wx2, y: wy2 })) {
@@ -4744,6 +6939,22 @@ let drawing=false, rawPts=[], strokeCells=new Set(), prevCell=null;
 let erasing=false, erasePrevCell=null;
 let coneActive=false, coneOrigin=null;
 let wallMode=false, wallActive=false, wallStart=null, wallErasing=false;
+const WALL_TYPES = [
+  { type: 'stone',  label: 'STONE',  icon: '🧱', ghost: 'rgba(110,90,55,0.5)' },
+  { type: 'wood',   label: 'WOOD',   icon: '🪵', ghost: 'rgba(120,82,38,0.5)' },
+  { type: 'metal',  label: 'METAL',  icon: '⛓️', ghost: 'rgba(140,150,160,0.5)' },
+  { type: 'door',   label: 'DOOR',   icon: '🚪', ghost: 'rgba(150,110,60,0.5)' },
+  { type: 'window', label: 'WINDOW', icon: '🪟', ghost: 'rgba(150,210,235,0.5)' },
+  { type: 'secret', label: 'SECRET', icon: '❓', ghost: 'rgba(190,90,230,0.5)' },
+];
+let currentWallType = 'stone';
+// Does a wall block line-of-sight? Windows and open doors do not; everything
+// else (stone/wood/metal/closed-door/secret) does.
+function _wallBlocksSight(w) {
+  if (w.type === 'window') return false;
+  if (w.type === 'door') return !w.open;
+  return true;
+}
 let _cobblePattern=null, _cobbleCELL=-1;
 let _waterPattern=null,  _waterCELL=-1;
 // Global water flow direction (0=Right, 90=Down, 180=Left, 270=Up, -1=still).
@@ -4772,10 +6983,15 @@ let _mudPattern=null,          _mudCELL=-1;
 let _webPattern=null,          _webCELL=-1;
 let _swampPattern=null,        _swampCELL=-1;
 let _bloodPattern=null,        _bloodCELL=-1;
-let bloodFlowAngle = 90;       // 0=Right, 90=Down, 180=Left, 270=Up, -1=still
+let bloodFlowAngle = -1;       // 0=Right, 90=Down, 180=Left, 270=Up, -1=still (default — static splatter, no animation)
 let bloodCellFlow  = {};       // "r,c" → angle, per-cell override
 let lightningFlowAngle = 90;   // bolt direction — same convention as water/lava
 let lightningCellFlow  = {};   // "r,c" → angle, per-cell override
+// Debris log orientation: 0 = horizontal (east-west), 90 = vertical
+// (north-south).  Adjacent debris cells with matching orientation fuse
+// into one continuous log instead of each rendering its own cut-end rings.
+let debrisFlowAngle    = 0;
+let debrisCellFlow     = {};   // "r,c" → angle, per-cell override
 let _firePattern=null,         _fireCELL=-1;
 let _icePattern=null,          _iceCELL=-1;
 let _lightningPattern=null,    _lightningCELL=-1;
@@ -4791,9 +7007,27 @@ const STONE_VARIANTS = [
   { eff: 'stone_dark',    label: 'SLATE',   icon: '⬛' },
   { eff: 'stone_sand',    label: 'SAND',    icon: '🟫' },
   { eff: 'stone_brick',   label: 'BRICK',   icon: '🧱' },
+  { eff: 'mud',           label: 'MUD',     icon: '🟫' },
 ];
 const STONE_EFFS = new Set(STONE_VARIANTS.map(v => v.eff));
 let currentStoneVariant = 'stone';
+
+// Scenery object variants (trees & rocks), cycled like stone.
+const TREE_VARIANTS = [
+  { eff: 'tree',      label: 'OAK',  icon: '🌳' },
+  { eff: 'tree_pine', label: 'PINE', icon: '🌲' },
+  { eff: 'tree_dead', label: 'DEAD', icon: '🪾' },
+];
+const TREE_EFFS = new Set(TREE_VARIANTS.map(v => v.eff));
+let currentTreeVariant = 'tree';
+const ROCK_VARIANTS = [
+  { eff: 'rock',       label: 'ROCKS',   icon: '🪨' },
+  { eff: 'rock_large', label: 'BOULDER', icon: '🪨' },
+];
+const ROCK_EFFS = new Set(ROCK_VARIANTS.map(v => v.eff));
+let currentRockVariant = 'rock';
+const OBJECT_EFFS = new Set([...TREE_EFFS, ...ROCK_EFFS]);   // all top-down scenery
+const _MERGE_OBJS = new Set(['tree', 'rock', 'rock_large']); // these fuse with same-family neighbours
 
 const GRASS_VARIANTS = [
   { eff: 'grass',          label: 'GRASS',    icon: '🌿' },
@@ -4808,6 +7042,20 @@ const GRASS_VARIANTS = [
 ];
 const GRASS_EFFS = new Set(GRASS_VARIANTS.map(v => v.eff));
 let currentGrassVariant = 'grass';
+
+// Difficult-terrain variants — click DIFFICULT to cycle through different
+// flavours of hard-to-walk-through ground (rubble, thorns, debris, brush,
+// scree).  Each one is rendered by its own _draw…Status function.
+const DIFFICULT_VARIANTS = [
+  { eff: 'difficult',          label: 'RUBBLE',  icon: '⚠️' },
+  { eff: 'difficult_thorns',   label: 'THORNS',  icon: '🌵' },
+  { eff: 'difficult_debris',   label: 'DEBRIS',  icon: '🪵' },
+  { eff: 'difficult_brush',    label: 'BRUSH',   icon: '🌾' },
+  { eff: 'difficult_scree',    label: 'SCREE',   icon: '⛰️' },
+  { eff: 'web',                label: 'WEB',     icon: '🕸️' },
+];
+const DIFFICULT_EFFS = new Set(DIFFICULT_VARIANTS.map(v => v.eff));
+let currentDifficultVariant = 'difficult';
 
 // Invalidate every cached CanvasPattern. Must be called whenever either
 // `canvas` or `cellCvs` has its width/height reset, because in WebKit a
@@ -4840,13 +7088,74 @@ function _invalidatePatternCaches() {
   _lightningPattern  = null;   _lightningCELL    = -1;
   _poisonPattern     = null;   _poisonCELL       = -1;
 }
-const _effectKeys={'1':'fire','2':'poison','3':'ice','4':'lightning','5':'holy','6':'erase','7':'water','8':'grass'};
+const _EFFECT_KEYS_DEFAULT={'1':'fire','2':'poison','3':'ice','4':'lightning','5':'holy','6':'erase','7':'water','8':'grass'};
+// Effect→hotkey bindings are user-remappable (Keyboard Shortcuts panel) and persisted.
+let _effectKeys=Object.assign({}, _EFFECT_KEYS_DEFAULT);
+(function(){ try{ const s=JSON.parse(localStorage.getItem('arcane-keybinds')||'null'); if(s&&typeof s==='object') _effectKeys=s; }catch(e){} })();
+function _saveKeybinds(){ try{ localStorage.setItem('arcane-keybinds', JSON.stringify(_effectKeys)); }catch(e){} }
 // Feature 5 — Ruler
 let rulerMode=false, rulerStart=null;
+let rulerPts=[], rulerDone=false;   // multi-point path measuring
+function _rsnap(x,y){ const c=Math.floor(x/CELL), r=Math.floor(y/CELL); return {x:c*CELL+CELL/2, y:r*CELL+CELL/2}; }
 // Feature 7 — Grid coords
 let gridCoordsVisible=false;
 // Feature 9 — Cover
-let covers={}, coverMode=false;
+let covers={}, coverMode=false, coverAttacker=null;   // coverAttacker = token id of the shooter
+let drawings=[], penMode=false, penColor='#ff3030', penWidth=4, _penStroke=null;
+function drawAnnotations(){
+  const all=_penStroke?drawings.concat([_penStroke]):drawings;
+  if(!all.length)return;
+  ctx.save(); ctx.lineCap='round'; ctx.lineJoin='round';
+  for(const d of all){
+    if(!d.pts||!d.pts.length)continue;
+    ctx.strokeStyle=d.color; ctx.lineWidth=d.width; ctx.fillStyle=d.color;
+    if(d.pts.length===1){ const p=d.pts[0]; ctx.beginPath(); ctx.arc(p.fx*canvas.width,p.fy*canvas.height,d.width/2,0,Math.PI*2); ctx.fill(); continue; }
+    ctx.beginPath();
+    d.pts.forEach((p,i)=>{ const x=p.fx*canvas.width,y=p.fy*canvas.height; i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+function _eraseNearestStroke(x,y){
+  const fx=x/canvas.width, fy=y/canvas.height, thr=Math.max(0.02, (penWidth+10)/canvas.width);
+  for(let i=drawings.length-1;i>=0;i--){
+    if(drawings[i].pts.some(p=>Math.hypot(p.fx-fx,p.fy-fy)<thr)){ pushUndo(); drawings.splice(i,1); if(window.__mpScheduleSync)window.__mpScheduleSync(); return; }
+  }
+}
+function _hex2rgb(h){ return [parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)]; }
+const _COVER_OBJS = new Set(['tree', 'tree_pine', 'tree_dead', 'rock', 'rock_large']);
+// A wall gives cover unless it's an open door (windows / low walls DO give cover).
+function _coverWall(w) { return !(w.type === 'door' && w.open); }
+function _coverWallCrosses(ax, ay, bx, by) {
+  for (const w of walls) { if (!_coverWall(w)) continue; if (_segCross(ax, ay, bx, by, w.fx1 * cols, w.fy1 * rows, w.fx2 * cols, w.fy2 * rows)) return true; }
+  return false;
+}
+function _coverObjCrosses(ax, ay, bx, by, skip) {
+  const steps = Math.ceil(Math.hypot(bx - ax, by - ay) * 4) + 1;
+  for (let i = 1; i < steps; i++) {
+    const t = i / steps, cx = ax + (bx - ax) * t, cy = ay + (by - ay) * t;
+    const k = Math.floor(cy) + ',' + Math.floor(cx);
+    if (skip.has(k)) continue;
+    const a = grid[k]; if (a && a.some(e => _COVER_OBJS.has(e))) return true;
+  }
+  return false;
+}
+// Cover tier of target cell (tr,tc) from attacker token: 0 none, 1 half(+2),
+// 2 three-quarters(+5), 3 full (no line). 5e four-corner method.
+function coverTier(att, tr, tc) {
+  const ax = att.c + (att.size || 1) / 2, ay = att.r + (att.size || 1) / 2;
+  const skip = new Set();
+  for (let dr = 0; dr < (att.size || 1); dr++) for (let dc = 0; dc < (att.size || 1); dc++) skip.add((att.r + dr) + ',' + (att.c + dc));
+  skip.add(tr + ',' + tc);
+  const corners = [[0.12, 0.12], [0.88, 0.12], [0.12, 0.88], [0.88, 0.88]];
+  let blocked = 0;
+  for (const [ex, ey] of corners) {
+    const bx = tc + ex, by = tr + ey;
+    if (_coverWallCrosses(ax, ay, bx, by) || _coverObjCrosses(ax, ay, bx, by, skip)) blocked++;
+  }
+  return blocked >= 4 ? 3 : blocked === 3 ? 2 : blocked >= 1 ? 1 : 0;
+}
+const COVER_INFO = [null, { lbl: '½ +2', col: '#e8c84a' }, { lbl: '¾ +5', col: '#e88a2a' }, { lbl: 'FULL', col: '#e23c3c' }];
 let labelMode=false, pendingLabelCell=null, editingLabelId=null;
 let lightMode=false, editingLightId=null, lightPlaceRadius=5, lightPlaceShape='full', lightPlaceColor='#FFA040', lightPlaceType='torch';
 let _rotatLight=null, _rotatMoved=false; // drag-to-rotate state
@@ -4929,6 +7238,8 @@ function movePos(x,y) {
   mouseX=x; mouseY=y;
   if (inspectMode) updateTooltip(x, y); else _tooltip.classList.remove('visible');
 
+  if (penMode && _penStroke) { _penStroke.pts.push({ fx: x / canvas.width, fy: y / canvas.height }); return; }
+
   // Bounds handle drag
   if (boundsHandle) {
     applyBoundsHandle(boundsHandle, x, y);
@@ -4997,7 +7308,9 @@ function movePos(x,y) {
     }
     canvas.style.cursor = 'crosshair'; return;
   }
-  if (_rotatLight) {
+  if (_pendingDamage != null) {
+    canvas.style.cursor = 'crosshair';
+  } else if (_rotatLight) {
     canvas.style.cursor = 'crosshair';
   } else if (boundsHandle) {
     canvas.style.cursor = boundsHandleCursor(boundsHandle);
@@ -5053,6 +7366,14 @@ function movePos(x,y) {
 }
 
 function pointerDown(x,y) {
+  // ── Apply-damage targeting (intercepts before everything else) ─────
+  if (_pendingDamage != null) {
+    const t = tokenAt(x, y);
+    if (t) _applyDamageToToken(t, _pendingDamage);
+    _setPendingDamage(null);
+    return;
+  }
+
   // ── Bestiary placement (intercepts before any other mode) ─────
   if (window.__bestiaryPending) {
     const cell = cellFromXY(x, y);
@@ -5142,30 +7463,21 @@ function pointerDown(x,y) {
   }
 
   // Ruler mode — record start
-  if (rulerMode) { rulerStart={x,y}; return; }
+  if (rulerMode) { if (rulerDone) { rulerPts=[]; rulerDone=false; } rulerPts.push(_rsnap(x,y)); return; }
 
-  // Cover mode — cycle cover on nearest edge
+  // Cover mode — click a token to make it the attacker; the board then shows
+  // each other token's cover (auto from walls / trees / rocks). Click empty to clear.
   if (coverMode) {
-    const cell=cellFromXY(x,y);
-    const r=cell.r, c=cell.c;
-    const cx2=c*CELL, cy2=r*CELL;
-    const distN=Math.abs(y-(cy2)), distS=Math.abs(y-(cy2+CELL));
-    const distW=Math.abs(x-(cx2)), distE=Math.abs(x-(cx2+CELL));
-    const minD=Math.min(distN,distS,distW,distE);
-    if (minD < CELL*0.25) {
-      let edge='n';
-      if (minD===distS) edge='s';
-      else if (minD===distE) edge='e';
-      else if (minD===distW) edge='w';
-      const key=r+','+c+','+edge;
-      const cur=covers[key];
-      pushUndo();
-      if(shiftHeld) { delete covers[key]; }      // Shift+click = instant erase
-      else if(!cur) covers[key]='half';
-      else if(cur==='half') covers[key]='three-quarter';
-      else if(cur==='three-quarter') covers[key]='full';
-      else delete covers[key];
-    }
+    const tk = tokenAt(x, y);
+    coverAttacker = tk ? tk.id : null;
+    return;
+  }
+
+  if (penMode) {
+    if (shiftHeld) { _eraseNearestStroke(x, y); return; }
+    pushUndo();
+    _penStroke = { color: penColor, width: penWidth, pts: [{ fx: x / canvas.width, fy: y / canvas.height }] };
+    drawings.push(_penStroke);
     return;
   }
 
@@ -5213,7 +7525,11 @@ function pointerDown(x,y) {
   // Wall mode
   if(wallMode){
     if(shiftHeld){pushUndo();wallErasing=true;deleteNearestWall(x,y,true);}
-    else{wallActive=true;wallStart={x,y};}
+    else{
+      const door=_doorAt(x,y);
+      if(door){ pushUndo(); door.open=!door.open; if(window.__mpScheduleSync)window.__mpScheduleSync(); }
+      else{wallActive=true;wallStart={x,y};}
+    }
     return;
   }
 
@@ -5447,7 +7763,8 @@ function pointerUp() {
     return;
   }
   if (losMode) { losStart=null; return; }
-  if (rulerMode) { rulerStart=null; return; }
+  if (rulerMode) { return; }   // points persist; double-click finishes, right-click clears
+  if (penMode) { if (_penStroke) { _penStroke = null; if (window.__mpScheduleSync) window.__mpScheduleSync(); } return; }
   if (boundsHandle) {
     boundsHandle = null; boundsDragStart = null;
     canvas.style.cursor = boundsHandleCursor(hitBoundsHandle(mouseX, mouseY));
@@ -5490,7 +7807,7 @@ function pointerUp() {
     if(wallErasing){wallErasing=false;return;}
     if(wallActive && wallStart){
       const dx=mouseX-wallStart.x,dy=mouseY-wallStart.y;
-      if(Math.hypot(dx,dy)>5){pushUndo();walls.push({id:wallIdSeq++,fx1:wallStart.x/canvas.width,fy1:wallStart.y/canvas.height,fx2:mouseX/canvas.width,fy2:mouseY/canvas.height});}
+      if(Math.hypot(dx,dy)>5){pushUndo();walls.push({id:wallIdSeq++,type:currentWallType,open:false,fx1:wallStart.x/canvas.width,fy1:wallStart.y/canvas.height,fx2:mouseX/canvas.width,fy2:mouseY/canvas.height});}
       wallActive=false;wallStart=null;
     }
     return;
@@ -5589,6 +7906,71 @@ function _statRow(label, val) {
   const v = Array.isArray(val) ? val.join(', ') : val;
   return `<div style="margin:2px 0"><span style="color:rgba(255,180,60,0.85);font-weight:700;letter-spacing:.03em">${label}:</span> ${_escapeHtml(v)}</div>`;
 }
+function _rollExpr(expr) {
+  const m = String(expr).replace(/\s/g, '').match(/^(\d*)d(\d+)([+-]\d+)?$/i);
+  if (!m) return null;
+  const n = Math.min(50, parseInt(m[1] || '1')), s = parseInt(m[2]), k = parseInt(m[3] || '0');
+  if (!s) return null;
+  const rolls = []; let sum = 0;
+  for (let i = 0; i < n; i++) { const r = 1 + Math.floor(Math.random() * s); rolls.push(r); sum += r; }
+  return { total: sum + k, rolls, text: `${n}d${s}${k ? (k > 0 ? '+' + k : k) : ''} [${rolls.join(', ')}] → ${sum + k}` };
+}
+// Roll a damage expression; on a crit, the number of dice is doubled (5e rule).
+function _rollDmg(expr, crit) {
+  expr = String(expr || '').replace(/\s/g, '');
+  if (!expr) return null;
+  const m = expr.match(/^(\d*)d(\d+)([+-]\d+)?$/i);
+  if (!m) { const flat = parseInt(expr, 10); return isNaN(flat) ? null : { total: flat, text: String(flat) }; }
+  let n = Math.min(50, parseInt(m[1] || '1', 10)); const s = parseInt(m[2], 10), k = parseInt(m[3] || '0', 10);
+  if (!s) return null;
+  if (crit) n *= 2;
+  const rolls = []; let sum = 0;
+  for (let i = 0; i < n; i++) { const r = 1 + Math.floor(Math.random() * s); rolls.push(r); sum += r; }
+  const total = sum + k, ks = k ? (k > 0 ? '+' + k : k) : '';
+  return { total, text: `${total} [${n}d${s}${ks}: ${rolls.join('+')}${ks}]` };
+}
+// ── Apply-damage-to-token targeting ───────────────────────────
+let _pendingDamage = null;   // amount armed for the next token click (positive=damage, negative=heal)
+function _setPendingDamage(amt) {
+  _pendingDamage = amt;
+  const h = document.getElementById('dmg-aim');
+  if (amt != null) {
+    canvas.style.cursor = 'crosshair';
+    let el = h;
+    if (!el) { el = document.createElement('div'); el.id = 'dmg-aim'; el.style.cssText = 'position:fixed;left:50%;top:54px;transform:translateX(-50%);background:rgba(192,57,43,0.94);color:#fff;border-radius:8px;padding:7px 14px;font:13px system-ui;z-index:13000;box-shadow:0 6px 20px rgba(0,0,0,.5)'; document.body.appendChild(el); }
+    el.textContent = `🎯 Click a target to apply ${amt < 0 ? '+' + (-amt) + ' healing' : amt + ' damage'} — Esc to cancel`;
+    el.style.display = 'block';
+  } else {
+    if (h) h.style.display = 'none';
+    canvas.style.cursor = tokenMode ? 'default' : 'none';
+  }
+}
+function _applyDamageToToken(tok, amt) {
+  pushUndo();
+  const cur = (tok.hp == null) ? (tok.maxHp || 0) : tok.hp;
+  let next = cur - amt;
+  if (next < 0) next = 0;
+  if (tok.maxHp) next = Math.min(tok.maxHp, next);
+  tok.hp = next;
+  _spawnDmgFloat(tok, amt);
+  if (typeof draw === 'function') draw();
+  if (typeof renderInitiative === 'function') renderInitiative();
+  if (window.__mpScheduleSync) window.__mpScheduleSync();
+  if (typeof _dmPushTokenHp === 'function') _dmPushTokenHp(tok);
+}
+function _spawnDmgFloat(tok, amt) {
+  try {
+    const rect = canvas.getBoundingClientRect();
+    const sx = rect.left + ((tok.c + 0.5) * CELL) * (rect.width / canvas.width);
+    const sy = rect.top + ((tok.r) * CELL) * (rect.height / canvas.height);
+    const el = document.createElement('div');
+    el.textContent = amt < 0 ? '+' + (-amt) : '−' + amt;
+    el.style.cssText = `position:fixed;left:${sx}px;top:${sy}px;transform:translate(-50%,-50%);color:${amt < 0 ? '#6ee787' : '#ff6b6b'};font:800 22px system-ui;text-shadow:0 2px 5px #000,0 0 3px #000;z-index:13000;pointer-events:none;transition:top 1s ease-out,opacity 1s ease-out;opacity:1`;
+    document.body.appendChild(el);
+    requestAnimationFrame(() => { el.style.top = (sy - 44) + 'px'; el.style.opacity = '0'; });
+    setTimeout(() => el.remove(), 1100);
+  } catch (e) {}
+}
 function openStatBlockPopover(tok, clientX, clientY) {
   if (!_statPop) return;
   const b = tok.bestiary || {};
@@ -5619,6 +8001,32 @@ function openStatBlockPopover(tok, clientX, clientY) {
     ${tok.exhaustion > 0 ? `<div style="margin:4px 0;color:#E67E22;font-weight:700">Exhaustion ${tok.exhaustion}</div>` : ''}
     ${b.notes ? `<div style="margin-top:6px;color:rgba(255,255,255,0.78);white-space:pre-wrap;font-size:11px">${_escapeHtml(b.notes)}</div>` : ''}
     ${dmNotesBlock}
+    ${(b.attacks && b.attacks.length) ? `<div style="margin-top:8px;border-top:1px solid rgba(255,180,60,0.25);padding-top:7px">
+      <div style="font-size:10px;color:rgba(255,180,60,0.85);font-weight:700;letter-spacing:.04em;margin-bottom:4px">ATTACKS</div>
+      <div style="display:flex;flex-direction:column;gap:4px">
+        ${b.attacks.map((a,i)=>`<button class="sp-atk" data-i="${i}" style="display:flex;justify-content:space-between;align-items:center;gap:8px;background:rgba(192,57,43,0.18);border:1px solid rgba(220,80,60,0.4);color:#ffd9d2;border-radius:6px;padding:5px 9px;cursor:pointer;font-size:11px;text-align:left">
+          <span style="font-weight:700">${_escapeHtml(a.name||'Attack')}</span>
+          <span style="opacity:.8;font-variant-numeric:tabular-nums">${(a.bonus>=0?'+':'')+ (a.bonus||0)} · ${_escapeHtml(a.damage||'—')}</span>
+        </button>`).join('')}
+      </div>
+    </div>` : ''}
+    <div style="margin-top:8px;border-top:1px solid rgba(255,180,60,0.25);padding-top:7px">
+      <div style="display:flex;gap:5px;align-items:center;margin-bottom:5px;flex-wrap:wrap">
+        <div style="display:flex;border:1px solid rgba(255,255,255,0.18);border-radius:5px;overflow:hidden">
+          <button class="sp-adv" data-m="dis" style="background:transparent;border:none;color:#cfcfe0;font-size:10px;font-weight:700;padding:4px 7px;cursor:pointer">Dis</button>
+          <button class="sp-adv" data-m="norm" style="background:rgba(255,180,60,0.3);border:none;color:#fff;font-size:10px;font-weight:700;padding:4px 7px;cursor:pointer">Norm</button>
+          <button class="sp-adv" data-m="adv" style="background:transparent;border:none;color:#cfcfe0;font-size:10px;font-weight:700;padding:4px 7px;cursor:pointer">Adv</button>
+        </div>
+        <span style="font-size:10px;color:rgba(255,255,255,0.55)">mod</span>
+        <input id="sp-mod" type="number" value="0" style="width:40px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#fff;border-radius:5px;padding:3px;text-align:center;font-size:12px">
+        <button id="sp-d20" style="background:#1f8fff;border:none;color:#04121f;font-size:11px;font-weight:700;border-radius:5px;padding:4px 9px;cursor:pointer">🎲 d20</button>
+      </div>
+      <div style="display:flex;gap:5px;align-items:center">
+        <input id="sp-dmg" type="text" placeholder="damage e.g. 2d6+3" style="flex:1;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#fff;border-radius:5px;padding:4px 6px;font-size:12px">
+        <button id="sp-dmg-roll" style="background:#c0392b;border:none;color:#fff;font-size:11px;font-weight:700;border-radius:5px;padding:4px 9px;cursor:pointer">Roll</button>
+      </div>
+      <div id="sp-result" style="margin-top:6px;font-size:12px;color:#ffd27a;min-height:15px;line-height:1.4"></div>
+    </div>
   `;
   // Position near the click, but keep on-screen
   _statPop.style.display = 'block';
@@ -5634,6 +8042,61 @@ function openStatBlockPopover(tok, clientX, clientY) {
   _statPop.style.top  = top  + 'px';
   const closeBtn = document.getElementById('statpop-close');
   if (closeBtn) closeBtn.addEventListener('click', closeStatBlockPopover);
+
+  // ── Dice roller (attacks / saves / damage) → posts to party chat ──
+  let spMode = 'norm';
+  const resEl = _statPop.querySelector('#sp-result');
+  const post = (txt) => { if (resEl) resEl.textContent = txt; if (window.mpSend) try { window.mpSend(txt, 'all'); } catch (e) {} };
+  // Like post(), but appends a "🎯 Apply N" button that arms damage targeting.
+  const applyResult = (txt, amt) => {
+    if (window.mpSend) try { window.mpSend(txt, 'all'); } catch (e) {}
+    if (!resEl) return;
+    resEl.innerHTML = '';
+    const s = document.createElement('span'); s.textContent = txt; resEl.appendChild(s);
+    if (amt != null && amt > 0) {
+      const ap = document.createElement('button'); ap.textContent = `🎯 Apply ${amt}`;
+      ap.style.cssText = 'margin-left:8px;background:#c0392b;border:none;color:#fff;font-size:10px;font-weight:700;border-radius:4px;padding:3px 7px;cursor:pointer;vertical-align:middle';
+      ap.addEventListener('click', () => { _setPendingDamage(amt); closeStatBlockPopover(); });
+      resEl.appendChild(ap);
+    }
+  };
+  _statPop.querySelectorAll('.sp-adv').forEach(b => b.addEventListener('click', () => {
+    spMode = b.dataset.m;
+    _statPop.querySelectorAll('.sp-adv').forEach(x => { x.style.background = 'transparent'; x.style.color = '#cfcfe0'; });
+    b.style.background = 'rgba(255,180,60,0.3)'; b.style.color = '#fff';
+  }));
+  const d20 = _statPop.querySelector('#sp-d20');
+  if (d20) d20.addEventListener('click', () => {
+    const mod = parseInt(_statPop.querySelector('#sp-mod').value) || 0;
+    const a = 1 + Math.floor(Math.random() * 20), b2 = 1 + Math.floor(Math.random() * 20);
+    let die = a, note = '';
+    if (spMode === 'adv') { die = Math.max(a, b2); note = ` (adv [${a},${b2}])`; }
+    else if (spMode === 'dis') { die = Math.min(a, b2); note = ` (dis [${a},${b2}])`; }
+    const total = die + mod;
+    const crit = die === 20 ? ' ⭐ crit!' : die === 1 ? ' 💀 nat 1' : '';
+    post(`🎲 ${tok.name || 'Token'}: d20${mod ? (mod > 0 ? '+' + mod : mod) : ''} → ${total}${note}${crit}`);
+  });
+  const dmgRoll = _statPop.querySelector('#sp-dmg-roll');
+  if (dmgRoll) dmgRoll.addEventListener('click', () => {
+    const r = _rollExpr(_statPop.querySelector('#sp-dmg').value);
+    if (!r) { if (resEl) resEl.textContent = 'Enter a dice expression like 2d6+3'; return; }
+    applyResult(`💥 ${tok.name || 'Token'} damage: ${r.text}`, r.total);
+  });
+  // One-click attacks: roll to-hit (with adv/dis) + damage (crit doubles dice).
+  _statPop.querySelectorAll('.sp-atk').forEach(btn => btn.addEventListener('click', () => {
+    const a = (b.attacks || [])[+btn.dataset.i]; if (!a) return;
+    const mod = a.bonus || 0;
+    const d1 = 1 + Math.floor(Math.random() * 20), d2 = 1 + Math.floor(Math.random() * 20);
+    let die = d1, note = '';
+    if (spMode === 'adv') { die = Math.max(d1, d2); note = ` (adv [${d1},${d2}])`; }
+    else if (spMode === 'dis') { die = Math.min(d1, d2); note = ` (dis [${d1},${d2}])`; }
+    const crit = die === 20, fumble = die === 1;
+    const hitTotal = die + mod;
+    const dmg = _rollDmg(a.damage, crit);
+    const hitStr = `${hitTotal}${note}${crit ? ' ⭐CRIT' : fumble ? ' 💀nat 1' : ''}`;
+    const dmgStr = dmg ? ` · 💥 ${dmg.total}${crit ? ' (crit dmg)' : ''}` : '';
+    applyResult(`⚔️ ${tok.name || 'Token'} — ${a.name || 'Attack'}: to-hit ${hitStr}${dmgStr}`, dmg ? dmg.total : null);
+  }));
 }
 function closeStatBlockPopover() { if (_statPop) _statPop.style.display = 'none'; }
 // Click anywhere outside the popover (or press Escape) to dismiss
@@ -5654,6 +8117,11 @@ document.addEventListener('keydown',e=>{
   if(e.key==='Shift') shiftHeld=true;
   if(e.key==='Alt')   altHeld=true;
   if(e.key==='Escape') {
+    if(rulerMode) { rulerPts=[]; rulerDone=false; }   // break free of the measuring line
+    if(wallMode) { _exitWallMode(); }
+    if(coverMode) { coverMode=false; coverAttacker=null; document.getElementById('cover-btn').classList.remove('active'); canvas.style.cursor='none'; updateHint(); }
+    if(penMode) { penMode=false; _penStroke=null; document.getElementById('draw-btn')?.classList.remove('active'); const dp=document.getElementById('draw-panel'); if(dp)dp.style.display='none'; canvas.style.cursor='none'; updateHint(); }
+    if(_pendingDamage!=null) { _setPendingDamage(null); }
     if(teleportMode && teleportToken) { teleportToken=null; }
     if(eyedropperMode) { eyedropperMode=false; canvas.style.cursor='none'; document.getElementById('eyedrop-btn')?.classList.remove('active'); }
     closeLayerMenu();
@@ -5665,6 +8133,11 @@ document.addEventListener('keydown',e=>{
     const eff=_effectKeys[e.key];
     if(eff){setActiveEffect(eff);exitDrawModes();}
   }
+  // Alt+1..9 → jump straight to that saved scene
+  if(e.altKey&&!e.ctrlKey&&!e.metaKey&&document.activeElement.tagName!=='INPUT'){
+    const d=parseInt(e.key,10);
+    if(d>=1&&d<=9&&scenes[d-1]){ e.preventDefault(); if(activeSceneIdx!==d-1) switchToScene(d-1); }
+  }
 });
 document.addEventListener('keyup',e=>{ if(e.key==='Shift') shiftHeld=false; if(e.key==='Alt') altHeld=false; });
 // Bug fix: reset held-key flags if the window loses focus (e.g. Alt+Tab on macOS swallows keyup)
@@ -5672,6 +8145,50 @@ window.addEventListener('blur', () => { shiftHeld = false; altHeld = false; });
 
 // ── Token modal ────────────────────────────────────────────────
 let pendingTokenCell=null, editingTokenId=null, selectedColor=TOKEN_COLORS[0];
+let _tokAvatar=null, _tokClearOverride=false;
+// Apply an avatar to every board token whose name matches (used by the sheet
+// builder and the player→DM __AVATAR__ sync).
+function _tokMatch(t, nm, ownerId) {
+  if (ownerId && t.ownerPlayerId === ownerId) return true;       // sturdiest: owner ID
+  return nm && (t.name || '').trim().toLowerCase() === nm;        // fallback: name match
+}
+window.arcaneApplyAvatar = function (name, avatar, ownerId) {
+  const nm = name ? String(name).trim().toLowerCase() : ''; let hit = false;
+  for (const t of tokens) { if (_tokMatch(t, nm, ownerId)) { t.avatar = avatar ? { ...avatar } : null; hit = true; } }
+  if (hit) { if (typeof draw === 'function') draw(); if (window.__mpScheduleSync) window.__mpScheduleSync(); }
+  return hit;
+};
+// Sync HP onto matching tokens (from a character sheet).
+window.arcaneApplyTokenHp = function (name, hp, maxHp, ownerId) {
+  const nm = name ? String(name).trim().toLowerCase() : ''; let hit = false;
+  for (const t of tokens) { if (_tokMatch(t, nm, ownerId)) { if (hp != null) t.hp = hp; if (maxHp != null) t.maxHp = maxHp; hit = true; } }
+  if (hit) { if (typeof draw === 'function') draw(); if (typeof renderInitiative === 'function') renderInitiative(); if (window.__mpScheduleSync) window.__mpScheduleSync(); }
+  return hit;
+};
+// DM → owner: push a token's HP to its owning player's sheet.
+function _dmPushTokenHp(tok) {
+  if (!window.__arcaneIsDM || !tok || !tok.ownerPlayerId || !window.mpSend) return;
+  try { window.mpSend('__HP__:' + JSON.stringify({ name: tok.name, hp: tok.hp, maxHp: tok.maxHp }), tok.ownerPlayerId); } catch (e) {}
+}
+// Apply (or clear) an appearance OVERRIDE on tokens matching a character.
+window.arcaneApplyOverride = function (name, override, ownerId) {
+  const nm = name ? String(name).trim().toLowerCase() : ''; let hit = false;
+  for (const t of tokens) { if (_tokMatch(t, nm, ownerId)) { t.appearanceOverride = override ? { ...override } : null; hit = true; } }
+  if (hit) { if (typeof draw === 'function') draw(); if (window.__mpScheduleSync) window.__mpScheduleSync(); }
+  return hit;
+};
+function _renderTokAvatarPrev(){
+  const cv=document.getElementById('tok-avatar-prev'); if(!cv)return;
+  const g=cv.getContext('2d'); g.clearRect(0,0,cv.width,cv.height);
+  if(_tokAvatar && window.ArcaneAvatar){ window.ArcaneAvatar.render(g,2,2,36,_tokAvatar); }
+  else { g.fillStyle='rgba(255,255,255,0.25)'; g.beginPath(); g.arc(20,20,13,0,Math.PI*2); g.fill(); }
+}
+(function _wireTokAvatar(){
+  const btn=document.getElementById('tok-avatar-btn');
+  const clr=document.getElementById('tok-avatar-clear');
+  if(btn) btn.addEventListener('click',()=>{ if(!window.ArcaneAvatar)return; window.ArcaneAvatar.openEditor(_tokAvatar||window.ArcaneAvatar.DEFAULT, av=>{ _tokAvatar=av; _renderTokAvatarPrev(); }); });
+  if(clr) clr.addEventListener('click',()=>{ _tokAvatar=null; _tokClearOverride=true; _renderTokAvatarPrev(); });
+})();
 
 function buildSwatches() {
   const row=document.getElementById('color-swatches'); row.innerHTML='';
@@ -5747,6 +8264,14 @@ function openTokenModal(existing) {
   // Light
   document.getElementById('tok-light-bright').value=existing?(existing.lightRadius||0):0;
   document.getElementById('tok-light-dim').value=existing?(existing.lightDim||0):0;
+  // Aura
+  document.getElementById('tok-aura-radius').value=existing&&existing.aura?(existing.aura.radius||0):0;
+  document.getElementById('tok-aura-color').value=existing&&existing.aura?(existing.aura.color||'#ffd24a'):'#ffd24a';
+  // Avatar (appearance)
+  _tokAvatar = existing && existing.avatar ? {...existing.avatar} : null;
+  _tokClearOverride = false;
+  _renderTokAvatarPrev();
+  document.getElementById('tok-sight').value=existing?(existing.sight||0):0;
   // DM notes (private, never sent to players)
   document.getElementById('tok-notes').value=existing?(existing.dmNotes||''):'';
   // Owner (per-player vision) — repopulate from the current MP roster each open
@@ -5792,6 +8317,9 @@ document.getElementById('tok-ok').addEventListener('click',()=>{
   const exhaustion=parseInt(document.getElementById('tok-exhaustion').value)||0;
   const lightRadius=parseInt(document.getElementById('tok-light-bright').value)||0;
   const lightDim=parseInt(document.getElementById('tok-light-dim').value)||0;
+  const auraRadius=parseInt(document.getElementById('tok-aura-radius').value)||0;
+  const aura=auraRadius>0?{radius:auraRadius,color:document.getElementById('tok-aura-color').value||'#ffd24a'}:null;
+  const sight=parseInt(document.getElementById('tok-sight').value)||0;
   const dmNotes=document.getElementById('tok-notes').value;
   const ownerPlayerId=(document.getElementById('tok-owner')?.value || '') || null;
   // Death saves
@@ -5804,13 +8332,13 @@ document.getElementById('tok-ok').addEventListener('click',()=>{
   pushUndo();
   if (editingTokenId!==null) {
     const tok=tokens.find(t=>t.id===editingTokenId);
-    if(tok){tok.name=name;tok.color=selectedColor;tok.size=selectedSize;tok.speed=speed;tok.hp=hp;tok.maxHp=maxHp;tok.conditions=[...selectedConditions];tok.concentrating=concentrating;tok.exhaustion=exhaustion;tok.lightRadius=lightRadius;tok.lightDim=lightDim;tok.deathSaves=deathSaves;tok.initBonus=initBonus;tok.dmNotes=dmNotes;tok.ownerPlayerId=ownerPlayerId;}
+    if(tok){tok.name=name;tok.color=selectedColor;tok.size=selectedSize;tok.speed=speed;tok.hp=hp;tok.maxHp=maxHp;tok.conditions=[...selectedConditions];tok.concentrating=concentrating;tok.exhaustion=exhaustion;tok.lightRadius=lightRadius;tok.lightDim=lightDim;tok.aura=aura;tok.sight=sight;tok.avatar=_tokAvatar?{..._tokAvatar}:null;if(_tokClearOverride)tok.appearanceOverride=null;tok.deathSaves=deathSaves;tok.initBonus=initBonus;tok.dmNotes=dmNotes;tok.ownerPlayerId=ownerPlayerId;_dmPushTokenHp(tok);}
     // Sync colour/name in the initiative tracker if this token is already listed.
     const ie=initiative.find(i=>i.tokenId===editingTokenId);
     if(ie){ie.color=selectedColor;ie.name=name;}
     renderInitiative();
   } else if (pendingTokenCell) {
-    tokens.push({id:tokenIdSeq++,r:pendingTokenCell.r,c:pendingTokenCell.c,name,color:selectedColor,size:selectedSize,speed,hp,maxHp,conditions:[...selectedConditions],concentrating,exhaustion,lightRadius,lightDim,deathSaves,initBonus,dmNotes,ownerPlayerId});
+    tokens.push({id:tokenIdSeq++,r:pendingTokenCell.r,c:pendingTokenCell.c,name,color:selectedColor,size:selectedSize,speed,hp,maxHp,conditions:[...selectedConditions],concentrating,exhaustion,lightRadius,lightDim,aura,sight,avatar:_tokAvatar?{..._tokAvatar}:null,deathSaves,initBonus,dmNotes,ownerPlayerId});
   }
   closeTokenModal();
 });
@@ -5841,17 +8369,45 @@ function renderInitiative() {
     const scoreIn=document.createElement('input'); scoreIn.type='number'; scoreIn.value=entry.score;
     scoreIn.addEventListener('change',()=>{entry.score=parseInt(scoreIn.value)||0;});
     scoreWrap.appendChild(scoreIn);
+    // reorder arrows (manual order for ties / readied actions)
+    const ord=document.createElement('div'); ord.className='init-ord';
+    const up=document.createElement('span'); up.className='init-arrow'; up.textContent='▲'; up.title='Move up';
+    const dn=document.createElement('span'); dn.className='init-arrow'; dn.textContent='▼'; dn.title='Move down';
+    up.addEventListener('click',()=>moveInit(idx,-1)); dn.addEventListener('click',()=>moveInit(idx,1));
+    ord.append(up,dn);
     const del=document.createElement('span'); del.className='init-del'; del.textContent='✕';
-    del.addEventListener('click',()=>{initiative.splice(idx,1);if(initCurrent>=initiative.length)initCurrent=Math.max(-1,initiative.length-1);renderInitiative();});
-    row.append(dot,name,scoreWrap,del); div.appendChild(row);
-    // HP bar if linked token has HP
+    del.addEventListener('click',()=>{initiative.splice(idx,1);if(initCurrent>=initiative.length)initCurrent=Math.max(-1,initiative.length-1);renderInitiative();if(window.__mpScheduleSync)window.__mpScheduleSync();});
+    row.append(ord,dot,name,scoreWrap,del); div.appendChild(row);
     const tok=tokens.find(t=>t.id===entry.tokenId);
+    // HP bar + quick damage/heal if linked token has HP
     if(tok&&tok.maxHp!=null&&tok.maxHp>0){
       const ratio=tok.hp!=null?Math.max(0,Math.min(1,tok.hp/tok.maxHp)):1;
       const bc=ratio>.5?'#28C83C':ratio>.25?'#DCA014':'#DC2828';
+      const hpRow=document.createElement('div'); hpRow.className='init-hp-row';
       const bar=document.createElement('div'); bar.className='init-hp-bar';
       bar.innerHTML=`<div class="init-hp-fill" style="width:${ratio*100}%;background:${bc}"></div>`;
-      div.appendChild(bar);
+      const hpTxt=document.createElement('span'); hpTxt.className='init-hp-txt'; hpTxt.textContent=`${tok.hp==null?tok.maxHp:tok.hp}/${tok.maxHp}`;
+      const dmgBtn=document.createElement('button'); dmgBtn.className='init-hp-btn dmg'; dmgBtn.textContent='−';dmgBtn.title='Damage';
+      const amt=document.createElement('input'); amt.type='number'; amt.className='init-hp-amt'; amt.value=''; amt.placeholder='0';
+      const healBtn=document.createElement('button'); healBtn.className='init-hp-btn heal'; healBtn.textContent='+';healBtn.title='Heal';
+      const applyHp=(sign)=>{const n=parseInt(amt.value)||0; if(!n)return; const cur=tok.hp==null?tok.maxHp:tok.hp; tok.hp=Math.max(0,Math.min(tok.maxHp,cur+sign*n)); amt.value=''; renderInitiative(); if(typeof draw==='function')draw(); if(window.__mpScheduleSync)window.__mpScheduleSync(); _dmPushTokenHp(tok);};
+      dmgBtn.addEventListener('click',()=>applyHp(-1)); healBtn.addEventListener('click',()=>applyHp(1));
+      amt.addEventListener('keydown',e=>{if(e.key==='Enter')applyHp(-1);});
+      hpRow.append(bar,hpTxt,dmgBtn,amt,healBtn); div.appendChild(hpRow);
+    }
+    // condition chips (from the linked token) — quick visual + click to toggle
+    if(tok){
+      const cw=document.createElement('div'); cw.className='init-conds';
+      (tok.conditions||[]).forEach(k=>{const c=CONDITIONS.find(x=>x.key===k); if(!c)return; const chip=document.createElement('span'); chip.className='init-chip'; chip.style.background=COND_COLORS[k]||'#666';
+        const dur=(tok.condDur||{})[k];
+        chip.textContent=c.label+(dur>0?` ·${dur}`:'');
+        chip.title='Click to set duration or remove';
+        chip.addEventListener('click',(e)=>{e.stopPropagation(); openCondDurPopover(tok,k,chip);});
+        cw.appendChild(chip);});
+      const addC=document.createElement('span'); addC.className='init-chip init-chip-add'; addC.textContent='＋'; addC.title='Add condition';
+      addC.addEventListener('click',(e)=>{e.stopPropagation(); openCondPicker(tok,addC);});
+      cw.appendChild(addC);
+      div.appendChild(cw);
     }
     list.appendChild(div);
   });
@@ -5876,16 +8432,200 @@ document.getElementById('init-name-in').addEventListener('input', function() {
   const match = tokens.find(t => t.name.toLowerCase() === this.value.trim().toLowerCase());
   if (match && match.initBonus != null) scoreIn.value = match.initBonus;
 });
+let _condPickerEl=null;
+function openCondPicker(tok,anchor){
+  if(_condPickerEl){_condPickerEl.remove();_condPickerEl=null;}
+  const pop=document.createElement('div'); pop.className='init-cond-pop';
+  CONDITIONS.forEach(c=>{
+    const on=(tok.conditions||[]).includes(c.key);
+    const b=document.createElement('button'); b.className='init-cond-opt'+(on?' on':''); b.textContent=c.label;
+    b.style.borderColor=COND_COLORS[c.key]||'#666';
+    if(on)b.style.background=COND_COLORS[c.key]||'#666';
+    b.addEventListener('click',()=>{
+      tok.conditions=tok.conditions||[];
+      if(tok.conditions.includes(c.key)){ tok.conditions=tok.conditions.filter(x=>x!==c.key); if(tok.condDur) delete tok.condDur[c.key]; }
+      else tok.conditions.push(c.key);
+      renderInitiative(); if(typeof draw==='function')draw(); if(window.__mpScheduleSync)window.__mpScheduleSync();
+      openCondPicker(tok,anchor);   // keep open for multi-select, refresh state
+    });
+    pop.appendChild(b);
+  });
+  document.body.appendChild(pop);
+  const r=anchor.getBoundingClientRect();
+  pop.style.left=Math.min(window.innerWidth-pop.offsetWidth-8,r.left)+'px';
+  pop.style.top=(r.bottom+4)+'px';
+  _condPickerEl=pop;
+  const close=(e)=>{if(_condPickerEl&&!_condPickerEl.contains(e.target)&&e.target!==anchor){_condPickerEl.remove();_condPickerEl=null;document.removeEventListener('pointerdown',close,true);}};
+  setTimeout(()=>document.addEventListener('pointerdown',close,true),0);
+}
+// Per-condition duration editor: set a round count (auto-decrements each turn) or remove.
+let _condDurEl=null;
+function openCondDurPopover(tok,key,anchor){
+  if(_condDurEl){_condDurEl.remove();_condDurEl=null;}
+  const c=CONDITIONS.find(x=>x.key===key);
+  tok.condDur=tok.condDur||{};
+  const pop=document.createElement('div'); pop.className='init-dur-pop';
+  const sync=()=>{ if(typeof draw==='function')draw(); if(window.__mpScheduleSync)window.__mpScheduleSync(); };
+  const cur=()=>tok.condDur[key]>0?tok.condDur[key]:0;
+  function rebuild(){
+    const n=cur();
+    pop.innerHTML=`<div class="idp-title" style="border-color:${COND_COLORS[key]||'#666'}">${c?c.label:key}</div>`+
+      `<div class="idp-row"><button class="idp-step" data-d="-1">−</button>`+
+      `<span class="idp-val">${n>0?n+' rd'+(n>1?'s':''):'∞'}</span>`+
+      `<button class="idp-step" data-d="1">+</button></div>`+
+      `<button class="idp-inf">∞ No limit</button>`+
+      `<button class="idp-remove">✕ Remove condition</button>`;
+    pop.querySelectorAll('.idp-step').forEach(b=>b.addEventListener('click',()=>{
+      let v=cur()+ (+b.dataset.d);
+      if(v<=0){ delete tok.condDur[key]; } else { tok.condDur[key]=Math.min(99,v); }
+      rebuild(); renderInitiative(); sync();
+    }));
+    pop.querySelector('.idp-inf').addEventListener('click',()=>{ delete tok.condDur[key]; rebuild(); renderInitiative(); sync(); });
+    pop.querySelector('.idp-remove').addEventListener('click',()=>{
+      tok.conditions=(tok.conditions||[]).filter(x=>x!==key); delete tok.condDur[key];
+      if(_condDurEl){_condDurEl.remove();_condDurEl=null;}
+      renderInitiative(); sync();
+    });
+  }
+  rebuild();
+  document.body.appendChild(pop);
+  const r=anchor.getBoundingClientRect();
+  pop.style.left=Math.min(window.innerWidth-pop.offsetWidth-8,r.left)+'px';
+  pop.style.top=(r.bottom+4)+'px';
+  _condDurEl=pop;
+  const close=(e)=>{if(_condDurEl&&!_condDurEl.contains(e.target)&&e.target!==anchor){_condDurEl.remove();_condDurEl=null;document.removeEventListener('pointerdown',close,true);}};
+  setTimeout(()=>document.addEventListener('pointerdown',close,true),0);
+}
+// Decrement timed conditions for one token (called when its turn begins). Returns
+// an array of human-readable "Name: Condition" strings that just expired.
+function _tickTokenConditions(tok){
+  if(!tok||!tok.condDur)return [];
+  const expired=[];
+  for(const k of Object.keys(tok.condDur)){
+    if(!(tok.conditions||[]).includes(k)){ delete tok.condDur[k]; continue; }
+    tok.condDur[k]-=1;
+    if(tok.condDur[k]<=0){
+      const c=CONDITIONS.find(x=>x.key===k);
+      expired.push(`${tok.name}: ${c?c.label:k}`);
+      tok.conditions=tok.conditions.filter(x=>x!==k);
+      delete tok.condDur[k];
+    }
+  }
+  return expired;
+}
+function _condExpiryToast(msgs){
+  if(!msgs||!msgs.length)return;
+  let t=document.getElementById('cond-expiry-toast');
+  if(!t){ t=document.createElement('div'); t.id='cond-expiry-toast'; t.style.cssText='position:fixed;left:50%;top:24px;transform:translateX(-50%);background:#1b1b22;color:#ffd9a0;border:1px solid #5a4a2a;border-radius:8px;padding:8px 16px;font:12px system-ui;z-index:13600;box-shadow:0 8px 24px rgba(0,0,0,.6);text-align:center'; document.body.appendChild(t); }
+  t.innerHTML='⏳ Condition ended — '+msgs.map(_escapeHtml).join(' · ');
+  t.style.opacity='1';
+  clearTimeout(t._to); t._to=setTimeout(()=>{ t.style.transition='opacity .5s'; t.style.opacity='0'; },4000);
+}
+function moveInit(idx,dir){
+  const j=idx+dir; if(j<0||j>=initiative.length)return;
+  const t=initiative[idx]; initiative[idx]=initiative[j]; initiative[j]=t;
+  if(initCurrent===idx)initCurrent=j; else if(initCurrent===j)initCurrent=idx;
+  renderInitiative(); if(window.__mpScheduleSync)window.__mpScheduleSync();
+}
 document.getElementById('init-sort-btn').addEventListener('click',()=>{initiative.sort((a,b)=>b.score-a.score);initCurrent=-1;renderInitiative();});
+const initPrevBtn=document.getElementById('init-prev-btn');
+if(initPrevBtn)initPrevBtn.addEventListener('click',()=>{
+  if(!initiative.length)return;
+  if(initCurrent<=0){initCurrent=initiative.length-1;if(roundNum>1)roundNum--;}
+  else initCurrent--;
+  document.getElementById('round-label').textContent=`Round ${roundNum}`;
+  renderInitiative();
+  document.querySelectorAll('.init-entry')[initCurrent]?.scrollIntoView({block:'nearest'});
+  if(window.__mpScheduleSync)window.__mpScheduleSync();
+});
 document.getElementById('init-next-btn').addEventListener('click',()=>{
   if(!initiative.length)return;
   initCurrent=(initCurrent+1)%initiative.length;
   if(initCurrent===0)roundNum++;
   document.getElementById('round-label').textContent=`Round ${roundNum}`;
+  // Tick down timed conditions on the token whose turn is now starting.
+  const entry=initiative[initCurrent];
+  const tok=entry&&entry.tokenId!=null?tokens.find(t=>t.id===entry.tokenId):null;
+  const expired=_tickTokenConditions(tok);
   renderInitiative();
+  if(typeof draw==='function')draw();
+  _condExpiryToast(expired);
   document.querySelectorAll('.init-entry')[initCurrent]?.scrollIntoView({block:'nearest'});
+  if(window.__mpScheduleSync)window.__mpScheduleSync();
 });
 document.getElementById('init-reset-btn').addEventListener('click',()=>{initCurrent=-1;roundNum=1;renderInitiative();});
+
+// ── Auto-roll initiative for every token on the board ──────────────
+function _d20(){ return Math.floor(Math.random()*20)+1; }
+let _rollModalEl=null;
+function openInitRollModal(){
+  // Candidates: every named token on the board.
+  const cands = tokens.filter(t => (t.name||'').trim());
+  if(!cands.length){ alert('No named tokens on the board to roll for. Place some tokens first.'); return; }
+  if(_rollModalEl){ _rollModalEl.remove(); _rollModalEl=null; }
+  // Build a working roll for each token.
+  const rows = cands.map(t=>{
+    const bonus = t.initBonus!=null ? t.initBonus : 0;
+    const die = _d20();
+    return { tok:t, bonus, die, total:die+bonus, isPlayer: !!t.ownerPlayerId };
+  });
+  const ov=document.createElement('div'); ov.id='init-roll-ov';
+  ov.innerHTML = `<div class="ir-box">
+    <div class="ir-head"><span class="ir-title">🎲 Roll Initiative</span><button class="ir-x" id="ir-close">✕</button></div>
+    <div class="ir-sub">NPCs are auto-rolled. Player rows are highlighted — type the value each player announces, or reroll.</div>
+    <div class="ir-list" id="ir-list"></div>
+    <div class="ir-foot">
+      <button class="ir-btn" id="ir-reroll-npc">↻ Reroll NPCs</button>
+      <span style="flex:1"></span>
+      <button class="ir-btn" id="ir-cancel">Cancel</button>
+      <button class="ir-btn primary" id="ir-apply">Build Order ▶</button>
+    </div>
+  </div>`;
+  document.body.appendChild(ov); _rollModalEl=ov;
+  const listEl=ov.querySelector('#ir-list');
+  function render(){
+    listEl.innerHTML='';
+    rows.forEach((r,i)=>{
+      const row=document.createElement('div'); row.className='ir-row'+(r.isPlayer?' player':'');
+      const dot=`<span class="ir-dot" style="background:${r.tok.color||'#aaa'}"></span>`;
+      const tag=r.isPlayer?'<span class="ir-tag">player</span>':'';
+      const bonusStr=(r.bonus>=0?'+':'')+r.bonus;
+      row.innerHTML=`${dot}<span class="ir-name">${_escapeHtml(r.tok.name)}</span>${tag}`+
+        `<span class="ir-calc">d20 ${r.die} ${bonusStr}</span>`+
+        `<button class="ir-reroll" data-i="${i}" title="Reroll this one">🎲</button>`+
+        `<input class="ir-total" type="number" data-i="${i}" value="${r.total}">`;
+      listEl.appendChild(row);
+    });
+    listEl.querySelectorAll('.ir-reroll').forEach(b=>b.addEventListener('click',()=>{
+      const i=+b.dataset.i; rows[i].die=_d20(); rows[i].total=rows[i].die+rows[i].bonus; render();
+    }));
+    listEl.querySelectorAll('.ir-total').forEach(inp=>inp.addEventListener('change',()=>{
+      const i=+inp.dataset.i; rows[i].total=parseInt(inp.value,10)||0;
+    }));
+  }
+  render();
+  const close=()=>{ if(_rollModalEl){ _rollModalEl.remove(); _rollModalEl=null; } };
+  ov.querySelector('#ir-close').addEventListener('click',close);
+  ov.querySelector('#ir-cancel').addEventListener('click',close);
+  ov.addEventListener('click',e=>{ if(e.target===ov) close(); });
+  ov.querySelector('#ir-reroll-npc').addEventListener('click',()=>{
+    rows.forEach(r=>{ if(!r.isPlayer){ r.die=_d20(); r.total=r.die+r.bonus; } }); render();
+  });
+  ov.querySelector('#ir-apply').addEventListener('click',()=>{
+    // capture any focused-but-not-committed input
+    listEl.querySelectorAll('.ir-total').forEach(inp=>{ const i=+inp.dataset.i; rows[i].total=parseInt(inp.value,10)||0; });
+    initiative = rows.map(r=>({ id:initIdSeq++, name:r.tok.name, color:r.tok.color||'#aaa', score:r.total, tokenId:r.tok.id }));
+    initiative.sort((a,b)=>b.score-a.score);
+    initCurrent = initiative.length?0:-1;
+    roundNum = 1;
+    document.getElementById('round-label').textContent = initiative.length?`Round ${roundNum}`:'';
+    renderInitiative();
+    document.querySelectorAll('.init-entry')[0]?.scrollIntoView({block:'nearest'});
+    if(window.__mpScheduleSync)window.__mpScheduleSync();
+    close();
+  });
+}
+(function(){ const b=document.getElementById('init-roll-btn'); if(b) b.addEventListener('click',openInitRollModal); })();
 
 // Exposed so the chat IIFE can add a result from a different closure scope.
 window.__arcaneAddToInitiative = function(charName, score) {
@@ -5959,9 +8699,10 @@ function setShape(eff, shape) {
 }
 
 function updateHint() {
-  if(rulerMode){document.getElementById('hint').textContent='Click & drag to measure · 1 sq = 5 ft';return;}
-  if(coverMode){document.getElementById('hint').textContent='Click near a cell edge to cycle cover: ½ → ¾ → full → clear · Shift-click to erase immediately';return;}
-  if(wallMode){document.getElementById('hint').textContent='Click & drag to draw a wall · Shift-drag to erase walls · Keys 1-8 switch effects';return;}
+  if(penMode){document.getElementById('hint').textContent='Freehand draw — drag to draw on the map · Shift-drag to erase a stroke · pick color/width above · Clear to wipe · Esc exits';return;}
+  if(rulerMode){document.getElementById('hint').textContent='Click to add points (bends allowed) · double-click to finish · right-click to clear · 1 sq = 5 ft';return;}
+  if(coverMode){document.getElementById('hint').textContent='Cover: click a token to set the SHOOTER · every other token shows its cover from walls/trees/rocks · hover a token to see the sight-lines · click empty to clear';return;}
+  if(wallMode){const v=WALL_TYPES.find(t=>t.type===currentWallType)||WALL_TYPES[0];document.getElementById('hint').textContent=`Wall: ${v.label} · drag to draw · click WALL again to change type · click a door to open/close · Shift-drag to erase`;return;}
   if(labelMode){document.getElementById('hint').textContent='Click a cell to place a text label · Click existing label to edit or delete';return;}
   if(lightMode){
     const isDrawSpot = lightPlaceType==='spotlight' && lightPlaceShape!=='full';
@@ -6019,6 +8760,30 @@ document.querySelectorAll('.effect-main').forEach(b=>b.addEventListener('click',
       setActiveEffect('grass');
       _updateGrassPillLabel();
     }
+  } else if (target === 'tree') {
+    if (currentEffect === 'tree' && TREE_EFFS.has(currentTreeVariant)) {
+      const idx = TREE_VARIANTS.findIndex(v => v.eff === currentTreeVariant);
+      currentTreeVariant = TREE_VARIANTS[(idx + 1) % TREE_VARIANTS.length].eff;
+      _updateTreePillLabel(); updateHint();
+    } else { setActiveEffect('tree'); _updateTreePillLabel(); }
+  } else if (target === 'rock') {
+    if (currentEffect === 'rock' && ROCK_EFFS.has(currentRockVariant)) {
+      const idx = ROCK_VARIANTS.findIndex(v => v.eff === currentRockVariant);
+      currentRockVariant = ROCK_VARIANTS[(idx + 1) % ROCK_VARIANTS.length].eff;
+      _updateRockPillLabel(); updateHint();
+    } else { setActiveEffect('rock'); _updateRockPillLabel(); }
+  } else if (target === 'difficult') {
+    // Cycle through difficult-terrain flavours on every click while DIFFICULT
+    // is selected (rubble → thorns → debris → brush → scree → rubble).
+    if (currentEffect === 'difficult' && DIFFICULT_EFFS.has(currentDifficultVariant)) {
+      const idx = DIFFICULT_VARIANTS.findIndex(v => v.eff === currentDifficultVariant);
+      currentDifficultVariant = DIFFICULT_VARIANTS[(idx + 1) % DIFFICULT_VARIANTS.length].eff;
+      _updateDifficultPillLabel();
+      updateHint();
+    } else {
+      setActiveEffect('difficult');
+      _updateDifficultPillLabel();
+    }
   } else if (currentEffect === target) {
     clearActiveEffect();
   } else {
@@ -6046,6 +8811,33 @@ function _updateGrassPillLabel() {
   btn.title = `${v.label} · click again to cycle through ${GRASS_VARIANTS.length} grass variants`;
 }
 _updateGrassPillLabel();
+
+function _updateDifficultPillLabel() {
+  const btn = document.querySelector('#pill-difficult .effect-main');
+  if (!btn) return;
+  const v = DIFFICULT_VARIANTS.find(x => x.eff === currentDifficultVariant) || DIFFICULT_VARIANTS[0];
+  btn.innerHTML = `<span class="icon">${v.icon}</span>${v.label}`;
+  btn.title = `${v.label} difficult terrain · click again to cycle through ${DIFFICULT_VARIANTS.length} variants (rubble / thorns / debris / brush / scree)`;
+}
+_updateDifficultPillLabel();
+
+function _updateTreePillLabel() {
+  const btn = document.querySelector('#pill-tree .effect-main');
+  if (!btn) return;
+  const v = TREE_VARIANTS.find(x => x.eff === currentTreeVariant) || TREE_VARIANTS[0];
+  btn.innerHTML = `<span class="icon">${v.icon}</span>${v.label}`;
+  btn.title = `${v.label} tree · click again to cycle types (oak / pine / dead). Oaks merge into forests.`;
+}
+_updateTreePillLabel();
+function _updateRockPillLabel() {
+  const btn = document.querySelector('#pill-rock .effect-main');
+  if (!btn) return;
+  const v = ROCK_VARIANTS.find(x => x.eff === currentRockVariant) || ROCK_VARIANTS[0];
+  btn.innerHTML = `<span class="icon">${v.icon}</span>${v.label}`;
+  btn.title = `${v.label} · click again to toggle rocks / boulder. Adjacent rocks merge into bigger boulders.`;
+}
+_updateRockPillLabel();
+
 document.querySelectorAll('.arrow-btn').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();const dd=document.getElementById('dd-'+b.dataset.toggle);const was=dd.classList.contains('open');closeAllDDs();if(!was){dd.classList.add('open');b.setAttribute('aria-expanded','true');}}));
 document.querySelectorAll('.shape-item').forEach(item=>item.addEventListener('click',e=>{e.stopPropagation();setActiveEffect(item.dataset.effect);setShape(item.dataset.effect,item.dataset.shape);closeAllDDs();}));
 document.addEventListener('click',closeAllDDs);
@@ -6218,50 +9010,273 @@ function _applyDetectedGrid(det) {
   if (window.__mpScheduleSync) window.__mpScheduleSync();
 }
 
-document.getElementById('map-input').addEventListener('change', function() {
-  const file = this.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = (ev) => {
-    const img = new Image();
-    img.onload = () => {
-      bgImage = img;
-      window._bgImageDataUrl = ev.target.result;   // serializable form for sync
-      document.getElementById('map-btn').classList.add('active');
-      document.getElementById('map-panel').style.display = 'flex';
-      if (window.__mpScheduleSync) window.__mpScheduleSync();
-      // Auto-detect grid lines and offer to match the battle grid.
-      // Run after a tick so the user sees the map before the prompt.
-      setTimeout(() => {
-        let det = null;
-        try { det = _detectMapGrid(img); } catch(e) { det = null; }
-        if (!det) return;
-        if (det.cols === cols && det.rows === rows) return;
-        const msg =
-          `Detected what looks like a ${det.cols} × ${det.rows} grid in this map.\n\n` +
-          `• Click OK to resize the battle grid to ${det.cols} × ${det.rows} ` +
-          `(your existing tokens, walls, labels, and fog will be cleared).\n` +
-          `• Click Cancel to keep the current ${cols} × ${rows} grid ` +
-          `(use this if your map has no visible grid lines or the detection looks wrong).`;
-        if (confirm(msg)) _applyDetectedGrid(det);
-      }, 80);
-    };
-    img.onerror = () => alert('Map image failed to load.');
-    img.src = ev.target.result;
+// ── Board size & projector-scale panel + calibration wizard ─────────────────
+function _injectBoardCss() {
+  if (document.getElementById('board-css')) return;
+  const st = document.createElement('style'); st.id = 'board-css';
+  st.textContent = `
+  #board-panel,#cal-wizard{position:fixed;z-index:11000;color:#e8e8ee;font:13px system-ui}
+  #board-panel{right:18px;top:70px;width:300px;background:#15151a;border:1px solid #34343c;border-radius:12px;
+    box-shadow:0 18px 50px rgba(0,0,0,.6);display:none;flex-direction:column;overflow:hidden}
+  #board-panel.on{display:flex}
+  .bp-head{display:flex;align-items:center;padding:10px 12px;border-bottom:1px solid #26262c;background:#1b1b22}
+  .bp-head h3{margin:0;font-size:14px;font-weight:700;flex:1}
+  .bp-x{background:none;border:none;color:#9a9aa2;font-size:17px;cursor:pointer}
+  .bp-body{padding:12px;display:flex;flex-direction:column;gap:12px}
+  .bp-sec-lbl{font-size:11px;color:#8a8a93;font-weight:700;letter-spacing:.04em}
+  .bp-row{display:flex;align-items:center;gap:8px}
+  .bp-row label{width:62px;color:#cfcfe0}
+  .bp-step{display:flex;align-items:center;gap:4px}
+  .bp-step button{width:24px;height:24px;border:1px solid #34343c;background:#23232a;color:#cfcfe0;border-radius:6px;font-weight:700;cursor:pointer}
+  .bp-step input{width:48px;text-align:center;background:#1a1a20;border:1px solid #34343c;color:#fff;border-radius:6px;padding:4px 0}
+  #board-panel input[type=range]{flex:1}
+  .bp-seg{display:flex;border:1px solid #34343c;border-radius:7px;overflow:hidden}
+  .bp-gmode{flex:1;background:#1a1a20;border:none;border-right:1px solid #34343c;color:#b9b9c4;font-size:11px;font-weight:700;padding:6px 0;cursor:pointer}
+  .bp-gmode:last-child{border-right:none}
+  .bp-gmode.on{background:rgba(31,143,255,0.25);color:#bfe0ff}
+  .bp-presets{display:flex;gap:6px;flex-wrap:wrap}
+  .bp-preset{background:#23232a;border:1px solid #34343c;color:#cfcfe0;border-radius:6px;padding:5px 8px;font-size:11px;font-weight:700;cursor:pointer}
+  .bp-btn{background:#1f8fff;color:#04121f;border:none;border-radius:7px;padding:8px 11px;font-weight:700;cursor:pointer}
+  .bp-note{font-size:11px;color:#80808a;line-height:1.5}
+  #cal-wizard{inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center}
+  #cal-wizard.on{display:flex}
+  .cw-box{width:440px;max-width:92vw;background:#15151a;border:1px solid #34343c;border-radius:12px;padding:18px;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+  .cw-box h3{margin:0 0 8px;font-size:16px;color:#ffd27a}
+  .cw-step{font-size:13px;line-height:1.6;color:#d6d6de;margin-bottom:12px}
+  .cw-big{display:flex;align-items:center;justify-content:center;gap:10px;margin:10px 0}
+  .cw-big button{width:40px;height:40px;border:1px solid #34343c;background:#23232a;color:#fff;border-radius:8px;font-size:18px;font-weight:700;cursor:pointer}
+  .cw-big .cw-val{font:700 22px system-ui;color:#9fd0ff;min-width:120px;text-align:center}
+  .cw-measure{display:flex;flex-direction:column;gap:8px;background:#101014;border:1px solid #26262c;border-radius:8px;padding:10px;margin:10px 0}
+  .cw-measure .bp-row label{width:auto;flex:1}
+  .cw-measure input{width:64px;text-align:center;background:#1a1a20;border:1px solid #34343c;color:#fff;border-radius:6px;padding:4px}
+  .cw-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
+  .cw-actions .bp-btn.alt{background:#23232a;color:#cfcfe0;border:1px solid #34343c}`;
+  document.head.appendChild(st);
+}
+let _boardPanelEl = null;
+function openBoardPanel() {
+  _injectBoardCss();
+  if (!_boardPanelEl) {
+    const p = document.createElement('div'); p.id = 'board-panel';
+    p.innerHTML = `
+      <div class="bp-head"><h3>📐 Board & Scale</h3><button class="bp-x" id="bp-close">✕</button></div>
+      <div class="bp-body">
+        <div class="bp-sec-lbl">BOARD SIZE (squares)</div>
+        <div class="bp-row"><label>Columns</label><div class="bp-step"><button data-d="-1" data-t="col">−</button><input id="bp-cols" type="number" min="2" max="80"><button data-d="1" data-t="col">+</button></div></div>
+        <div class="bp-row"><label>Rows</label><div class="bp-step"><button data-d="-1" data-t="row">−</button><input id="bp-rows" type="number" min="2" max="80"><button data-d="1" data-t="row">+</button></div></div>
+        <div class="bp-presets">
+          <button class="bp-preset" data-c="16" data-r="16">16×16</button>
+          <button class="bp-preset" data-c="20" data-r="20">20×20</button>
+          <button class="bp-preset" data-c="30" data-r="20">30×20</button>
+          <button class="bp-preset" data-c="40" data-r="30">40×30</button>
+        </div>
+        <div class="bp-note">Resizing keeps everything that still fits — only off-board cells/tokens are dropped.</div>
+        <div class="bp-sec-lbl">GRID DISPLAY</div>
+        <div id="bp-gridmode" class="bp-seg">
+          <button class="bp-gmode" data-mode="off">Off</button>
+          <button class="bp-gmode" data-mode="coords">A1 coords</button>
+          <button class="bp-gmode" data-mode="inch">1″ grid</button>
+          <button class="bp-gmode" data-mode="hex">Hex</button>
+        </div>
+        <div class="bp-sec-lbl">PROJECTOR SCALE (square size)</div>
+        <div class="bp-row"><label>px / sq</label><input id="bp-scale-range" type="range" min="20" max="200"><input id="bp-scale" class="bp-num" type="number" min="20" max="200" style="width:56px;text-align:center;background:#1a1a20;border:1px solid #34343c;color:#fff;border-radius:6px;padding:4px 0"></div>
+        <label class="bp-row" style="gap:6px"><input id="bp-lock" type="checkbox"> Lock square to this physical size</label>
+        <button class="bp-btn" id="bp-calibrate">🎯 Calibrate to table…</button>
+        <div class="bp-note">Lock fixes each square at a constant pixel size so the projected grid stays a real, measurable size. Use Calibrate to match it to your table.</div>
+      </div>`;
+    document.body.appendChild(p); _boardPanelEl = p;
+    p.querySelector('#bp-close').addEventListener('click', () => p.classList.remove('on'));
+    p.querySelectorAll('.bp-step button').forEach(b => b.addEventListener('click', () => {
+      const d = +b.dataset.d;
+      if (b.dataset.t === 'col') setBoardSize(cols + d, rows); else setBoardSize(cols, rows + d);
+    }));
+    p.querySelector('#bp-cols').addEventListener('change', e => setBoardSize(+e.target.value, rows));
+    p.querySelector('#bp-rows').addEventListener('change', e => setBoardSize(cols, +e.target.value));
+    p.querySelectorAll('.bp-preset').forEach(b => b.addEventListener('click', () => setBoardSize(+b.dataset.c, +b.dataset.r)));
+    const applyScale = (v) => { gridOverlayScale = Math.max(20, Math.min(200, Math.round(v))); _syncBoardUI(); resize(); if (window.__mpScheduleSync) window.__mpScheduleSync(); };
+    p.querySelector('#bp-scale-range').addEventListener('input', e => applyScale(+e.target.value));
+    p.querySelector('#bp-scale').addEventListener('change', e => applyScale(+e.target.value));
+    const lock = p.querySelector('#bp-lock');
+    lock.checked = boardScaleLock;
+    lock.addEventListener('change', e => { boardScaleLock = e.target.checked; resize(); if (window.__mpScheduleSync) window.__mpScheduleSync(); });
+    p.querySelector('#bp-calibrate').addEventListener('click', openCalWizard);
+    p.querySelectorAll('#bp-gridmode .bp-gmode').forEach(b => b.addEventListener('click', () => setGridMode(b.dataset.mode)));
+  }
+  _boardPanelEl.classList.toggle('on');
+  _syncBoardUI(); _syncGridModeUI();
+  const lk = document.getElementById('bp-lock'); if (lk) lk.checked = boardScaleLock;
+}
+document.getElementById('board-btn').addEventListener('click', openBoardPanel);
+
+let _calEl = null;
+function openCalWizard() {
+  _injectBoardCss();
+  boardScaleLock = true;                  // calibration only makes sense with a fixed square size
+  const lk = document.getElementById('bp-lock'); if (lk) lk.checked = true;
+  resize();
+  if (!_calEl) {
+    const w = document.createElement('div'); w.id = 'cal-wizard';
+    w.innerHTML = `
+      <div class="cw-box">
+        <h3>🎯 Calibrate projector to your table</h3>
+        <div class="cw-step">
+          1. Open the projector window (🖥️ PROJECT) and set it fullscreen on the projector.<br>
+          2. Lay your physical grid paper / a ruler on the projected board.<br>
+          3. Nudge the square size until the projected squares line up with your grid, <i>or</i> use the measure box for an exact match.
+        </div>
+        <div class="cw-big">
+          <button id="cw-dn2" title="−5">⏪</button><button id="cw-dn" title="−1">◀</button>
+          <span class="cw-val"><span id="cw-px">96</span> px/sq</span>
+          <button id="cw-up" title="+1">▶</button><button id="cw-up2" title="+5">⏩</button>
+        </div>
+        <div class="cw-measure">
+          <div class="bp-sec-lbl">EXACT MATCH (optional)</div>
+          <div class="bp-row"><label>Measure this many squares:</label><input id="cw-sq" type="number" value="5" min="1"></div>
+          <div class="bp-row"><label>They currently measure (inches):</label><input id="cw-in" type="number" value="5" min="0.1" step="0.1"></div>
+          <div class="bp-row"><label>Desired inches per square:</label><input id="cw-tgt" type="number" value="1" min="0.1" step="0.1"></div>
+          <button class="bp-btn" id="cw-apply-measure">Compute & apply</button>
+        </div>
+        <div class="cw-actions">
+          <button class="bp-btn alt" id="cw-cancel">Cancel</button>
+          <button class="bp-btn" id="cw-done">Done</button>
+        </div>
+      </div>`;
+    document.body.appendChild(w); _calEl = w;
+    const setPx = (v) => { gridOverlayScale = Math.max(20, Math.min(300, Math.round(v))); document.getElementById('cw-px').textContent = gridOverlayScale; _syncBoardUI(); resize(); if (window.__mpScheduleSync) window.__mpScheduleSync(); };
+    w.querySelector('#cw-dn2').addEventListener('click', () => setPx(gridOverlayScale - 5));
+    w.querySelector('#cw-dn').addEventListener('click', () => setPx(gridOverlayScale - 1));
+    w.querySelector('#cw-up').addEventListener('click', () => setPx(gridOverlayScale + 1));
+    w.querySelector('#cw-up2').addEventListener('click', () => setPx(gridOverlayScale + 5));
+    w.querySelector('#cw-apply-measure').addEventListener('click', () => {
+      const S = parseFloat(w.querySelector('#cw-sq').value), M = parseFloat(w.querySelector('#cw-in').value), T = parseFloat(w.querySelector('#cw-tgt').value);
+      if (S > 0 && M > 0 && T > 0) setPx(gridOverlayScale * (S * T) / M);   // px/sq · (target span / actual span)
+    });
+    w.querySelector('#cw-cancel').addEventListener('click', () => w.classList.remove('on'));
+    w.querySelector('#cw-done').addEventListener('click', () => w.classList.remove('on'));
+    w.addEventListener('click', e => { if (e.target === w) w.classList.remove('on'); });
+  }
+  document.getElementById('cw-px').textContent = Math.round(gridOverlayScale);
+  _calEl.classList.add('on');
+}
+
+// MAP button → in-app file browser (the native file dialog is unavailable in
+// this WKWebView build, so we browse the filesystem via the local server).
+document.getElementById('map-btn').addEventListener('click', openMapBrowser);
+
+function _injectMapBrowserCss() {
+  if (document.getElementById('map-browser-css')) return;
+  const st = document.createElement('style'); st.id = 'map-browser-css';
+  st.textContent = `
+  #map-browser{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:11000}
+  #map-browser .mb-box{width:560px;max-width:92vw;max-height:78vh;background:#15151a;border:1px solid #34343c;border-radius:12px;display:flex;flex-direction:column;overflow:hidden;color:#e8e8ee;font:13px system-ui;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+  #map-browser .mb-head{display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid #26262c;background:#1b1b22}
+  #map-browser .mb-title{font-weight:700;color:#ffd27a}
+  #map-browser .mb-path{flex:1;font-size:11px;color:#9a9aa2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}
+  #map-browser .mb-x{background:none;border:none;color:#9a9aa2;font-size:16px;cursor:pointer}
+  #map-browser .mb-list{overflow:auto;padding:6px}
+  #map-browser .mb-row{padding:7px 10px;border-radius:6px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #map-browser .mb-row:hover{background:#26262e}
+  #map-browser .mb-file{color:#bfe9ff}
+  #map-browser .mb-empty{color:#80808a;padding:14px;text-align:center}
+  #map-browser .mb-foot{padding:8px 12px;border-top:1px solid #26262c;color:#80808a;font-size:11px}`;
+  document.head.appendChild(st);
+}
+function openMapBrowser() {
+  _injectMapBrowserCss();
+  let m = document.getElementById('map-browser');
+  if (!m) {
+    m = document.createElement('div'); m.id = 'map-browser';
+    m.innerHTML = `<div class="mb-box">
+      <div class="mb-head"><span class="mb-title">🗺️ Choose a map image</span><span class="mb-path" id="mb-path"></span><button class="mb-x" id="mb-close">✕</button></div>
+      <div class="mb-list" id="mb-list"></div>
+      <div class="mb-foot" style="display:flex;align-items:center;gap:10px">
+        <span style="flex:1">Click a 🖼 image to load it — or drag an image file onto the window.</span>
+        <button id="mb-clear" style="background:rgba(192,57,43,0.22);border:1px solid rgba(220,80,60,0.45);color:#ffd9d2;border-radius:6px;padding:5px 10px;font-size:12px;font-weight:700;cursor:pointer;display:none">✕ Clear current map</button>
+      </div>
+    </div>`;
+    document.body.appendChild(m);
+    m.addEventListener('click', (e) => { if (e.target === m) m.style.display = 'none'; });
+    m.querySelector('#mb-close').addEventListener('click', () => { m.style.display = 'none'; });
+    m.querySelector('#mb-clear').addEventListener('click', () => { clearMap(); m.style.display = 'none'; });
+  }
+  const cb = m.querySelector('#mb-clear'); if (cb) cb.style.display = bgImage ? 'block' : 'none';
+  m.style.display = 'flex';
+  _mapBrowse(window.__mbPath || '');
+}
+function _mapBrowse(path) {
+  fetch('http://localhost:8765/api/fs/list?path=' + encodeURIComponent(path || '')).then(r => r.json()).then(d => {
+    window.__mbPath = d.path;
+    const list = document.getElementById('mb-list'); document.getElementById('mb-path').textContent = d.path;
+    list.innerHTML = '';
+    const up = document.createElement('div'); up.className = 'mb-row mb-dir'; up.textContent = '⬆  ..';
+    up.addEventListener('click', () => _mapBrowse(d.parent)); list.appendChild(up);
+    const sep = (d.path.endsWith('/') ? '' : '/');
+    (d.dirs || []).forEach(name => { const r = document.createElement('div'); r.className = 'mb-row mb-dir'; r.textContent = '📁  ' + name; r.addEventListener('click', () => _mapBrowse(d.path + sep + name)); list.appendChild(r); });
+    (d.files || []).forEach(name => { const r = document.createElement('div'); r.className = 'mb-row mb-file'; r.textContent = '🖼  ' + name; r.addEventListener('click', () => _selectMapImage(d.path + sep + name)); list.appendChild(r); });
+    if (!(d.dirs || []).length && !(d.files || []).length) { const e = document.createElement('div'); e.className = 'mb-empty'; e.textContent = '(no images or sub-folders here)'; list.appendChild(e); }
+  }).catch(() => {});
+}
+function _selectMapImage(path) {
+  fetch('http://localhost:8765/api/fs/file?path=' + encodeURIComponent(path)).then(r => r.blob()).then(blob => {
+    const fr = new FileReader();
+    fr.onload = () => { _loadMapImageFromDataUrl(fr.result); const m = document.getElementById('map-browser'); if (m) m.style.display = 'none'; };
+    fr.readAsDataURL(blob);
+  }).catch(() => alert('Could not load that image.'));
+}
+
+// Load a map image from a data URL (shared by file-input and drag-drop paths).
+function _loadMapImageFromDataUrl(dataUrl) {
+  const img = new Image();
+  img.onload = () => {
+    bgImage = img;
+    window._bgImageDataUrl = dataUrl;
+    _syncMapUI();
+    if (typeof rebuildCells === 'function') rebuildCells();   // redraw effects without dark backing over the map
+    if (window.__mpScheduleSync) window.__mpScheduleSync();
+    setTimeout(() => {
+      let det = null; try { det = _detectMapGrid(img); } catch (e) { det = null; }
+      if (!det || (det.cols === cols && det.rows === rows)) return;
+      const msg = `Detected what looks like a ${det.cols} × ${det.rows} grid in this map.\n\n` +
+        `• OK = resize the battle grid to ${det.cols} × ${det.rows} (clears tokens/walls/labels/fog).\n` +
+        `• Cancel = keep the current ${cols} × ${rows} grid.`;
+      if (confirm(msg)) _applyDetectedGrid(det);
+    }, 80);
   };
-  reader.onerror = () => alert('Could not read the map file.');
-  reader.readAsDataURL(file);
-  this.value = '';
+  img.onerror = () => alert('Map image failed to load.');
+  img.src = dataUrl;
+}
+// Drag any image file from Finder onto the window to load it as the map
+// (works even when the native file-open dialog is unavailable).
+window.addEventListener('dragover', (e) => { if (e.dataTransfer) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } });
+window.addEventListener('drop', (e) => {
+  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if (!f) return;
+  e.preventDefault();
+  if (!/^image\//.test(f.type)) { return; }
+  const reader = new FileReader();
+  reader.onload = (ev) => _loadMapImageFromDataUrl(ev.target.result);
+  reader.readAsDataURL(f);
 });
 
-document.getElementById('map-clear-btn').addEventListener('click', () => {
+// Keep the MAP button highlight + the CLEAR panel in sync with whether a map is
+// actually loaded — so a map restored from a scene, save, or multiplayer always
+// has a visible way to clear it (not just freshly-imported ones).
+function _syncMapUI() {
+  const has = !!bgImage;
+  const btn = document.getElementById('map-btn');
+  const panel = document.getElementById('map-panel');
+  if (btn) btn.classList.toggle('active', has);
+  if (panel) panel.style.display = has ? 'flex' : 'none';
+}
+function clearMap() {
   bgImage = null;
   window._bgImageDataUrl = null;
   if (_mapObjectURL) { URL.revokeObjectURL(_mapObjectURL); _mapObjectURL = null; }
-  document.getElementById('map-btn').classList.remove('active');
-  document.getElementById('map-panel').style.display = 'none';
+  _syncMapUI();
+  if (typeof rebuildCells === 'function') rebuildCells();   // restore backings now the map is gone
   if (window.__mpScheduleSync) window.__mpScheduleSync();
-});
+}
+document.getElementById('map-clear-btn').addEventListener('click', clearMap);
 
 document.getElementById('fog-btn').addEventListener('click', (e) => {
   const btn = document.getElementById('fog-btn');
@@ -6288,52 +9303,58 @@ document.getElementById('fog-cover-btn').addEventListener('click', () => fogFill
 document.getElementById('fog-uncover-btn').addEventListener('click', () => fogFill(true));
 
 // Combined Grid button — cycles: Off → Coords → 1" overlay → Off
-document.getElementById('grid-overlay-btn').addEventListener('click', () => {
-  const btn   = document.getElementById('grid-overlay-btn');
-  const label = document.getElementById('grid-overlay-label');
-  const scalePanel = document.getElementById('grid-scale-panel');
-  // Determine next state from current
-  if (!gridCoordsVisible && !gridOverlayVisible) {
-    // Off → Coords
-    gridCoordsVisible = true;  gridOverlayVisible = false;
-  } else if (gridCoordsVisible && !gridOverlayVisible) {
-    // Coords → 1" overlay
-    gridCoordsVisible = false; gridOverlayVisible = true;
-  } else {
-    // 1" overlay (or any other state) → Off
-    gridCoordsVisible = false; gridOverlayVisible = false;
-  }
-  // Update UI
-  btn.classList.toggle('active', gridCoordsVisible || gridOverlayVisible);
-  if (label) {
-    label.textContent = gridOverlayVisible ? '1"'
-                       : gridCoordsVisible ? 'A1'
-                       : 'GRID';
-  }
-  // Scale slider is useful in both modes (both use 1" cells)
-  scalePanel.style.display = (gridOverlayVisible || gridCoordsVisible) ? 'flex' : 'none';
+// Grid display mode ('off' | 'coords' | 'inch') — now lives in the Board panel.
+function setGridMode(mode) {
+  gridCoordsVisible  = (mode === 'coords');
+  gridOverlayVisible = (mode === 'inch');
+  hexOverlayVisible  = (mode === 'hex');
+  _syncGridModeUI();
   resize();
-});
-
-document.getElementById('grid-scale-input').addEventListener('input', function() {
-  gridOverlayScale = parseInt(this.value);
-  document.getElementById('grid-scale-val').value = gridOverlayScale;
-  resize();
-});
-
-document.getElementById('grid-scale-val').addEventListener('input', function() {
-  const v = Math.max(32, Math.min(150, parseInt(this.value) || 96));
-  gridOverlayScale = v;
-  document.getElementById('grid-scale-input').value = v;
-  resize();
-});
+  if (window.__mpScheduleSync) window.__mpScheduleSync();
+}
+function _syncGridModeUI() {
+  const mode = hexOverlayVisible ? 'hex' : gridOverlayVisible ? 'inch' : gridCoordsVisible ? 'coords' : 'off';
+  document.querySelectorAll('#bp-gridmode .bp-gmode').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
+}
 
 document.getElementById('radius-input').addEventListener('input',function(){circleRadius=parseInt(this.value);document.getElementById('radius-val-display').textContent=circleRadius;updateHint();});
-document.getElementById('col-slider').addEventListener('input',function(){cols=parseInt(this.value);document.getElementById('col-val').textContent=cols;grid={};tokens=[];projBounds=null;walls=[];labels=[];fogReset();resize();});
-document.getElementById('row-slider').addEventListener('input',function(){rows=parseInt(this.value);document.getElementById('row-val').textContent=rows;grid={};tokens=[];projBounds=null;walls=[];labels=[];fogReset();resize();});
+// Sliders update the readout live, but only commit (one undo step) on release.
+document.getElementById('col-slider').addEventListener('input',function(){document.getElementById('col-val').textContent=this.value;});
+document.getElementById('row-slider').addEventListener('input',function(){document.getElementById('row-val').textContent=this.value;});
+document.getElementById('col-slider').addEventListener('change',function(){setBoardSize(parseInt(this.value),rows);});
+document.getElementById('row-slider').addEventListener('change',function(){setBoardSize(cols,parseInt(this.value));});
+
+// Non-destructive board resize: keep all content that still fits; only drop
+// cells/tokens/labels that fall outside the new bounds. Each call is one undo step.
+function setBoardSize(nc, nr) {
+  nc = Math.max(2, Math.min(80, Math.round(nc) || cols));
+  nr = Math.max(2, Math.min(80, Math.round(nr) || rows));
+  if (nc === cols && nr === rows) { _syncBoardUI(); return; }
+  pushUndo();
+  cols = nc; rows = nr;
+  if (typeof exploredCells !== 'undefined') exploredCells.clear();   // grid coords changed → reset LoS memory
+  for (const k of Object.keys(grid)) { const [r, c] = k.split(',').map(Number); if (r >= rows || c >= cols) delete grid[k]; }
+  tokens = tokens.filter(t => t.r < rows && t.c < cols);
+  if (labels) labels = labels.filter(l => l.r < rows && l.c < cols);
+  if (walls) walls = walls.filter(w => (w.r == null || w.r <= rows) && (w.c == null || w.c <= cols));
+  _syncBoardUI();
+  resize();
+  if (window.__mpScheduleSync) window.__mpScheduleSync();
+}
+function _syncBoardUI() {
+  const cs = document.getElementById('col-slider'), rs = document.getElementById('row-slider');
+  if (cs) { if (cols > +cs.max) cs.max = cols; cs.value = cols; }
+  if (rs) { if (rows > +rs.max) rs.max = rows; rs.value = rows; }
+  const cv = document.getElementById('col-val'), rv = document.getElementById('row-val');
+  if (cv) cv.textContent = cols; if (rv) rv.textContent = rows;
+  const bc = document.getElementById('bp-cols'), br2 = document.getElementById('bp-rows');
+  if (bc) bc.value = cols; if (br2) br2.value = rows;
+  const sv = document.getElementById('bp-scale'), sr = document.getElementById('bp-scale-range');
+  if (sv) sv.value = Math.round(gridOverlayScale); if (sr) sr.value = Math.round(gridOverlayScale);
+}
 document.getElementById('clear-btn').addEventListener('click',()=>{
   pushUndo();
-  grid={};tokens=[];projBounds=null;walls=[];labels=[];lights=[];waterCellFlow={};lavaCellFlow={};bloodCellFlow={};lightningCellFlow={};
+  grid={};tokens=[];projBounds=null;walls=[];labels=[];lights=[];waterCellFlow={};lavaCellFlow={};bloodCellFlow={};lightningCellFlow={};debrisCellFlow={};
   darknessZones=[];darknessZoneIdSeq=1;
   renderLightGroupManager();
   drawing=false;rawPts=[];strokeCells=new Set();prevCell=null;
@@ -6351,15 +9372,713 @@ function openProjectionWindow() {
 <meta charset="UTF-8"><title>D&D Battle Grid — Projection</title>
 <style>
   *{margin:0;padding:0;box-sizing:border-box}
-  body{background:#000;display:flex;align-items:center;justify-content:center;height:100vh;overflow:hidden}
-  canvas{max-width:100vw;max-height:100vh;object-fit:contain;cursor:none}
-  #hint{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);color:rgba(255,255,255,0.25);font:11px system-ui;letter-spacing:.05em;pointer-events:none;text-align:center}
-  #fs{position:fixed;top:10px;right:10px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:rgba(255,255,255,0.6);padding:5px 12px;border-radius:6px;cursor:pointer;font:700 11px system-ui;letter-spacing:.04em}
-  #fs:hover{background:rgba(255,255,255,0.18);color:#fff}
+  body{background:#000;overflow:hidden;height:100vh;font-family:system-ui,sans-serif}
+  /* Stage = the container the canvas sits in.  We size it explicitly to
+     the projector viewport and apply the keystone matrix3d transform to
+     a child wrapper so the canvas itself stays straightforward. */
+  #stage{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
+  #warp{position:relative;width:100%;height:100%;
+        transform-origin:0 0;transition:none;
+        will-change:transform}
+  canvas{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+         max-width:100%;max-height:100%;object-fit:contain;
+         image-rendering:auto;-webkit-image-rendering:high-quality;cursor:none}
+  /* During calibration, restore the cursor over the canvas AND stop the
+     canvas from intercepting clicks that should reach the corner handles. */
+  body.calibrating canvas{cursor:crosshair;pointer-events:none}
+  body.calibrating #warp{pointer-events:none}
+  /* Buttons */
+  .tb{position:fixed;top:10px;display:flex;gap:6px;z-index:50}
+  .tb-right{right:10px}
+  .tb-left{left:10px}
+  .btn{background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);
+       color:rgba(255,255,255,0.65);padding:5px 12px;border-radius:6px;cursor:pointer;
+       font:700 11px system-ui;letter-spacing:.04em;user-select:none}
+  .btn:hover{background:rgba(255,255,255,0.18);color:#fff}
+  .btn.primary{background:rgba(255,170,40,0.20);border-color:rgba(255,180,60,0.55);color:#ffd896}
+  .btn.primary:hover{background:rgba(255,170,40,0.35);color:#fff}
+  select.btn{padding:4px 6px;appearance:none;-webkit-appearance:none;min-width:180px;
+             background-image:linear-gradient(45deg,transparent 50%,rgba(255,255,255,0.55) 50%),
+                              linear-gradient(135deg,rgba(255,255,255,0.55) 50%,transparent 50%);
+             background-position:calc(100% - 14px) calc(50% - 2px),calc(100% - 10px) calc(50% - 2px);
+             background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:24px}
+  select.btn option{background:#1a1410;color:#fff}
+  /* Corner handles — visible only in calibrate mode.  44px target = the
+     Apple HIG minimum touch size, easy to grab even on a projector. */
+  .corner{position:fixed;width:44px;height:44px;margin:-22px 0 0 -22px;
+          border:3px solid #ffaa28;background:rgba(255,170,40,0.45);
+          border-radius:50%;cursor:grab;z-index:60;
+          box-shadow:0 0 14px rgba(255,170,40,0.85),
+                     inset 0 0 0 2px rgba(0,0,0,0.4);
+          display:none;touch-action:none}
+  .corner::after{content:'';position:absolute;left:50%;top:50%;
+                 width:6px;height:6px;margin:-3px 0 0 -3px;
+                 border-radius:50%;background:#fff;
+                 box-shadow:0 0 4px rgba(255,255,255,0.9)}
+  .corner:hover{background:rgba(255,200,80,0.65);transform:scale(1.1)}
+  .corner.active{cursor:grabbing;background:rgba(255,220,120,0.85);transform:scale(1.15)}
+  .corner-label{position:fixed;font:bold 10px system-ui;color:#ffd896;
+                background:rgba(0,0,0,0.7);padding:2px 6px;border-radius:4px;
+                pointer-events:none;z-index:61;display:none}
+  /* Calibration reference grid — only during calibrate mode */
+  #calref{position:fixed;inset:0;pointer-events:none;display:none;z-index:55;
+          background-image:
+            linear-gradient(rgba(255,170,40,0.35) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(255,170,40,0.35) 1px, transparent 1px);
+          background-size:10% 10%}
+  body.calibrating .corner{display:block}
+  body.calibrating .corner-label{display:block}
+  body.calibrating #calref{display:block}
+  body.calibrating canvas{outline:2px dashed rgba(255,170,40,0.7);outline-offset:-2px}
+  #hint{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);
+        color:rgba(255,255,255,0.32);font:11px system-ui;letter-spacing:.05em;
+        pointer-events:none;text-align:center;max-width:90vw}
+  /* ── Scale ruler ── markers + connecting line + control panel.  Visible
+     only in scale mode (body.scaling).  Two-point measurement: drop A and B
+     a known distance apart on the physical grid paper, enter the inches,
+     APPLY resizes the keystone quad so one square = one real inch. */
+  #warp-overlay{display:none}
+  body.scaling #warp-overlay{display:block}
+  /* Restore a visible cursor in scale mode (canvas defaults to cursor:none)
+     and stop the canvas swallowing pointer events meant for the markers. */
+  body.scaling canvas{cursor:crosshair;pointer-events:none;
+                      outline:2px dashed rgba(80,200,255,0.7);outline-offset:-2px}
+  /* Crosshair target: the EXACT measure point is the bright dot at the
+     centre where the two hairlines cross.  Drag that centre onto your grid
+     point.  The circle is just a grab area; the letter is an offset tag so
+     it never hides the centre. */
+  .ruler-mark{position:fixed;width:54px;height:54px;margin:-27px 0 0 -27px;
+              border:2px solid rgba(80,200,255,0.9);background:rgba(80,200,255,0.12);
+              border-radius:50%;cursor:grab;z-index:60;touch-action:none;
+              box-shadow:0 0 12px rgba(80,200,255,0.7)}
+  /* The two crosshair hairlines, spanning the full circle. */
+  .ruler-mark::before,.ruler-mark::after{content:'';position:absolute;
+              background:#50c8ff;box-shadow:0 0 3px rgba(0,0,0,0.8)}
+  .ruler-mark::before{left:50%;top:4px;width:2px;height:46px;margin-left:-1px}
+  .ruler-mark::after{top:50%;left:4px;height:2px;width:46px;margin-top:-1px}
+  /* The precise centre point. */
+  .rm-dot{position:absolute;left:50%;top:50%;width:8px;height:8px;
+          margin:-4px 0 0 -4px;border-radius:50%;background:#fff;
+          border:1.5px solid #0a8;box-shadow:0 0 6px rgba(255,255,255,0.95);
+          pointer-events:none;z-index:1}
+  /* Letter tag, offset to the upper-right so the centre stays clear. */
+  .rm-tag{position:absolute;left:50%;top:50%;
+          transform:translate(14px,-26px);
+          font:bold 13px system-ui;color:#fff;pointer-events:none;
+          background:rgba(80,200,255,0.85);border-radius:4px;padding:0 5px;
+          text-shadow:0 0 3px rgba(0,0,0,0.9)}
+  .ruler-mark.active{cursor:grabbing;background:rgba(140,220,255,0.30);
+                     transform:scale(1.08)}
+  #ruler-line{position:fixed;inset:0;width:100%;height:100%;
+              pointer-events:none;z-index:59}
+  #ruler-line line{stroke:#50c8ff;stroke-width:2;stroke-dasharray:6 4;
+                   opacity:0.85}
+  #ruler-panel{position:fixed;top:50px;left:10px;z-index:70;display:none;
+               background:rgba(10,20,30,0.92);border:1px solid rgba(80,200,255,0.5);
+               border-radius:8px;padding:12px 14px;color:#cfeeff;
+               font:12px system-ui;min-width:230px;
+               box-shadow:0 6px 24px rgba(0,0,0,0.6)}
+  body.scaling #ruler-panel{display:block}
+  #ruler-panel h4{margin:0 0 8px;font:700 12px system-ui;color:#9fdfff;
+                  letter-spacing:.04em}
+  #ruler-panel .row{display:flex;align-items:center;gap:8px;margin:6px 0}
+  #ruler-panel label{flex:1;color:rgba(207,238,255,0.8)}
+  #ruler-panel input[type=number]{width:64px;background:rgba(255,255,255,0.08);
+               border:1px solid rgba(80,200,255,0.4);color:#fff;border-radius:5px;
+               padding:4px 6px;font:12px system-ui;text-align:right}
+  #ruler-readout{margin:8px 0;font:11px system-ui;color:rgba(207,238,255,0.7);
+                 line-height:1.5;min-height:30px}
+  #ruler-readout b{color:#9fdfff}
+  #ruler-apply{width:100%;margin-top:6px;background:rgba(80,200,255,0.20);
+               border:1px solid rgba(80,200,255,0.55);color:#cfeeff;
+               padding:7px;border-radius:6px;cursor:pointer;font:700 12px system-ui}
+  #ruler-apply:hover{background:rgba(80,200,255,0.38);color:#fff}
+  #ruler-steps{margin:0 0 10px;padding-left:18px;color:rgba(207,238,255,0.82);
+               font:11px/1.5 system-ui}
+  #ruler-steps li{margin:3px 0}
+  #ruler-steps b.a,#ruler-readout b.a,#ruler-panel label b.a{color:#ffd28a}
+  #ruler-steps b.b,#ruler-readout b.b,#ruler-panel label b.b{color:#9fdfff}
+  /* Per-square tick marks drawn across the A↔B line. */
+  #ruler-ticks line{stroke:#ffd28a;stroke-width:2;opacity:0.9}
+  /* Live measurement badge that floats at the midpoint of the line. */
+  #ruler-badge{position:fixed;z-index:62;transform:translate(-50%,-50%);
+               background:rgba(10,20,30,0.92);border:1px solid rgba(80,200,255,0.6);
+               border-radius:6px;padding:4px 9px;color:#eaf7ff;
+               font:700 12px system-ui;white-space:nowrap;pointer-events:none;
+               box-shadow:0 2px 10px rgba(0,0,0,0.6);display:none}
+  body.scaling #ruler-badge.on{display:block}
 </style></head><body>
-<canvas id="proj-canvas"></canvas>
-<button id="fs" onclick="document.documentElement.requestFullscreen()">⛶ FULLSCREEN</button>
-<div id="hint">Move this window to your projector · click FULLSCREEN · Bluetooth: connect projector as extended display first</div>
+<div id="stage"><div id="warp"><canvas id="proj-canvas"></canvas></div></div>
+<div id="calref"></div>
+<!-- Corner handles: TL, TR, BR, BL -->
+<div class="corner" id="c-tl" data-i="0"></div><div class="corner-label" id="l-tl">TL</div>
+<div class="corner" id="c-tr" data-i="1"></div><div class="corner-label" id="l-tr">TR</div>
+<div class="corner" id="c-br" data-i="2"></div><div class="corner-label" id="l-br">BR</div>
+<div class="corner" id="c-bl" data-i="3"></div><div class="corner-label" id="l-bl">BL</div>
+<!-- Scale ruler markers (children of #warp so they ride the keystone with
+     the canvas — their warp-local separation maps to the same physical
+     distance the grid does). -->
+<div id="warp-overlay">
+  <svg id="ruler-line">
+    <line id="ruler-seg" x1="0" y1="0" x2="0" y2="0"/>
+    <g id="ruler-ticks"></g>
+  </svg>
+  <div class="ruler-mark" id="r-a" data-i="0"><i class="rm-dot"></i><span class="rm-tag">A</span></div>
+  <div class="ruler-mark" id="r-b" data-i="1"><i class="rm-dot"></i><span class="rm-tag">B</span></div>
+  <div id="ruler-badge"></div>
+</div>
+<div class="tb tb-left">
+  <button class="btn" id="cal-btn" title="Drag the 4 corner handles to align with your physical play surface, then click DONE">⌂ CALIBRATE</button>
+  <button class="btn" id="scale-btn" title="Match the projected grid to your physical grid paper: drop the two markers a known number of inches apart, enter the distance, then APPLY">📏 SCALE</button>
+  <!-- Preset controls are visible all the time so users can switch
+       calibrations without entering calibrate mode (no need to drag) -->
+  <select class="btn" id="preset-select" title="Switch to a saved or built-in keystone preset"></select>
+  <button class="btn" id="save-preset-btn" title="Save the current corner positions as a named preset">💾 SAVE</button>
+  <!-- DELETE + RESET are destructive — gated to calibrate mode -->
+  <button class="btn cal-only" id="delete-preset-btn" title="Delete the selected preset (built-ins can't be deleted)" style="display:none">✕ DELETE</button>
+  <button class="btn cal-only" id="reset-btn" title="Clear keystone correction" style="display:none">↺ RESET</button>
+</div>
+<div class="tb tb-right">
+  <button class="btn" id="fs">⛶ FULLSCREEN</button>
+</div>
+<div id="hint">Move this window to your projector · FULLSCREEN it · ⌂ CALIBRATE to fix keystone distortion</div>
+<div id="ruler-panel">
+  <h4>📏 MATCH PROJECTION TO YOUR GRID PAPER</h4>
+  <ol id="ruler-steps">
+    <li>Pick two points on your physical grid paper a known distance apart.</li>
+    <li>Drag <b class="a">A</b> and <b class="b">B</b> so the <b>white centre dot</b> of each crosshair sits exactly on those two points.</li>
+    <li>Type the real distance between the centre dots, and how big you want one square.</li>
+    <li>Hit <b>APPLY</b> — the projection resizes so the squares match.</li>
+  </ol>
+  <div class="row">
+    <label>Real distance from <b class="a">A</b> to <b class="b">B</b></label>
+    <input type="number" id="ruler-inches" min="0.5" step="0.5" value="10"> in
+  </div>
+  <div class="row">
+    <label>Make one square equal</label>
+    <input type="number" id="ruler-target" min="0.1" step="0.5" value="1"> in
+  </div>
+  <div id="ruler-readout"></div>
+  <button id="ruler-apply">APPLY — RESIZE TO MATCH</button>
+</div>
+<script>
+  // ── Keystone / 4-corner perspective correction ──
+  // Drag the 4 handles to align the projected image with your physical
+  // play surface.  We compute a 3×3 homography that maps the source
+  // rectangle (the warp container) to the destination quadrilateral
+  // (the dragged corners), then apply it as a CSS matrix3d transform.
+  const LS_KEY = 'arcaneProjectorKeystone';
+  const fsBtn = document.getElementById('fs');
+  fsBtn.addEventListener('click', () => document.documentElement.requestFullscreen());
+  const calBtn = document.getElementById('cal-btn');
+  const resetBtn = document.getElementById('reset-btn');
+  const warp = document.getElementById('warp');
+  const stage = document.getElementById('stage');
+  const corners = ['c-tl','c-tr','c-br','c-bl'].map(id => document.getElementById(id));
+  const labels  = ['l-tl','l-tr','l-br','l-bl'].map(id => document.getElementById(id));
+
+  // dst[i] = {x,y} CSS pixel offsets for each corner of the projected image
+  let dst = loadDst();
+  // Cached forward homography (warp-local → stage-local) + stage origin,
+  // refreshed every applyTransform().  Used to inverse-map pointer events
+  // back into warp-local space for the scale ruler.
+  let curT = null, curStageLeft = 0, curStageTop = 0;
+  applyTransform();
+
+  // Anchor the toolbars to the top edge of the projected grid box instead of
+  // the screen corners, so the orange controls sit next to the calibration
+  // square rather than out in the letterbox bars.  Inset horizontally to
+  // clear the ~44px TL/TR corner handles.
+  function positionToolbars() {
+    const tbL = document.querySelector('.tb-left');
+    const tbR = document.querySelector('.tb-right');
+    if (!tbL || !tbR) return;
+    const w = window.innerWidth, h = window.innerHeight;
+    const op = window.opener;
+    const cols = Number.isFinite(window.__cols) ? window.__cols
+               : (op && Number.isFinite(op.cols)) ? op.cols : 20;
+    const rows = Number.isFinite(window.__rows) ? window.__rows
+               : (op && Number.isFinite(op.rows)) ? op.rows : 20;
+    const aspect = cols / rows;
+    const dispW = Math.min(w, h * aspect);
+    const dispH = dispW / aspect;
+    const left = (w - dispW) / 2, top = (h - dispH) / 2;
+    const inset = 56;                 // clear the corner handle
+    const topPad = 10;
+    tbL.style.left  = (left + inset) + 'px';
+    tbL.style.top   = (top + topPad) + 'px';
+    tbR.style.right = (left + inset) + 'px';   // centered ⇒ right bar == left
+    tbR.style.top   = (top + topPad) + 'px';
+  }
+
+  function defaultDst() {
+    // Snap the handles to the corners of the projected grid itself rather
+    // than the screen corners.  The canvas is letterboxed inside the window
+    // via object-fit:contain (aspect = cols/rows), so its drawn bounds are
+    // usually inset from the screen edges — placing the handles there means
+    // they sit right on the grid square the DM is aligning, not floating out
+    // in the black bars.  A tiny inset keeps them fully grabbable.
+    const w = window.innerWidth, h = window.innerHeight;
+    const op = window.opener;
+    const cols = Number.isFinite(window.__cols) ? window.__cols
+               : (op && Number.isFinite(op.cols)) ? op.cols : 20;
+    const rows = Number.isFinite(window.__rows) ? window.__rows
+               : (op && Number.isFinite(op.rows)) ? op.rows : 20;
+    const aspect = cols / rows;                 // intrinsic grid aspect
+    const dispW = Math.min(w, h * aspect);      // object-fit:contain box
+    const dispH = dispW / aspect;
+    const left = (w - dispW) / 2, top = (h - dispH) / 2;
+    const I = 4;                                // keep handles just inside
+    return [
+      { x: left + I,         y: top + I         },   // TL
+      { x: left + dispW - I, y: top + I         },   // TR
+      { x: left + dispW - I, y: top + dispH - I },   // BR
+      { x: left + I,         y: top + dispH - I },   // BL
+    ];
+  }
+  function loadDst() {
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length === 4 &&
+            parsed.every(p => typeof p.x === 'number' && typeof p.y === 'number')) {
+          return parsed;
+        }
+      }
+    } catch (e) {}
+    return defaultDst();
+  }
+  function saveDst() {
+    try { localStorage.setItem(LS_KEY, JSON.stringify(dst)); } catch (e) {}
+  }
+
+  // ── Homography math — 4-pt → 4-pt mapping ──
+  function adj(m){return[m[4]*m[8]-m[5]*m[7],m[2]*m[7]-m[1]*m[8],m[1]*m[5]-m[2]*m[4],
+    m[5]*m[6]-m[3]*m[8],m[0]*m[8]-m[2]*m[6],m[2]*m[3]-m[0]*m[5],
+    m[3]*m[7]-m[4]*m[6],m[1]*m[6]-m[0]*m[7],m[0]*m[4]-m[1]*m[3]];}
+  function mmm(a,b){const c=new Array(9);for(let i=0;i<3;i++)for(let j=0;j<3;j++){
+    let s=0;for(let k=0;k<3;k++)s+=a[3*i+k]*b[3*k+j];c[3*i+j]=s;}return c;}
+  function mmv(m,v){return[m[0]*v[0]+m[1]*v[1]+m[2]*v[2],
+    m[3]*v[0]+m[4]*v[1]+m[5]*v[2],m[6]*v[0]+m[7]*v[1]+m[8]*v[2]];}
+  function basisToPts(x1,y1,x2,y2,x3,y3,x4,y4){
+    const m=[x1,x2,x3,y1,y2,y3,1,1,1];
+    const v=mmv(adj(m),[x4,y4,1]);
+    return mmm(m,[v[0],0,0,0,v[1],0,0,0,v[2]]);
+  }
+  function general2DProjection(x1s,y1s,x1d,y1d,x2s,y2s,x2d,y2d,
+                                x3s,y3s,x3d,y3d,x4s,y4s,x4d,y4d){
+    const s=basisToPts(x1s,y1s,x2s,y2s,x3s,y3s,x4s,y4s);
+    const d=basisToPts(x1d,y1d,x2d,y2d,x3d,y3d,x4d,y4d);
+    return mmm(d,adj(s));
+  }
+
+  function applyTransform() {
+    const w = warp.offsetWidth, h = warp.offsetHeight;
+    if (!w || !h) return;
+    const stageRect = stage.getBoundingClientRect();
+    // Source rect = the warp container in its own local space
+    // Destination = user-dragged corners in stage-local space
+    const t = general2DProjection(
+      0, 0,         dst[0].x - stageRect.left, dst[0].y - stageRect.top,
+      w, 0,         dst[1].x - stageRect.left, dst[1].y - stageRect.top,
+      w, h,         dst[2].x - stageRect.left, dst[2].y - stageRect.top,
+      0, h,         dst[3].x - stageRect.left, dst[3].y - stageRect.top
+    );
+    for (let i = 0; i < 9; i++) t[i] /= t[8];
+    // Stash for the scale ruler's inverse mapping (screen → warp-local).
+    curT = t.slice();
+    curStageLeft = stageRect.left;
+    curStageTop  = stageRect.top;
+    positionToolbars();
+    // CSS matrix3d expects column-major 4×4
+    const m3d = [
+      t[0], t[3], 0, t[6],
+      t[1], t[4], 0, t[7],
+      0,    0,    1, 0,
+      t[2], t[5], 0, t[8]
+    ];
+    warp.style.transform = 'matrix3d(' + m3d.join(',') + ')';
+    // Move corner handles + labels to match
+    corners.forEach((el, i) => {
+      el.style.left = dst[i].x + 'px';
+      el.style.top  = dst[i].y + 'px';
+    });
+    labels.forEach((el, i) => {
+      el.style.left = (dst[i].x + 16) + 'px';
+      el.style.top  = (dst[i].y - 6)  + 'px';
+    });
+  }
+
+  // ── User-saved presets (localStorage) ──
+  // Stored as { name → dst[4] }.  Only user-created presets — no built-ins.
+  const PRESETS_KEY = 'arcaneProjectorPresets';
+  function loadUserPresets() {
+    try {
+      const raw = localStorage.getItem(PRESETS_KEY);
+      if (raw) {
+        const obj = JSON.parse(raw);
+        if (obj && typeof obj === 'object') return obj;
+      }
+    } catch (e) {}
+    return {};
+  }
+  function saveUserPresets(p) {
+    try { localStorage.setItem(PRESETS_KEY, JSON.stringify(p)); } catch (e) {}
+  }
+  let userPresets = loadUserPresets();
+
+  // ── Preset dropdown UI ──
+  const presetSel    = document.getElementById('preset-select');
+  const savePresetBtn = document.getElementById('save-preset-btn');
+  const delPresetBtn  = document.getElementById('delete-preset-btn');
+
+  function refreshPresetList() {
+    presetSel.innerHTML = '';
+    const userKeys = Object.keys(userPresets);
+    const opt0 = document.createElement('option');
+    opt0.value = '';
+    opt0.textContent = userKeys.length
+      ? '— My Setups —'
+      : '— No saved setups yet —';
+    presetSel.appendChild(opt0);
+    for (const name of userKeys) {
+      const o = document.createElement('option');
+      o.value = name;
+      o.textContent = name;
+      presetSel.appendChild(o);
+    }
+  }
+  refreshPresetList();
+
+  presetSel.addEventListener('change', () => {
+    const name = presetSel.value;
+    if (!name) return;
+    if (userPresets[name]) {
+      dst = JSON.parse(JSON.stringify(userPresets[name]));
+      applyTransform();
+      saveDst();
+    }
+    delPresetBtn.disabled = false; delPresetBtn.style.opacity = '1';
+  });
+
+  savePresetBtn.addEventListener('click', () => {
+    const def = 'Setup ' + (Object.keys(userPresets).length + 1);
+    const name = (window.prompt('Name this calibration preset:', def) || '').trim();
+    if (!name) return;
+    if (userPresets[name] && !window.confirm('Overwrite existing preset "'+name+'"?')) return;
+    userPresets[name] = JSON.parse(JSON.stringify(dst));
+    saveUserPresets(userPresets);
+    refreshPresetList();
+    presetSel.value = name;
+    delPresetBtn.disabled = false; delPresetBtn.style.opacity = '1';
+  });
+
+  delPresetBtn.addEventListener('click', () => {
+    const name = presetSel.value;
+    if (!name || !userPresets[name]) return;
+    if (!window.confirm('Delete preset "'+name+'"?')) return;
+    delete userPresets[name];
+    saveUserPresets(userPresets);
+    refreshPresetList();
+    presetSel.value = '';
+    delPresetBtn.disabled = true; delPresetBtn.style.opacity = '0.4';
+  });
+
+  // Disable DELETE until a user preset is selected
+  delPresetBtn.disabled = true; delPresetBtn.style.opacity = '0.4';
+
+  // ── Calibrate mode toggle ──
+  let calibrating = false;
+  function setCalibrate(on) {
+    calibrating = on;
+    document.body.classList.toggle('calibrating', on);
+    calBtn.textContent = on ? '✓ DONE' : '⌂ CALIBRATE';
+    calBtn.classList.toggle('primary', on);
+    // Show/hide all calibrate-only controls
+    document.querySelectorAll('.cal-only').forEach(el => {
+      el.style.display = on ? '' : 'none';
+    });
+    if (!on) saveDst();
+  }
+  calBtn.addEventListener('click', () => setCalibrate(!calibrating));
+  resetBtn.addEventListener('click', () => {
+    dst = defaultDst();
+    applyTransform();
+    saveDst();
+    presetSel.value = '';
+  });
+
+  // ── Drag handling ──
+  // pointermove + pointerup go on the WINDOW (not the corner) so a fast
+  // drag that briefly leaves the small handle still continues smoothly.
+  let dragIdx = -1, dragOffX = 0, dragOffY = 0;
+  function onPointerDown(e) {
+    if (!calibrating) return;
+    const i = parseInt(e.currentTarget.dataset.i, 10);
+    if (isNaN(i)) return;
+    dragIdx = i;
+    e.currentTarget.classList.add('active');
+    dragOffX = e.clientX - dst[i].x;
+    dragOffY = e.clientY - dst[i].y;
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  window.addEventListener('pointermove', (e) => {
+    if (dragIdx < 0) return;
+    dst[dragIdx].x = e.clientX - dragOffX;
+    dst[dragIdx].y = e.clientY - dragOffY;
+    applyTransform();
+    e.preventDefault();
+  });
+  window.addEventListener('pointerup', (e) => {
+    if (dragIdx < 0) return;
+    corners[dragIdx].classList.remove('active');
+    dragIdx = -1;
+    saveDst();
+  });
+  corners.forEach(el => {
+    el.addEventListener('pointerdown', onPointerDown);
+  });
+
+  // Resize → keep corners proportional to viewport
+  let lastW = window.innerWidth, lastH = window.innerHeight;
+  window.addEventListener('resize', () => {
+    const nw = window.innerWidth, nh = window.innerHeight;
+    if (lastW > 0 && lastH > 0) {
+      const sx = nw / lastW, sy = nh / lastH;
+      for (const p of dst) { p.x *= sx; p.y *= sy; }
+    }
+    lastW = nw; lastH = nh;
+    applyTransform();
+  });
+
+  // ── Scale ruler — match projected squares to physical grid paper ──
+  // The two markers live in SCREEN space; at measure time we inverse-map
+  // them through the current keystone homography into warp-local space,
+  // where the game grid is defined.  That tells us how many squares span
+  // the marked distance, hence the real-world size of one square.  APPLY
+  // then scales the keystone quad (dst) about its centroid so one square
+  // becomes the requested physical size — merging "scale" into the same
+  // calibration data the corners edit.
+  const scaleBtn   = document.getElementById('scale-btn');
+  const markA      = document.getElementById('r-a');
+  const markB      = document.getElementById('r-b');
+  const rulerLine  = document.getElementById('ruler-seg');
+  const ticksG     = document.getElementById('ruler-ticks');
+  const badge      = document.getElementById('ruler-badge');
+  const inchesIn   = document.getElementById('ruler-inches');
+  const targetIn   = document.getElementById('ruler-target');
+  const applyBtn   = document.getElementById('ruler-apply');
+  const readout    = document.getElementById('ruler-readout');
+  // Marker positions in screen (client) px.
+  let posA = null, posB = null;
+
+  function screenToWarp(clientX, clientY) {
+    if (!curT) return { x: 0, y: 0 };
+    const sx = clientX - curStageLeft, sy = clientY - curStageTop;
+    const v = mmv(adj(curT), [sx, sy, 1]);
+    if (!v[2]) return { x: 0, y: 0 };
+    return { x: v[0] / v[2], y: v[1] / v[2] };
+  }
+  // Forward map: warp-local point → screen (client) px.  Used to place the
+  // per-square tick marks exactly on the projected grid lines.
+  function warpToScreen(wx, wy) {
+    if (!curT) return { x: 0, y: 0 };
+    const v = mmv(curT, [wx, wy, 1]);
+    if (!v[2]) return { x: 0, y: 0 };
+    return { x: v[0] / v[2] + curStageLeft, y: v[1] / v[2] + curStageTop };
+  }
+
+  // Warp-local px occupied by one game square (independent of gridOverlayScale:
+  // the canvas always shows exactly "cols" squares across its contained width).
+  function squareWarpPx() {
+    const op = window.opener;
+    const cols = Number.isFinite(window.__cols) ? window.__cols
+               : (op && Number.isFinite(op.cols)) ? op.cols : 20;
+    const rows = Number.isFinite(window.__rows) ? window.__rows
+               : (op && Number.isFinite(op.rows)) ? op.rows : 20;
+    const warpW = warp.offsetWidth, warpH = warp.offsetHeight;
+    const aspect = cols / rows;                 // intrinsic = (cols*s)/(rows*s)
+    const dispW = Math.min(warpW, warpH * aspect); // object-fit:contain width
+    return { sq: dispW / cols, cols, rows };
+  }
+
+  // Returns {squares, inchPerSquare} for the current marker positions, or null.
+  function measure() {
+    if (!posA || !posB) return null;
+    const a = screenToWarp(posA.x, posA.y);
+    const b = screenToWarp(posB.x, posB.y);
+    const Lw = Math.hypot(b.x - a.x, b.y - a.y);
+    const { sq } = squareWarpPx();
+    if (!sq || !Lw) return null;
+    const squares = Lw / sq;
+    const inches = parseFloat(inchesIn.value);
+    if (!(inches > 0) || !(squares > 0)) return { squares, inchPerSquare: null };
+    return { squares, inchPerSquare: inches / squares };
+  }
+
+  // Lay tick marks across the A↔B line, one at every whole projected grid
+  // line it crosses, so the user can literally see how many squares the span
+  // covers and whether the dots are sitting on real grid intersections.
+  function drawTicks(a, b, sq) {
+    ticksG.innerHTML = '';
+    const Lw = Math.hypot(b.x - a.x, b.y - a.y);
+    if (!sq || !Lw) return;
+    const n = Math.min(Math.floor(Lw / sq), 200);   // cap for sanity
+    const ux = (b.x - a.x) / Lw, uy = (b.y - a.y) / Lw;   // warp-local unit dir
+    // Perpendicular direction in SCREEN space (for the tick stroke).
+    const sA = warpToScreen(a.x, a.y), sB = warpToScreen(b.x, b.y);
+    const dxs = sB.x - sA.x, dys = sB.y - sA.y;
+    const Ls = Math.hypot(dxs, dys) || 1;
+    const px = -dys / Ls, py = dxs / Ls;             // screen perpendicular
+    for (let k = 1; k <= n; k++) {
+      const p = warpToScreen(a.x + ux * sq * k, a.y + uy * sq * k);
+      const half = (k % 5 === 0) ? 11 : 7;           // every 5th tick longer
+      const ln = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      ln.setAttribute('x1', p.x - px * half); ln.setAttribute('y1', p.y - py * half);
+      ln.setAttribute('x2', p.x + px * half); ln.setAttribute('y2', p.y + py * half);
+      ticksG.appendChild(ln);
+    }
+  }
+
+  function refreshRuler() {
+    if (posA) { markA.style.left = posA.x + 'px'; markA.style.top = posA.y + 'px'; }
+    if (posB) { markB.style.left = posB.x + 'px'; markB.style.top = posB.y + 'px'; }
+    if (posA && posB) {
+      rulerLine.setAttribute('x1', posA.x); rulerLine.setAttribute('y1', posA.y);
+      rulerLine.setAttribute('x2', posB.x); rulerLine.setAttribute('y2', posB.y);
+    }
+    const m = measure();
+    if (!m) { badge.classList.remove('on'); return; }
+    const target = parseFloat(targetIn.value) || 1;
+
+    // Ticks on the line + floating badge at the midpoint.
+    const a = screenToWarp(posA.x, posA.y);
+    const b = screenToWarp(posB.x, posB.y);
+    const { sq } = squareWarpPx();
+    drawTicks(a, b, sq);
+    badge.style.left = ((posA.x + posB.x) / 2) + 'px';
+    badge.style.top  = ((posA.y + posB.y) / 2 - 26) + 'px';
+    badge.classList.add('on');
+
+    if (m.inchPerSquare == null) {
+      badge.textContent = m.squares.toFixed(1) + ' squares';
+      readout.innerHTML = 'The line crosses <b>' + m.squares.toFixed(2) +
+        '</b> projected squares. Enter the real A↔B distance above to compute the scale.';
+    } else {
+      const k = target / m.inchPerSquare;
+      const off = Math.abs(k - 1) < 0.02;
+      badge.textContent = m.squares.toFixed(1) + ' squares · now 1 sq ≈ ' +
+        m.inchPerSquare.toFixed(2) + ' in';
+      readout.innerHTML =
+        'The line crosses <b>' + m.squares.toFixed(2) + '</b> squares over <b>' +
+        (parseFloat(inchesIn.value)) + ' in</b>.<br>' +
+        'Right now <b>1 square ≈ ' + m.inchPerSquare.toFixed(2) + ' in</b>.<br>' +
+        (off ? '<b style="color:#7CFC9A">✓ Already matched — no resize needed.</b>'
+             : 'APPLY resizes the projection ×<b>' + k.toFixed(3) +
+               '</b> so <b>1 square = ' + target + ' in</b>.');
+    }
+  }
+
+  function placeDefaultMarkers() {
+    const w = window.innerWidth, h = window.innerHeight;
+    posA = { x: Math.round(w * 0.44), y: Math.round(h * 0.5) };
+    posB = { x: Math.round(w * 0.56), y: Math.round(h * 0.5) };
+  }
+
+  // ── Scale-mode toggle (mutually exclusive with calibrate mode) ──
+  let scaling = false;
+  function setScaling(on) {
+    if (on && calibrating) setCalibrate(false);
+    scaling = on;
+    document.body.classList.toggle('scaling', on);
+    scaleBtn.textContent = on ? '✓ DONE' : '📏 SCALE';
+    scaleBtn.classList.toggle('primary', on);
+    if (on) {
+      if (!posA || !posB) placeDefaultMarkers();
+      refreshRuler();
+    }
+  }
+  scaleBtn.addEventListener('click', () => setScaling(!scaling));
+  // Entering calibrate should leave scale mode (keep the two exclusive).
+  const _origSetCalibrate = setCalibrate;
+  setCalibrate = function(on) {
+    if (on && scaling) setScaling(false);
+    _origSetCalibrate(on);
+  };
+
+  inchesIn.addEventListener('input', refreshRuler);
+  targetIn.addEventListener('input', refreshRuler);
+
+  // ── Marker drag (screen space) ──
+  let dragMark = null, mOffX = 0, mOffY = 0;
+  function markDown(e) {
+    if (!scaling) return;
+    dragMark = e.currentTarget === markA ? posA : posB;
+    e.currentTarget.classList.add('active');
+    mOffX = e.clientX - dragMark.x;
+    mOffY = e.clientY - dragMark.y;
+    e.preventDefault(); e.stopPropagation();
+  }
+  markA.addEventListener('pointerdown', markDown);
+  markB.addEventListener('pointerdown', markDown);
+  window.addEventListener('pointermove', (e) => {
+    if (!dragMark) return;
+    dragMark.x = e.clientX - mOffX;
+    dragMark.y = e.clientY - mOffY;
+    refreshRuler();
+    e.preventDefault();
+  });
+  window.addEventListener('pointerup', () => {
+    if (!dragMark) return;
+    markA.classList.remove('active'); markB.classList.remove('active');
+    dragMark = null;
+  });
+
+  applyBtn.addEventListener('click', () => {
+    const m = measure();
+    if (!m || m.inchPerSquare == null) {
+      readout.innerHTML = '⚠ Place both markers and enter a valid distance first.';
+      return;
+    }
+    const target = parseFloat(targetIn.value) || 1;
+    let k = target / m.inchPerSquare;
+    k = Math.max(0.2, Math.min(5, k));   // guard against runaway resizes
+    // Scale the keystone quad about its centroid.
+    const cx = (dst[0].x + dst[1].x + dst[2].x + dst[3].x) / 4;
+    const cy = (dst[0].y + dst[1].y + dst[2].y + dst[3].y) / 4;
+    for (const p of dst) {
+      p.x = cx + (p.x - cx) * k;
+      p.y = cy + (p.y - cy) * k;
+    }
+    applyTransform();
+    saveDst();
+    presetSel.value = '';
+    // Re-measure against the new quad to confirm convergence.
+    const after = measure();
+    const got = after && after.inchPerSquare != null
+      ? after.inchPerSquare.toFixed(2) : '?';
+    readout.innerHTML = '✓ Resized ×<b>' + k.toFixed(3) +
+      '</b>. 1 square now ≈ <b>' + got + ' in</b>.' +
+      (k === 0.2 || k === 5 ? '<br>⚠ Hit the resize limit — re-measure and APPLY again.' : '');
+  });
+
+  // Keep markers proportional on viewport resize (mirrors the corner logic).
+  let _rulerLastW = window.innerWidth, _rulerLastH = window.innerHeight;
+  window.addEventListener('resize', () => {
+    const nw = window.innerWidth, nh = window.innerHeight;
+    if (posA && _rulerLastW > 0 && _rulerLastH > 0) {
+      const sx = nw / _rulerLastW, sy = nh / _rulerLastH;
+      posA.x *= sx; posA.y *= sy; posB.x *= sx; posB.y *= sy;
+    }
+    _rulerLastW = nw; _rulerLastH = nh;
+    refreshRuler();
+  });
+
+  // Reapply after a tick (DOM measurement)
+  setTimeout(applyTransform, 0);
+</script>
 </body></html>`);
   projWindow.document.close();
   projWindow.__projCanvas = projWindow.document.getElementById('proj-canvas');
@@ -6384,6 +10103,7 @@ function getSaveData() {
     projBounds, initiative, initCurrent, roundNum,
     walls, labels, lights, presets,
     covers: {...covers},
+    drawings: drawings.map(d => ({ color: d.color, width: d.width, pts: d.pts.map(p => ({ ...p })) })),
     traps: {...traps},
     ambientLight,
     darknessZones: darknessZones.map(dz => ({...dz, cells: [...dz.cells]})),
@@ -6392,6 +10112,7 @@ function getSaveData() {
     lavaCellFlow:  {...lavaCellFlow},
     bloodCellFlow: {...bloodCellFlow},
     lightningCellFlow: {...lightningCellFlow},
+    debrisCellFlow:    {...debrisCellFlow},
     terrainAlpha:  {...terrainAlpha},
   };
 }
@@ -6448,9 +10169,11 @@ function loadGame(json) {
     lavaCellFlow  = s.lavaCellFlow  ? {...s.lavaCellFlow}  : {};
     bloodCellFlow = s.bloodCellFlow ? {...s.bloodCellFlow} : {};
     lightningCellFlow = s.lightningCellFlow ? {...s.lightningCellFlow} : {};
+    debrisCellFlow    = s.debrisCellFlow    ? {...s.debrisCellFlow}    : {};
     if (s.terrainAlpha) { for (const k in terrainAlpha) delete terrainAlpha[k]; Object.assign(terrainAlpha, s.terrainAlpha); }
     _syncTerrainAlphaUI(currentEffect);
     covers=s.covers||{};
+    drawings=(s.drawings||[]).map(d=>({color:d.color,width:d.width,pts:(d.pts||[]).map(p=>({...p}))}));
     traps=s.traps||{};
     renderLightGroupManager();
     if(s.presets) presets=s.presets;
@@ -6471,36 +10194,156 @@ function autoSave() {
   } catch(e) {}
 }
 
-setInterval(autoSave, 60000);
-
-// ── Scenes ────────────────────────────────────────────────────
-function saveScene(name) {
-  const idx = scenes.findIndex(s => s.name === name);
-  if (idx >= 0) scenes[idx].data = getSaveData();
-  else scenes.push({ name, data: getSaveData() });
-  try { localStorage.setItem('dnd-scenes', JSON.stringify(scenes)); } catch(e) {}
-  renderScenes();
+let _autosaveTimer = setInterval(autoSave, 60000);
+function setAutosaveInterval(ms) {
+  if (_autosaveTimer) { clearInterval(_autosaveTimer); _autosaveTimer = null; }
+  if (ms > 0) _autosaveTimer = setInterval(autoSave, ms);
 }
 
-function loadScene(idx) {
+// ── Scenes (in-session switcher with active-scene tracking) ──────────────────
+let activeSceneIdx = -1;
+function _persistScenes() { try { localStorage.setItem('dnd-scenes', JSON.stringify(scenes)); } catch (e) {} }
+// Grab a small JPEG snapshot of the current board for the scene's thumbnail.
+function _captureSceneThumb() {
+  try {
+    const tw = 160, th = Math.max(60, Math.round(tw * (canvas.height / canvas.width)) || 100);
+    const c = document.createElement('canvas'); c.width = tw; c.height = th;
+    c.getContext('2d').drawImage(canvas, 0, 0, tw, th);
+    return c.toDataURL('image/jpeg', 0.5);
+  } catch (e) { return null; }
+}
+function saveScene(name) {
+  let idx = scenes.findIndex(s => s.name === name);
+  const thumb = _captureSceneThumb();
+  if (idx >= 0) { scenes[idx].data = getSaveData(); scenes[idx].thumb = thumb; }
+  else { scenes.push({ name, data: getSaveData(), thumb }); idx = scenes.length - 1; }
+  activeSceneIdx = idx;          // newly-saved / updated scene becomes active
+  _persistScenes(); renderScenes();
+}
+// Save the live board into whichever scene is active (mid-session edits persist).
+function updateActiveScene() {
+  if (activeSceneIdx < 0 || activeSceneIdx >= scenes.length) return false;
+  scenes[activeSceneIdx].data = getSaveData();
+  scenes[activeSceneIdx].thumb = _captureSceneThumb();
+  _persistScenes(); return true;
+}
+// Smoothly switch: stash current scene's edits, then load the target.
+function switchToScene(idx, saveCurrent) {
+  if (idx < 0 || idx >= scenes.length) return;
+  if (saveCurrent !== false) updateActiveScene();
+  activeSceneIdx = idx;
   loadGame(JSON.stringify(scenes[idx].data));
+  _triggerSceneAudio(scenes[idx]);
+  renderScenes();
+}
+function loadScene(idx) { switchToScene(idx); }   // back-compat
+// Fire the audio bound to a scene (soundboard soundscape and/or music playlist).
+function _triggerSceneAudio(sc) {
+  const a = sc && sc.audio; if (!a) return;
+  if (a.ssId != null && window.ArcaneSampler && window.ArcaneSampler.playSoundscapeById) {
+    if (!window.ArcaneSampler.playSoundscapeById(a.ssId) && a.ssName && window.ArcaneSampler.listSoundscapes) {
+      const m = window.ArcaneSampler.listSoundscapes().find(x => x.name === a.ssName);
+      if (m) window.ArcaneSampler.playSoundscapeById(m.id);
+    }
+  } else if (a.ssStop && window.ArcaneSampler && window.ArcaneSampler.stopAllSounds) {
+    window.ArcaneSampler.stopAllSounds();
+  }
+  if (a.plId && window.ArcaneMusicAPI && window.ArcaneMusicAPI.playPlaylistById) {
+    if (!window.ArcaneMusicAPI.playPlaylistById(a.plId) && a.plName && window.ArcaneMusicAPI.listPlaylists) {
+      const m = window.ArcaneMusicAPI.listPlaylists().find(x => x.name === a.plName);
+      if (m) window.ArcaneMusicAPI.playPlaylistById(m.id);
+    }
+  } else if (a.plStop && window.ArcaneMusicAPI && window.ArcaneMusicAPI.stopPlaylist) {
+    window.ArcaneMusicAPI.stopPlaylist();
+  }
+}
+// Popover to bind a soundboard soundscape and/or a music playlist to a scene.
+let _sceneAudioEl = null;
+function _sceneAudioPicker(sc, anchor) {
+  if (_sceneAudioEl) { _sceneAudioEl.remove(); _sceneAudioEl = null; }
+  sc.audio = sc.audio || {};
+  const soundscapes = (window.ArcaneSampler && window.ArcaneSampler.listSoundscapes) ? window.ArcaneSampler.listSoundscapes() : null;
+  const playlists   = (window.ArcaneMusicAPI && window.ArcaneMusicAPI.listPlaylists) ? window.ArcaneMusicAPI.listPlaylists() : null;
+  const pop = document.createElement('div'); pop.className = 'scene-audio-pop';
+  function opt(sel, label, dim) { return `<div class="sap-opt${sel ? ' sel' : ''}${dim ? ' dim' : ''}" data-act>${sel ? '● ' : '○ '}${_escapeHtml(label)}</div>`; }
+  function build() {
+    const a = sc.audio;
+    let h = `<div class="sap-title">🎵 Audio for “${_escapeHtml(sc.name || 'Scene')}”</div>`;
+    // Soundscapes
+    h += `<div class="sap-sec">Soundboard soundscape</div><div class="sap-list" data-grp="ss">`;
+    h += opt(!a.ssId && !a.ssStop, 'None');
+    h += opt(!!a.ssStop, '⏹ Stop all sounds');
+    if (soundscapes && soundscapes.length) soundscapes.forEach(s => { h += `<div class="sap-opt${a.ssId === s.id ? ' sel' : ''}" data-ss="${s.id}" data-name="${_escapeHtml(s.name)}">${a.ssId === s.id ? '● ' : '○ '}${_escapeHtml(s.name)}</div>`; });
+    else h += `<div class="sap-empty">No saved soundscapes. Save one in the Audio panel.</div>`;
+    h += `</div>`;
+    // Playlists
+    h += `<div class="sap-sec">Music playlist</div><div class="sap-list" data-grp="pl">`;
+    h += opt(!a.plId && !a.plStop, 'None');
+    h += opt(!!a.plStop, '⏹ Stop music');
+    if (playlists && playlists.length) playlists.forEach(p => { h += `<div class="sap-opt${a.plId === p.id ? ' sel' : ''}" data-pl="${p.id}" data-name="${_escapeHtml(p.name)}">${a.plId === p.id ? '● ' : '○ '}${_escapeHtml(p.name)} <span class="sap-ct">${p.count}♪</span></div>`; });
+    else h += `<div class="sap-empty">No playlists. Make one in the Audio panel.</div>`;
+    h += `</div><div class="sap-note">Switching to this scene will trigger the selected audio.</div>`;
+    pop.innerHTML = h;
+    // None / Stop for soundscapes
+    const ssList = pop.querySelector('[data-grp="ss"]');
+    const ssOpts = ssList.querySelectorAll('.sap-opt');
+    ssOpts[0].addEventListener('click', () => { delete sc.audio.ssId; delete sc.audio.ssName; sc.audio.ssStop = false; commit(); });
+    ssOpts[1].addEventListener('click', () => { delete sc.audio.ssId; delete sc.audio.ssName; sc.audio.ssStop = true; commit(); });
+    ssList.querySelectorAll('[data-ss]').forEach(o => o.addEventListener('click', () => { sc.audio.ssId = parseInt(o.dataset.ss, 10); sc.audio.ssName = o.dataset.name; sc.audio.ssStop = false; commit(); }));
+    // None / Stop for playlists
+    const plList = pop.querySelector('[data-grp="pl"]');
+    const plOpts = plList.querySelectorAll('.sap-opt');
+    plOpts[0].addEventListener('click', () => { delete sc.audio.plId; delete sc.audio.plName; sc.audio.plStop = false; commit(); });
+    plOpts[1].addEventListener('click', () => { delete sc.audio.plId; delete sc.audio.plName; sc.audio.plStop = true; commit(); });
+    plList.querySelectorAll('[data-pl]').forEach(o => o.addEventListener('click', () => { sc.audio.plId = o.dataset.pl; sc.audio.plName = o.dataset.name; sc.audio.plStop = false; commit(); }));
+  }
+  function commit() { _persistScenes(); renderScenes(); build(); }
+  build();
+  document.body.appendChild(pop); _sceneAudioEl = pop;
+  const r = anchor.getBoundingClientRect();
+  pop.style.left = Math.min(window.innerWidth - pop.offsetWidth - 8, Math.max(8, r.left - 60)) + 'px';
+  pop.style.top = Math.min(window.innerHeight - pop.offsetHeight - 8, r.bottom + 4) + 'px';
+  const close = (e) => { if (_sceneAudioEl && !_sceneAudioEl.contains(e.target) && e.target !== anchor) { _sceneAudioEl.remove(); _sceneAudioEl = null; document.removeEventListener('pointerdown', close, true); } };
+  setTimeout(() => document.addEventListener('pointerdown', close, true), 0);
 }
 
 function renderScenes() {
-  const list = document.getElementById('scene-list'); list.innerHTML = '';
-  if (!scenes.length) {
-    const e = document.createElement('div'); e.className = 'scene-empty';
-    e.textContent = 'No scenes saved'; list.appendChild(e); return;
+  const list = document.getElementById('scene-list');
+  if (list) {
+    list.innerHTML = '';
+    if (!scenes.length) {
+      const e = document.createElement('div'); e.className = 'scene-empty';
+      e.textContent = 'No scenes saved'; list.appendChild(e);
+    } else scenes.forEach((sc, i) => {
+      const row = document.createElement('div'); row.className = 'scene-entry' + (i === activeSceneIdx ? ' active' : '');
+      const th = document.createElement('div'); th.className = 'scene-thumb' + (sc.thumb ? '' : ' empty');
+      if (sc.thumb) th.style.backgroundImage = `url(${sc.thumb})`; else th.textContent = '🗺';
+      if (i < 9) { const kb = document.createElement('span'); kb.className = 'scene-hotkey'; kb.textContent = '⌥' + (i + 1); th.appendChild(kb); }
+      th.title = (i === activeSceneIdx ? 'Active scene' : 'Switch to this scene') + (i < 9 ? ` (Alt+${i + 1})` : '');
+      th.addEventListener('click', () => { if (i !== activeSceneIdx) switchToScene(i); });
+      const nm = document.createElement('span'); nm.className = 'scene-name'; nm.textContent = (i === activeSceneIdx ? '▸ ' : '') + sc.name;
+      const lb = document.createElement('button'); lb.className = 'scene-load-btn'; lb.textContent = i === activeSceneIdx ? '⬆ Update' : '▶ Go';
+      lb.addEventListener('click', () => { if (i === activeSceneIdx) { updateActiveScene(); renderScenes(); } else switchToScene(i); });
+      const au = document.createElement('button'); au.className = 'scene-audio-btn' + ((sc.audio && (sc.audio.ssId != null || sc.audio.plId || sc.audio.ssStop || sc.audio.plStop)) ? ' on' : '');
+      au.textContent = '🎵'; au.title = 'Bind audio to this scene';
+      au.addEventListener('click', (e) => { e.stopPropagation(); _sceneAudioPicker(sc, au); });
+      const db = document.createElement('button'); db.className = 'scene-del-btn'; db.textContent = '✕';
+      db.addEventListener('click', () => { scenes.splice(i, 1); if (activeSceneIdx === i) activeSceneIdx = -1; else if (activeSceneIdx > i) activeSceneIdx--; _persistScenes(); renderScenes(); });
+      row.append(th, nm, lb, au, db); list.appendChild(row);
+    });
   }
-  scenes.forEach((sc, i) => {
-    const row = document.createElement('div'); row.className = 'scene-entry';
-    const nm = document.createElement('span'); nm.className = 'scene-name'; nm.textContent = sc.name;
-    const lb = document.createElement('button'); lb.className = 'scene-load-btn'; lb.textContent = '▶ Load';
-    lb.addEventListener('click', () => loadScene(i));
-    const db = document.createElement('button'); db.className = 'scene-del-btn'; db.textContent = '✕';
-    db.addEventListener('click', () => { scenes.splice(i, 1); try{localStorage.setItem('dnd-scenes',JSON.stringify(scenes));}catch(e){} renderScenes(); });
-    row.append(nm, lb, db); list.appendChild(row);
-  });
+  _refreshSceneQuick();
+}
+// Compact toolbar switcher (dropdown + prev/next + update).
+function _refreshSceneQuick() {
+  const sel = document.getElementById('scene-quick'); if (!sel) return;
+  sel.innerHTML = '';
+  if (!scenes.length) { const o = document.createElement('option'); o.textContent = '— no scenes —'; o.value = '-1'; sel.appendChild(o); }
+  else scenes.forEach((sc, i) => { const o = document.createElement('option'); o.value = i; o.textContent = sc.name; sel.appendChild(o); });
+  sel.value = String(activeSceneIdx);
+  const prev = document.getElementById('scene-prev'), next = document.getElementById('scene-next');
+  if (prev) prev.disabled = !(activeSceneIdx > 0);
+  if (next) next.disabled = !(activeSceneIdx >= 0 && activeSceneIdx < scenes.length - 1);
 }
 
 function loadScenesFromStorage() {
@@ -6587,6 +10430,38 @@ document.getElementById('proj-open-btn').addEventListener('click', () => {
   openProjectionWindow();
 });
 
+// Copy the projector URL to clipboard.  The user opens Safari, pastes,
+// and drags that window to the projector — bypasses the WKWebView
+// popup blocker entirely.  Sync happens via the local server (see
+// __projInstallSyncBus).
+document.getElementById('proj-copy-url-btn').addEventListener('click', async () => {
+  const url = 'http://localhost:8765/?projector=1&t=' + Date.now();
+  const fb = document.getElementById('proj-copy-feedback');
+  try {
+    await navigator.clipboard.writeText(url);
+    if (fb) {
+      fb.textContent = '✓ Copied — paste into any browser: ' + url;
+      fb.style.display = 'block';
+      fb.style.color = '#9be09b';
+    }
+  } catch (e) {
+    // Fallback: select the URL in a temporary input so the user can manually copy
+    const inp = document.createElement('input');
+    inp.value = url;
+    document.body.appendChild(inp);
+    inp.select();
+    try { document.execCommand('copy'); } catch (_) {}
+    document.body.removeChild(inp);
+    if (fb) {
+      fb.textContent = 'Copy this URL and paste into any browser: ' + url;
+      fb.style.display = 'block';
+      fb.style.color = '#e0c898';
+    }
+  }
+  // Make sure the sync bus is running so the projector view receives updates
+  if (typeof window.__projInstallSyncBus === 'function') window.__projInstallSyncBus();
+});
+
 document.getElementById('proj-cancel-btn').addEventListener('click', () => {
   document.getElementById('projector-modal').style.display = 'none';
 });
@@ -6613,17 +10488,23 @@ const TOOL_INFO = {
   'inspect-btn':      { title: '🔍 Inspect',      desc: 'Hover over cells to see status effects and fog state. Hover over toolbar buttons to see what they do. (You\'re using it right now!)' },
   'dm-ref-btn':       { title: '👁️ DM Reference', desc: 'Opens a floating fog-free view of the full map for the DM only. Drag it by its header to reposition. Never mirrored to the projector.' },
   'project-btn':      { title: '🖥️ Project',      desc: 'Opens a separate window to mirror the battle grid on a projector. Set the projector as an extended display, drag the window to it, then click FULLSCREEN.' },
-  'map-btn':          { title: '🗺️ Map',           desc: 'Import a dungeon map image from your computer as the background. The image scales to fill the entire grid.' },
+  'map-btn':          { title: '🗺️ Map',           desc: 'Opens an in-app file browser to pick a map image from your computer (or drag an image onto the window). It scales to fill the grid and offers grid auto-detection.' },
   'map-clear-btn':    { title: '✕ Clear Map',     desc: 'Remove the background map image and return to a plain dark grid.' },
   'fog-btn':          { title: '🌫️ Fog of War',   desc: '1st click: brush mode — drag to reveal tiles, Shift+drag to hide. 2nd click: keep fog visible but paint effects normally. 3rd click: turn fog off entirely.' },
   'fog-cover-btn':    { title: '⬛ Cover',         desc: 'Cover the entire map with fog of war instantly.' },
   'fog-uncover-btn':  { title: '⬜ Uncover',       desc: 'Remove all fog and reveal the full map instantly.' },
-  'grid-overlay-btn': { title: '📏 1" Overlay',   desc: 'Draw a calibrated 1-inch physical grid over the map. Adjust the SCALE slider until the lines match your table surface. This also sets the effect tile size.' },
   'clear-btn':        { title: 'CLR Clear',        desc: 'Remove all status effects and tokens from the grid. This action can be undone with Ctrl+Z.' },
   'radius-input':     { title: '⭕ Radius',        desc: 'Set the size (in grid squares) for Circle and Square effect stamps. Also controls fog brush size.' },
-  'col-slider':       { title: 'W Width',          desc: 'Adjust the number of grid columns. Changing this resets the grid.' },
-  'row-slider':       { title: 'H Height',         desc: 'Adjust the number of grid rows. Changing this resets the grid.' },
-  'wall-btn':         { title: '🧱 Wall',          desc: 'Draw walls — click and drag to place a line segment. Shift-drag to sweep-erase nearby walls. Walls are rendered on the projection.' },
+  'col-slider':       { title: 'W Width',          desc: 'Set the number of grid columns. Non-destructive — tokens/terrain that still fit are kept. Or use 📐 BOARD for finer control + presets.' },
+  'row-slider':       { title: 'H Height',         desc: 'Set the number of grid rows. Non-destructive — content that still fits is kept. See 📐 BOARD for steppers, scale, and calibration.' },
+  'board-btn':        { title: '📐 Board & Scale',  desc: 'Resize the board by square count (non-destructive), set the projector square size in px/inch, toggle grid display (Off / A1 coords / 1″ / Hex), and run the Calibrate-to-table wizard.' },
+  'draw-btn':         { title: '✏️ Freehand Draw',  desc: 'Annotate the map by hand — drag to draw with the chosen pen color and width. Shift-drag erases the nearest stroke; Clear wipes all marks. Strokes save with the board and sync to players. Esc exits.' },
+  'wall-btn':         { title: '🧱 Walls',         desc: 'Drag to draw a wall. Click WALL again to cycle type: Stone → Wood → Metal → Door → Window → Secret → Off. Click a door to open/close it. Shift-drag to erase. Esc exits. Windows & open doors don\'t block sight; Secret is DM-only.' },
+  'cover-btn':        { title: '🛡️ Cover Analyzer', desc: 'Click a token to set the SHOOTER; every other token shows its cover (½ +2 / ¾ +5 / FULL) computed from walls, trees and rocks. Hover a token to see the sight-lines. Click empty or Esc to clear.' },
+  'dynvis-btn':       { title: '🌓 Dynamic LoS',     desc: 'Toggle dynamic line-of-sight: everything your tokens can\'t actually see (blocked by walls, beyond their Sight radius) is darkened, updating live as tokens move and doors open. Give tokens a Sight value in their editor.' },
+  'ruler-btn':        { title: '📏 Measure',        desc: 'Click to drop points and measure bent, multi-segment paths. Each leg shows its distance plus a running total. Double-click to finish, right-click or Esc to clear. 1 square = 5 ft.' },
+  'pill-tree':        { title: '🌳 Tree',           desc: 'Place top-down 8-bit trees. Click TREE again to cycle Oak / Pine / Dead. Adjacent oaks merge into one natural forest canopy. Sits on top of terrain/maps.' },
+  'pill-rock':        { title: '🪨 Rock',           desc: 'Place top-down 8-bit rocks. Click ROCK again to toggle Rocks / Boulder. Adjacent rocks merge — a 3×3 of boulders becomes one giant rock.' },
   'label-btn':        { title: '🏷️ Label',         desc: 'Place text labels on the map — click any cell to type a name. Click an existing label to edit or delete it.' },
   'save-btn':         { title: '💾 Save',           desc: 'Export the full battle state (grid, tokens, fog, walls, labels, initiative) to a JSON file on your computer.' },
   'load-btn':         { title: '📂 Load',           desc: 'Import a previously saved battle-grid.json file to restore a session.' },
@@ -6677,7 +10558,10 @@ function exitDrawModes(){
   losMode=false; losStart=null; trapMode=false; teleportMode=false; teleportToken=null;
   wallActive=false; wallStart=null; wallErasing=false;
   darknessMode=false; _darknessDrag=null;
-  ['wall-btn','label-btn','light-btn','los-btn','trap-btn','teleport-btn'].forEach(id=>{
+  coverMode=false; coverAttacker=null;
+  penMode=false; _penStroke=null;
+  const dpan=document.getElementById('draw-panel'); if(dpan) dpan.style.display='none';
+  ['wall-btn','label-btn','light-btn','los-btn','trap-btn','teleport-btn','cover-btn','draw-btn'].forEach(id=>{
     const el=document.getElementById(id); if(el) el.classList.remove('active');
   });
   const db=document.getElementById('darkness-mode-btn'); if(db) db.classList.remove('active');
@@ -6685,9 +10569,30 @@ function exitDrawModes(){
 }
 
 document.getElementById('wall-btn').addEventListener('click',()=>{
-  const on=!wallMode; exitDrawModes(); if(on){wallMode=true;document.getElementById('wall-btn').classList.add('active');}
-  updateHint();
+  // In wall mode: each click cycles type, and cycling past the last type turns
+  // the tool OFF (so the button can disable wall mode). Off → enters at stone.
+  if(wallMode){
+    const i=WALL_TYPES.findIndex(t=>t.type===currentWallType);
+    if(i>=WALL_TYPES.length-1){ _exitWallMode(); return; }
+    currentWallType=WALL_TYPES[i+1].type;
+    _updateWallBtnLabel(); updateHint(); return;
+  }
+  exitDrawModes(); wallMode=true; currentWallType=WALL_TYPES[0].type;
+  document.getElementById('wall-btn').classList.add('active');
+  _updateWallBtnLabel(); updateHint();
 });
+function _exitWallMode(){
+  wallMode=false; wallActive=false; wallStart=null;
+  document.getElementById('wall-btn').classList.remove('active');
+  canvas.style.cursor='none';
+  _updateWallBtnLabel(); updateHint();
+}
+function _updateWallBtnLabel(){
+  const b=document.getElementById('wall-btn'); if(!b) return;
+  const v=WALL_TYPES.find(t=>t.type===currentWallType)||WALL_TYPES[0];
+  b.innerHTML=`<span class="icon">${v.icon}</span>${v.label}`;
+}
+_updateWallBtnLabel();
 document.getElementById('label-btn').addEventListener('click',()=>{
   const on=!labelMode; exitDrawModes(); if(on){labelMode=true;document.getElementById('label-btn').classList.add('active');}
   updateHint();
@@ -7210,20 +11115,55 @@ document.getElementById('timer-reset').addEventListener('click',resetTimer);
 // ── Feature 5: Ruler ─────────────────────────────────────────
 document.getElementById('ruler-btn').addEventListener('click',()=>{
   rulerMode=!rulerMode;
-  rulerStart=null;
+  rulerStart=null; rulerPts=[]; rulerDone=false;
   canvas.style.cursor=rulerMode?'crosshair':'none';
   document.getElementById('ruler-btn').classList.toggle('active',rulerMode);
   updateHint();
+});
+// Double-click finishes the measured path; right-click clears it.
+canvas.addEventListener('dblclick',(e)=>{
+  if(!rulerMode) return;
+  e.preventDefault();
+  if(rulerPts.length>=2){ const a=rulerPts[rulerPts.length-1],b=rulerPts[rulerPts.length-2]; if(a.x===b.x&&a.y===b.y) rulerPts.pop(); }
+  rulerDone=true;
+});
+canvas.addEventListener('contextmenu',(e)=>{
+  if(!rulerMode) return;
+  e.preventDefault(); rulerPts=[]; rulerDone=false;
 });
 
 // ── Feature 9: Cover ─────────────────────────────────────────
 document.getElementById('cover-btn').addEventListener('click',()=>{
   coverMode=!coverMode;
+  if(!coverMode) coverAttacker=null;
   document.getElementById('cover-btn').classList.toggle('active',coverMode);
   canvas.style.cursor=coverMode?'crosshair':'none';
   updateHint();
 });
-
+{
+  const dv = document.getElementById('dynvis-btn');
+  if (dv) dv.addEventListener('click', () => {
+    losVisionMode = !losVisionMode;
+    if (losVisionMode) exploredCells.clear();   // start fresh exploration
+    dv.classList.toggle('active', losVisionMode);
+    if (window.__mpScheduleSync) window.__mpScheduleSync();
+  });
+}
+// ── DRAW (freehand) button ────────────────────────────────────
+(function(){
+  const db=document.getElementById('draw-btn'); if(!db) return;
+  db.addEventListener('click',()=>{
+    const on=!penMode; exitDrawModes();
+    if(on){ penMode=true; db.classList.add('active'); canvas.style.cursor='crosshair';
+      const p=document.getElementById('draw-panel'); if(p) p.style.display='flex'; }
+    updateHint();
+  });
+  const dc=document.getElementById('draw-color'); if(dc) dc.addEventListener('input',e=>{ penColor=e.target.value; });
+  const dw=document.getElementById('draw-width'); if(dw) dw.addEventListener('input',e=>{ penWidth=parseInt(e.target.value,10)||4; });
+  const dx=document.getElementById('draw-clear'); if(dx) dx.addEventListener('click',()=>{
+    if(drawings.length){ pushUndo(); drawings=[]; if(window.__mpScheduleSync)window.__mpScheduleSync(); }
+  });
+})();
 // ── LoS button ────────────────────────────────────────────────
 document.getElementById('los-btn').addEventListener('click',()=>{
   const on=!losMode; exitDrawModes();
@@ -7259,6 +11199,11 @@ document.getElementById('scene-save-btn').addEventListener('click',()=>{
   saveScene(name); document.getElementById('scene-name-in').value='';
 });
 document.getElementById('scene-name-in').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('scene-save-btn').click();});
+// Quick switcher
+document.getElementById('scene-quick').addEventListener('change',function(){ const i=parseInt(this.value); if(i>=0) switchToScene(i); });
+document.getElementById('scene-prev').addEventListener('click',()=>{ if(activeSceneIdx>0) switchToScene(activeSceneIdx-1); });
+document.getElementById('scene-next').addEventListener('click',()=>{ if(activeSceneIdx>=0&&activeSceneIdx<scenes.length-1) switchToScene(activeSceneIdx+1); });
+document.getElementById('scene-update').addEventListener('click',()=>{ if(updateActiveScene()){ renderScenes(); const b=document.getElementById('scene-update'); b.textContent='✓ Updated'; setTimeout(()=>b.textContent='⬆ Update',1000); } });
 
 // ── Feature 10: Undo history panel ───────────────────────────
 document.getElementById('undo-history-btn').addEventListener('click',()=>{
@@ -7306,6 +11251,208 @@ document.addEventListener('keydown', e => {
 });
 
 document.getElementById('fullscreen-btn').addEventListener('click', toggleFullscreen);
+
+// ══════════════════════════════════════════════════════════════════════
+// Keyboard shortcuts panel (with remappable effect-tool keys)
+// ══════════════════════════════════════════════════════════════════════
+(function () {
+  function _css() {
+    if (document.getElementById('keys-css')) return;
+    const st = document.createElement('style'); st.id = 'keys-css';
+    st.textContent = `
+    #keys-panel{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:13200}
+    #keys-panel.on{display:flex}
+    #keys-panel .kp-box{width:560px;max-width:92vw;max-height:82vh;background:#15151a;border:1px solid #34343c;border-radius:12px;display:flex;flex-direction:column;overflow:hidden;color:#e8e8ee;font:13px system-ui;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+    #keys-panel .kp-head{display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid #26262c;background:#1b1b22}
+    #keys-panel .kp-title{font-weight:700;color:var(--mp-accent,#9fd0ff)}
+    #keys-panel .kp-x{margin-left:auto;background:none;border:none;color:#9a9aa2;font-size:16px;cursor:pointer}
+    #keys-panel .kp-body{overflow:auto;padding:8px 14px 14px}
+    #keys-panel .kp-sec{font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:rgba(180,140,255,.7);margin:14px 0 6px}
+    #keys-panel .kp-row{display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+    #keys-panel .kp-label{flex:1;color:#dcdce4}
+    #keys-panel .kp-key{font:600 11px ui-monospace,Menlo,monospace;background:#23232b;border:1px solid #3a3a44;border-radius:5px;padding:3px 8px;color:#bfe0ff;white-space:nowrap}
+    #keys-panel .kp-key.bind{cursor:pointer}
+    #keys-panel .kp-key.bind:hover{border-color:var(--mp-accent,#7c6ff7);color:#fff}
+    #keys-panel .kp-key.listening{background:var(--mp-accent,#7c6ff7);color:#fff;border-color:#fff}
+    #keys-panel .kp-foot{display:flex;align-items:center;gap:10px;padding:10px 14px;border-top:1px solid #26262c;background:#1b1b22}
+    #keys-panel .kp-btn{background:rgba(120,80,220,.25);border:1px solid rgba(150,100,255,.35);border-radius:6px;color:#c8a8ff;font-size:11px;padding:5px 10px;cursor:pointer}
+    #keys-panel .kp-hint{font-size:11px;color:#80808a}`;
+    document.head.appendChild(st);
+  }
+  const mod = (navigator.platform || '').toLowerCase().includes('mac') ? '⌘' : 'Ctrl';
+  const STATIC = [
+    ['Editing', [
+      ['Undo', mod + '+Z'],
+      ['Redo', mod + '+Y  ·  ' + mod + '+⇧+Z'],
+    ]],
+    ['Modes & navigation', [
+      ['Exit current tool / clear ruler / close menus', 'Esc'],
+      ['Finish a measured path', 'Double-click'],
+      ['Clear the ruler', 'Right-click'],
+      ['Exit fullscreen', 'Esc'],
+    ]],
+    ['Mouse modifiers', [
+      ['Erase while in Wall / Draw mode', 'Shift + drag'],
+      ['Set flow direction (water / lava)', 'Shift + click'],
+      ['Erase nearest freehand stroke', 'Shift + drag (Draw)'],
+      ['Edit deck BPM (mixer jog)', 'Double-click jog'],
+    ]],
+  ];
+  let _listenFor = null;   // effect name currently being rebound
+
+  function _renderKeys() {
+    const body = document.getElementById('kp-body'); if (!body) return;
+    let html = '<div class="kp-sec">Effect tools — click a key to rebind</div>';
+    const order = Object.values(_EFFECT_KEYS_DEFAULT);
+    for (const eff of order) {
+      const key = Object.keys(_effectKeys).find(k => _effectKeys[k] === eff);
+      const lbl = _EFFECT_LABELS[eff] || (eff === 'erase' ? '🧽 Erase' : eff);
+      html += `<div class="kp-row"><span class="kp-label">${lbl}</span>` +
+        `<span class="kp-key bind${_listenFor===eff?' listening':''}" data-eff="${eff}">${_listenFor===eff?'press a key…':(key?key:'—')}</span></div>`;
+    }
+    for (const [sec, rows] of STATIC) {
+      html += `<div class="kp-sec">${sec}</div>`;
+      for (const [label, key] of rows) html += `<div class="kp-row"><span class="kp-label">${label}</span><span class="kp-key">${key}</span></div>`;
+    }
+    body.innerHTML = html;
+    body.querySelectorAll('.kp-key.bind').forEach(el => el.addEventListener('click', () => {
+      _listenFor = (_listenFor === el.dataset.eff) ? null : el.dataset.eff; _renderKeys();
+    }));
+  }
+  // Capture key presses while rebinding (before the global effect-hotkey handler).
+  document.addEventListener('keydown', e => {
+    if (!_listenFor) return;
+    if (e.key === 'Escape') { _listenFor = null; _renderKeys(); return; }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key.length !== 1) return;            // single printable character only
+    e.preventDefault(); e.stopPropagation();
+    const k = e.key;
+    // Remove any existing binding for this key, and the old key for this effect.
+    for (const kk of Object.keys(_effectKeys)) { if (kk === k || _effectKeys[kk] === _listenFor) delete _effectKeys[kk]; }
+    _effectKeys[k] = _listenFor;
+    _saveKeybinds(); _listenFor = null; _renderKeys();
+  }, true);   // capture phase
+
+  window.openKeysPanel = function () {
+    _css();
+    let el = document.getElementById('keys-panel');
+    if (!el) {
+      el = document.createElement('div'); el.id = 'keys-panel';
+      el.innerHTML = `<div class="kp-box">
+        <div class="kp-head"><span class="kp-title">⌨️ Keyboard Shortcuts</span><button class="kp-x" id="kp-close">✕</button></div>
+        <div class="kp-body" id="kp-body"></div>
+        <div class="kp-foot"><button class="kp-btn" id="kp-reset">Reset tool keys</button><span class="kp-hint">Click a tool key, then press a new key. Esc cancels.</span></div>
+      </div>`;
+      document.body.appendChild(el);
+      el.addEventListener('click', e => { if (e.target === el) { _listenFor = null; el.classList.remove('on'); } });
+      el.querySelector('#kp-close').addEventListener('click', () => { _listenFor = null; el.classList.remove('on'); });
+      el.querySelector('#kp-reset').addEventListener('click', () => { _effectKeys = Object.assign({}, _EFFECT_KEYS_DEFAULT); _saveKeybinds(); _renderKeys(); });
+    }
+    el.classList.add('on'); _listenFor = null; _renderKeys();
+  };
+  const kb = document.getElementById('open-keys-btn');
+  if (kb) kb.addEventListener('click', () => { const p = document.getElementById('settings-popover'); if (p) p.style.display = 'none'; window.openKeysPanel(); });
+})();
+
+// ══════════════════════════════════════════════════════════════════════
+// Guided tour — spotlight overlay walking through the main features
+// ══════════════════════════════════════════════════════════════════════
+(function () {
+  const STEPS = [
+    { sel: null, title: '👋 Welcome to Arcane Overlay', body: "This quick tour points out the main tools. You can replay it anytime from ⚙️ Settings → Guided tour. Use Next / Back, or Skip to leave." },
+    { sel: '#board-btn', title: '📐 Board & Scale', body: 'Set the grid size, switch the grid display (A1 coords, 1″, or Hex), and calibrate squares to your physical table for projection.' },
+    { sel: '#token-btn', title: '🧙 Tokens', body: 'Place and move tokens. Drag to move, click to edit name, HP, vision, auras, and a custom pixel avatar.' },
+    { sel: '#wall-btn', title: '🧱 Walls & Vision', body: 'Draw walls, doors, windows and secret doors. They block movement and feed dynamic line-of-sight so players only see what their tokens can.' },
+    { sel: '#draw-btn', title: '✏️ Freehand Draw', body: 'Sketch directly on the map — pick a color and width, drag to draw, Shift-drag to erase. Your marks sync to players.' },
+    { sel: '#cover-btn', title: '🛡️ Cover · Ruler', body: 'Analyze cover between tokens from walls and terrain, and measure bent multi-point distances with the ruler.' },
+    { sel: '#app-dock', title: '🎲 Player Tools', body: 'Dice roller, character sheets, the bestiary, and table chat live here along the bottom dock.' },
+    { sel: '#mp-tab-btn', title: '🌐 Multiplayer', body: 'Open the multiplayer tab to host or join a room. Players get their own view, chat, and synced tokens/HP.' },
+    { sel: '#backup-btn', title: '🗄 Backup', body: 'Save EVERYTHING — board, sheets, scenes, settings and the soundboard — to one file. Restore brings it all back.' },
+    { sel: '#settings-btn', title: '⚙️ Settings', body: "Theme, autosave, default grid, keyboard shortcuts, and this tour. That's the grand tour — happy gaming!" },
+  ];
+
+  function _css() {
+    if (document.getElementById('tour-css')) return;
+    const st = document.createElement('style'); st.id = 'tour-css';
+    st.textContent = `
+    #tour-overlay{position:fixed;inset:0;z-index:13500;display:none}
+    #tour-overlay.on{display:block}
+    #tour-mask{position:absolute;inset:0;background:rgba(8,6,18,.66);transition:clip-path .25s ease}
+    #tour-ring{position:absolute;border:2px solid var(--mp-accent,#7c6ff7);border-radius:10px;box-shadow:0 0 0 3px rgba(124,111,247,.35),0 0 22px rgba(124,111,247,.5);pointer-events:none;transition:all .25s ease;display:none}
+    #tour-pop{position:absolute;width:300px;max-width:88vw;background:#15151a;border:1px solid #3a3a44;border-radius:12px;color:#e8e8ee;font:13px system-ui;box-shadow:0 18px 50px rgba(0,0,0,.6);padding:14px 16px;transition:top .25s ease,left .25s ease}
+    #tour-pop .tp-title{font-weight:700;color:var(--mp-accent,#9fd0ff);margin-bottom:6px}
+    #tour-pop .tp-body{color:#cfcfd8;line-height:1.5}
+    #tour-pop .tp-foot{display:flex;align-items:center;gap:8px;margin-top:14px}
+    #tour-pop .tp-count{font-size:11px;color:#80808a;margin-right:auto}
+    #tour-pop .tp-btn{background:#23232b;border:1px solid #3a3a44;border-radius:7px;color:#dcdce4;font-size:12px;padding:6px 12px;cursor:pointer}
+    #tour-pop .tp-btn.primary{background:var(--mp-accent,#7c6ff7);border-color:var(--mp-accent,#7c6ff7);color:#fff;font-weight:700}
+    #tour-pop .tp-skip{background:none;border:none;color:#80808a;font-size:11px;cursor:pointer}`;
+    document.head.appendChild(st);
+  }
+
+  let _i = 0, _el = null;
+  function _build() {
+    _css();
+    _el = document.createElement('div'); _el.id = 'tour-overlay';
+    _el.innerHTML = `<div id="tour-mask"></div><div id="tour-ring"></div>
+      <div id="tour-pop">
+        <div class="tp-title" id="tour-title"></div>
+        <div class="tp-body" id="tour-body"></div>
+        <div class="tp-foot">
+          <span class="tp-count" id="tour-count"></span>
+          <button class="tp-skip" id="tour-skip">Skip</button>
+          <button class="tp-btn" id="tour-back">Back</button>
+          <button class="tp-btn primary" id="tour-next">Next</button>
+        </div>
+      </div>`;
+    document.body.appendChild(_el);
+    _el.querySelector('#tour-skip').addEventListener('click', _end);
+    _el.querySelector('#tour-back').addEventListener('click', () => { if (_i > 0) { _i--; _show(); } });
+    _el.querySelector('#tour-next').addEventListener('click', () => { if (_i < STEPS.length - 1) { _i++; _show(); } else _end(); });
+    window.addEventListener('resize', () => { if (_el && _el.classList.contains('on')) _show(); });
+  }
+  function _show() {
+    const step = STEPS[_i];
+    const mask = _el.querySelector('#tour-mask');
+    const ring = _el.querySelector('#tour-ring');
+    const pop = _el.querySelector('#tour-pop');
+    _el.querySelector('#tour-title').textContent = step.title;
+    _el.querySelector('#tour-body').textContent = step.body;
+    _el.querySelector('#tour-count').textContent = `${_i + 1} / ${STEPS.length}`;
+    _el.querySelector('#tour-back').style.visibility = _i === 0 ? 'hidden' : 'visible';
+    _el.querySelector('#tour-next').textContent = _i === STEPS.length - 1 ? 'Done' : 'Next';
+    const target = step.sel ? document.querySelector(step.sel) : null;
+    const vw = window.innerWidth, vh = window.innerHeight;
+    if (target && target.offsetParent !== null) {
+      const r = target.getBoundingClientRect();
+      const pad = 6;
+      ring.style.display = 'block';
+      ring.style.left = (r.left - pad) + 'px'; ring.style.top = (r.top - pad) + 'px';
+      ring.style.width = (r.width + pad * 2) + 'px'; ring.style.height = (r.height + pad * 2) + 'px';
+      // punch a hole in the mask over the target
+      mask.style.clipPath = `polygon(0 0,100% 0,100% 100%,0 100%,0 0,${r.left - pad}px ${r.top - pad}px,${r.left - pad}px ${r.bottom + pad}px,${r.right + pad}px ${r.bottom + pad}px,${r.right + pad}px ${r.top - pad}px,${r.left - pad}px ${r.top - pad}px)`;
+      // place popover on whichever side has room
+      const pw = 300, ph = pop.offsetHeight || 170;
+      let left = r.right + 16, top = r.top;
+      if (left + pw > vw - 10) left = r.left - pw - 16;          // try left side
+      if (left < 10) { left = Math.min(Math.max(10, r.left), vw - pw - 10); top = r.bottom + 16; }  // fall back below
+      if (top + ph > vh - 10) top = Math.max(10, vh - ph - 10);
+      pop.style.left = left + 'px'; pop.style.top = Math.max(10, top) + 'px';
+    } else {
+      ring.style.display = 'none';
+      mask.style.clipPath = 'none';
+      const pw = 300, ph = pop.offsetHeight || 170;
+      pop.style.left = (vw / 2 - pw / 2) + 'px'; pop.style.top = (vh / 2 - ph / 2) + 'px';
+    }
+  }
+  function _end() { if (_el) _el.classList.remove('on'); try { localStorage.setItem('arcane-tour-done', '1'); } catch (e) {} }
+  window.startTour = function () { if (!_el) _build(); _i = 0; _el.classList.add('on'); _show(); };
+
+  const tb = document.getElementById('open-tour-btn');
+  if (tb) tb.addEventListener('click', () => { const p = document.getElementById('settings-popover'); if (p) p.style.display = 'none'; window.startTour(); });
+  // First-run: auto-start the tour once.
+  try { if (!localStorage.getItem('arcane-tour-done')) setTimeout(() => { if (!localStorage.getItem('arcane-tour-done')) window.startTour(); }, 1400); } catch (e) {}
+})();
 
 // ── Bottom dock wiring ────────────────────────────────────────
 (function () {
@@ -7411,6 +11558,12 @@ _wireFlowCompass('ldir-btn', 'dnd-lava-flow',
   () => lavaFlowAngle,  v => { lavaFlowAngle  = v; });
 _wireFlowCompass('bdir-btn', 'dnd-lightning-flow',
   () => lightningFlowAngle, v => { lightningFlowAngle = v; });
+_wireFlowCompass('blooddir-btn', 'dnd-blood-flow',
+  () => bloodFlowAngle, v => { bloodFlowAngle = v; });
+// Log orientation: only 2 buttons (horizontal / vertical) — shares the
+// same wiring helper as the flow compasses.
+_wireFlowCompass('debris-dir-btn', 'dnd-debris-flow',
+  () => debrisFlowAngle, v => { debrisFlowAngle = v; });
 
 // ── Terrain palette tool buttons ──────────────────────────────
 (function() {
@@ -7897,6 +12050,14 @@ requestAnimationFrame(render);
     if (dmTools) dmTools.classList.toggle('visible', isDM);
     // Lock down the toolbar for players — only token / LoS / inspect
     document.body.classList.toggle('player-restricted', !isDM);
+    // Reset the table edition; if DM, broadcast their current selection
+    // (or default 4e) so any already-connected player picks it up.
+    if (isDM) {
+      const verSel = document.getElementById('mp-dm-game-version');
+      const ver = (verSel && verSel.value) || '4e';
+      window.__mpBroadcastEdition && window.__mpBroadcastEdition(ver);
+    }
+    window.__mpApplyEditionLock(null, false);   // no edition lock yet for non-DM
     // Refresh the DM player-link preview now that the room code exists
     if (typeof window.__mpRefreshPlayerLink === 'function') {
       window.__mpRefreshPlayerLink();
@@ -8060,7 +12221,65 @@ requestAnimationFrame(render);
     }
   }
 
+  // Wire-format prefix for DM edition broadcasts.  These are tagged
+  // chat messages that the receiver intercepts and consumes silently —
+  // they don't appear in the chat feed.
+  const EDITION_PREFIX = '__ARCANE_EDITION__:';
+
+  // Apply (or clear) the table-wide edition lock to the local UI.
+  function applyEditionLock(version, _silent) {
+    const banner = document.getElementById('mp-edition-banner');
+    if (banner) {
+      if (version === '4e' || version === '5e') {
+        banner.style.display = 'block';
+        banner.textContent = `🎲 Table is running ${version === '5e' ? 'D&D 5e' : 'D&D 4e'} — your sheet uses this edition's stats.`;
+      } else {
+        banner.style.display = 'none';
+      }
+    }
+    // Lock the per-sheet 4e/5e toggle for non-DM players when the DM
+    // has set a version.  DM keeps full control of their own toggle.
+    const sysSel = document.getElementById('sh-system');
+    if (sysSel) {
+      if ((version === '4e' || version === '5e') && !isDM) {
+        sysSel.value = version;
+        sysSel.disabled = true;
+        sysSel.title = `Locked by DM: table is using ${version}`;
+      } else {
+        sysSel.disabled = false;
+        sysSel.title = '';
+      }
+    }
+    // Force the player's active sheet to match the locked edition,
+    // refresh the open sheet panel if it's visible.
+    if ((version === '4e' || version === '5e') && !isDM) {
+      const sh = window.arcaneSheet && window.arcaneSheet();
+      if (sh && sh.system !== version) {
+        sh.system = version;
+        window.__arcaneSaveSheets && window.__arcaneSaveSheets();
+        if (typeof window.arcaneRefreshSheet === 'function') window.arcaneRefreshSheet();
+      }
+    }
+  }
+  window.__mpApplyEditionLock = applyEditionLock;
+
+  // DM broadcasts the table edition to all players (tagged chat message).
+  function broadcastEdition(version) {
+    if (!isDM || !roomCode) return;
+    if (version !== '4e' && version !== '5e') return;
+    api('/api/send_message', { room: roomCode, player_id: myId, to: 'all', text: EDITION_PREFIX + version });
+    // Show the banner locally too so the DM sees the same status player sees
+    applyEditionLock(version, false);
+  }
+  window.__mpBroadcastEdition = broadcastEdition;
+
   function receiveChat(msg) {
+    // Intercept edition-lock broadcasts before they reach the chat feed.
+    if (typeof msg.text === 'string' && msg.text.startsWith(EDITION_PREFIX)) {
+      const ver = msg.text.slice(EDITION_PREFIX.length);
+      if (ver === '4e' || ver === '5e') applyEditionLock(ver, false);
+      return;
+    }
     let tab;
     if (msg.to === 'all') tab = 'all';
     else if (msg.to === 'dm') tab = isDM ? msg.from_id : 'dm';
@@ -8113,6 +12332,32 @@ requestAnimationFrame(render);
       } catch (e) {}
     }
 
+    // HP sync: player→DM updates the token; DM→player updates the sheet.
+    if (typeof msg.text === 'string' && msg.text.startsWith('__HP__:')) {
+      try {
+        const h = JSON.parse(msg.text.slice('__HP__:'.length));
+        if (isDM) { if (window.arcaneApplyTokenHp) window.arcaneApplyTokenHp(h.name, h.hp, h.maxHp, h.id); }
+        else { if (window.arcaneSetSheetHp) window.arcaneSetSheetHp(h.name, h.hp, h.maxHp); }
+      } catch (e) {}
+      return;
+    }
+    // DM receives a player's avatar → apply it to that character's board token.
+    if (isDM && typeof msg.text === 'string' && msg.text.startsWith('__AVATAR__:')) {
+      try {
+        const a = JSON.parse(msg.text.slice('__AVATAR__:'.length));
+        if (a && (a.name || a.id) && window.arcaneApplyAvatar) window.arcaneApplyAvatar(a.name, a.avatar, a.id);
+      } catch (e) {}
+      return;
+    }
+    // DM receives a player's CHOICE to equip an item's appearance override.
+    if (isDM && typeof msg.text === 'string' && msg.text.startsWith('__APPEARANCE__:')) {
+      try {
+        const a = JSON.parse(msg.text.slice('__APPEARANCE__:'.length));
+        if (a && (a.name || a.id) && window.arcaneApplyOverride) window.arcaneApplyOverride(a.name, a.override, a.id);
+      } catch (e) {}
+      return;
+    }
+
     // Auto-deposit an item into our inventory when DM sends one to us
     // (or to the whole party). The DM should not receive a copy — they're
     // the sender.
@@ -8126,6 +12371,16 @@ requestAnimationFrame(render);
           const sh = window.arcaneAddItemToActive(it);
           if (typeof window.arcaneShowItemToast === 'function') {
             window.arcaneShowItemToast(it, msg.from_name, sh && sh.name);
+          }
+          // Appearance items: let the PLAYER choose whether to equip the look.
+          if (it.appearance) {
+            const cname = (sh && sh.name) || (window.arcaneSheet && window.arcaneSheet() && window.arcaneSheet().name) || '';
+            setTimeout(() => {
+              if (confirm(`“${it.name}” can change your character's appearance.\n\nEquip this look on your token now?`)) {
+                if (window.arcaneApplyOverride) window.arcaneApplyOverride(cname, it.appearance, window.__arcaneMyId);
+                if (window.mpSend) { try { window.mpSend('__APPEARANCE__:' + JSON.stringify({ name: cname, override: it.appearance, id: window.__arcaneMyId }), 'dm'); } catch (e) {} }
+              }
+            }, 250);
           }
           // Pop the sheet panel open so the player visibly sees the item
           // land in the right inventory. Defer one tick so the toast renders.
@@ -8332,7 +12587,7 @@ requestAnimationFrame(render);
     try {
       const data = await api('/api/create_room', { name, room_name: roomName });
       if (!data.ok) throw new Error(data.error || 'Failed');
-      myId = data.player_id; myName = data.name; isDM = true;
+      myId = data.player_id; myName = data.name; isDM = true; window.__arcaneIsDM = true; window.__arcaneMyId = myId;
       roomCode = data.room; players = data.players; dmId = data.dm_id;
       document.getElementById('mp-panel-title').textContent = '⚔️ ' + escHtml(data.room_name || roomName);
       joinErr.style.display = 'none';
@@ -8463,7 +12718,7 @@ requestAnimationFrame(render);
     try {
       const data = await api('/api/join_room', { room:code, name });
       if (!data.ok) throw new Error(data.error || 'Failed');
-      myId = data.player_id; myName = data.name; isDM = false;
+      myId = data.player_id; myName = data.name; isDM = false; window.__arcaneIsDM = false; window.__arcaneMyId = myId;
       roomCode = data.room; players = data.players; dmId = data.dm_id;
       document.getElementById('mp-panel-title').textContent = '⚔️ ' + escHtml(data.room_name || code);
       joinErr.style.display = 'none';
@@ -8854,21 +13109,70 @@ requestAnimationFrame(render);
     return 'sh_' + Math.random().toString(36).slice(2, 9);
   }
 
+  // Per-system variant: every "stat" that differs between 4e and 5e lives here.
+  // A sheet stores TWO variants (one for each system) so the player can keep
+  // independent stats — e.g. STR 14 in 4e but STR 16 in 5e on the same PC.
+  function defaultVariant() {
+    return {
+      abilities: { STR:10, CON:10, DEX:10, INT:10, WIS:10, CHA:10 },
+      defenses:  { AC:10, Fort:10, Ref:10, Will:10 }, // Fort/Ref/Will only used by 4e
+      hp: 0, maxhp: 0,
+      surges: 0,                  // 4e: healing surges remaining
+      hitDice: 0, hitDiceUsed: 0, // 5e: total HD = level, used resets on long rest
+      saveProfs: { STR:false, DEX:false, CON:false, INT:false, WIS:false, CHA:false },
+      initMisc: 0,                // misc initiative bonus (feats, items, etc.)
+      trained: [],                // skill names (4e "trained" / 5e "proficient")
+      slots: {},                  // spell slots: { "1":{m:max,u:used}, ... "9":{} }
+      resources: [],              // [{id,name,m:max,u:used,rest:'long'|'short'|'none'}]
+    };
+  }
+
   function defaultSheet(name) {
     return {
       id: makeId(),
-      system: '4e',    // '4e' | '5e' — drives skill list, prof bonus formula, defenses, etc.
+      system: '4e',    // '4e' | '5e' — which variant the editor currently displays
       name: name || '', level: 1, cls: '', race: '',
-      abilities: { STR:10, CON:10, DEX:10, INT:10, WIS:10, CHA:10 },
-      defenses:  { AC:10, Fort:10, Ref:10, Will:10 },
-      hp: 0, maxhp: 0, surges: 0,
-      hitDice: 0, hitDiceUsed: 0,   // 5e — total HD = level, used resets on long rest
-      saveProfs: { STR:false, DEX:false, CON:false, INT:false, WIS:false, CHA:false }, // 5e save proficiencies
-      initMisc: 0,     // misc initiative bonus (feats, items, etc.)
-      trained: [],     // skill names (4e "trained" / 5e "proficient")
-      inventory: [],   // [{id, name, qty, weight, equipped, notes}]
-      vision: 'normal', // 'normal' | 'lowlight' | 'darkvision'
+      variants: { '4e': defaultVariant(), '5e': defaultVariant() },
+      inventory: [],   // [{id, name, qty, weight, equipped, notes}] — SHARED across systems
+      vision: 'normal', // SHARED — 'normal' | 'lowlight' | 'darkvision'
     };
+  }
+
+  // Migrate a legacy flat-stat sheet to the new {variants:{'4e',{'5e'}}} layout.
+  // The currently-active system gets the existing values; the other variant
+  // starts at defaults (player fills it in when they switch systems).
+  function migrateSheet(s) {
+    if (!s || s.variants) return s;
+    const curSys = (s.system === '5e') ? '5e' : '4e';
+    const v = defaultVariant();
+    if (s.abilities)  v.abilities  = Object.assign(v.abilities,  s.abilities);
+    if (s.defenses)   v.defenses   = Object.assign(v.defenses,   s.defenses);
+    if (s.saveProfs)  v.saveProfs  = Object.assign(v.saveProfs,  s.saveProfs);
+    if (typeof s.hp          === 'number') v.hp          = s.hp;
+    if (typeof s.maxhp       === 'number') v.maxhp       = s.maxhp;
+    if (typeof s.surges      === 'number') v.surges      = s.surges;
+    if (typeof s.hitDice     === 'number') v.hitDice     = s.hitDice;
+    if (typeof s.hitDiceUsed === 'number') v.hitDiceUsed = s.hitDiceUsed;
+    if (typeof s.initMisc    === 'number') v.initMisc    = s.initMisc;
+    if (Array.isArray(s.trained))          v.trained     = s.trained.slice();
+    s.variants = { '4e': defaultVariant(), '5e': defaultVariant() };
+    s.variants[curSys] = v;
+    delete s.abilities; delete s.defenses;
+    delete s.hp; delete s.maxhp;
+    delete s.surges; delete s.hitDice; delete s.hitDiceUsed;
+    delete s.saveProfs; delete s.initMisc; delete s.trained;
+    return s;
+  }
+
+  // Accessor — returns the variant data for sheet s's currently-active system.
+  // ALL variant-specific reads/writes go through this so flipping s.system
+  // immediately shows the other variant's stats.
+  function V(s) {
+    if (!s) return defaultVariant();
+    if (!s.variants) migrateSheet(s);
+    const sys = (s.system === '5e') ? '5e' : '4e';
+    if (!s.variants[sys]) s.variants[sys] = defaultVariant();
+    return s.variants[sys];
   }
   function makeItemId() { return 'it_' + Math.random().toString(36).slice(2, 9); }
 
@@ -8881,9 +13185,18 @@ requestAnimationFrame(render);
       if (raw) {
         const obj = JSON.parse(raw);
         if (obj && obj.sheets && Object.keys(obj.sheets).length) {
-          // Patch missing fields on each sheet
+          // Migrate legacy flat-stat sheets to the new variants layout,
+          // then patch any missing top-level fields without clobbering
+          // already-migrated variants.
           Object.values(obj.sheets).forEach(s => {
-            Object.assign(s, Object.assign(defaultSheet(), s));
+            migrateSheet(s);
+            const def = defaultSheet();
+            for (const k in def) {
+              if (!(k in s)) s[k] = def[k];
+            }
+            if (!s.variants) s.variants = { '4e': defaultVariant(), '5e': defaultVariant() };
+            if (!s.variants['4e']) s.variants['4e'] = defaultVariant();
+            if (!s.variants['5e']) s.variants['5e'] = defaultVariant();
           });
           if (!obj.activeId || !obj.sheets[obj.activeId]) {
             obj.activeId = Object.keys(obj.sheets)[0];
@@ -8896,7 +13209,9 @@ requestAnimationFrame(render);
     try {
       const oldRaw = localStorage.getItem(STORAGE_KEY_OLD);
       if (oldRaw) {
-        const oldSheet = Object.assign(defaultSheet(), JSON.parse(oldRaw));
+        const parsed = JSON.parse(oldRaw);
+        migrateSheet(parsed);                  // pull flat stats into variants first
+        const oldSheet = Object.assign(defaultSheet(), parsed);
         if (!oldSheet.id) oldSheet.id = makeId();
         const s = { sheets: { [oldSheet.id]: oldSheet }, activeId: oldSheet.id };
         return s;
@@ -8921,6 +13236,30 @@ requestAnimationFrame(render);
   }
   function saveSheet() { saveStore(); }
 
+  // ── Avatar (top-down token appearance) ──
+  function _shAvatarPrev() {
+    const cv = document.getElementById('sh-avatar-prev'); if (!cv) return;
+    const g = cv.getContext('2d'); g.clearRect(0, 0, cv.width, cv.height);
+    if (sheet && sheet.avatar && window.ArcaneAvatar) window.ArcaneAvatar.render(g, 2, 2, 40, sheet.avatar);
+    else { g.fillStyle = 'rgba(255,255,255,0.25)'; g.beginPath(); g.arc(22, 22, 14, 0, Math.PI * 2); g.fill(); }
+  }
+  function _pushAvatar(av) {
+    sheet.avatar = av; saveSheet(); _shAvatarPrev();
+    if (window.arcaneApplyAvatar) window.arcaneApplyAvatar(sheet.name, av, window.__arcaneMyId);   // local / DM board (by owner id, then name)
+    if (!window.__arcaneIsDM && window.mpSend && sheet.name) {                                     // player → DM
+      try { window.mpSend('__AVATAR__:' + JSON.stringify({ name: sheet.name, avatar: av, id: window.__arcaneMyId }), 'dm'); } catch (e) {}
+    }
+  }
+  (function _wireSheetAvatar() {
+    const btn = document.getElementById('sh-avatar-btn'); if (!btn) return;
+    btn.addEventListener('click', () => {
+      if (!window.ArcaneAvatar || !sheet) return;
+      window.ArcaneAvatar.openEditor(sheet.avatar || window.ArcaneAvatar.DEFAULT, (av) => _pushAvatar(av));
+    });
+    const rm = document.getElementById('sh-avatar-remove');
+    if (rm) rm.addEventListener('click', () => { if (sheet) _pushAvatar(null); });
+  })();
+
   // ── MP-active sheet selection ───────────────────────────────
   // Players pick which character handles their rolls in multiplayer
   // sessions. Persisted separately so it survives sheet switches in
@@ -8943,6 +13282,20 @@ requestAnimationFrame(render);
   // Use the MP-selected sheet whenever multiplayer code asks for "the sheet"
   window.arcaneSheet  = () => mpActiveSheet();
   window.arcaneSheets = () => Object.values(store.sheets);
+  // DM → player: update a character sheet's HP from a token HP change.
+  window.arcaneSetSheetHp = function (name, hp, maxHp) {
+    const nm = name ? String(name).trim().toLowerCase() : ''; let changed = false;
+    Object.values(store.sheets).forEach(s => {
+      if ((s.name || '').trim().toLowerCase() === nm) { const vv = V(s); if (hp != null) vv.hp = hp; if (maxHp != null) vv.maxhp = maxHp; changed = true; }
+    });
+    if (changed) { saveStore(); try { fillForm(); } catch (e) {} }
+  };
+  // Variant accessor for code outside this IIFE — returns the active per-system
+  // stat block (abilities/defenses/hp/maxhp/etc.) for the given sheet.
+  window.arcaneSheetVariant = (s) => V(s);
+  // Refresh the open sheet panel — used by the MP edition lock when the DM
+  // changes the table edition and a player's sheet has to switch variants.
+  window.arcaneRefreshSheet = () => { try { fillForm(); fireSheetsChanged(); } catch (e) {} };
   // Save the whole sheets store to localStorage (used by pickup flow).
   window.__arcaneSaveSheets = saveStore;
   // Refresh the inventory list in the open sheet panel (used by pickup flow).
@@ -9015,16 +13368,17 @@ requestAnimationFrame(render);
     const entry = list.find(([n]) => n === skillName);
     if (!entry) return 0;
     const ability = entry[1];
-    const aMod = modOf(s.abilities[ability] || 10);
-    const isTrained = s.trained.includes(skillName);
+    const v = V(s);
+    const aMod = modOf(v.abilities[ability] || 10);
+    const isTrained = v.trained.includes(skillName);
     if (isFiveE(s)) {
       // 5e: ability + (proficient ? prof bonus : 0). Initiative is just DEX (+ misc).
-      if (skillName === 'Initiative') return aMod + (s.initMisc || 0);
+      if (skillName === 'Initiative') return aMod + (v.initMisc || 0);
       return aMod + (isTrained ? profBonus5e(s) : 0);
     }
     // 4e: ability + ½level + (trained ? 5 : 0). Initiative adds misc.
     const base = aMod + halfLevel(s) + (isTrained ? 5 : 0);
-    return skillName === 'Initiative' ? base + (s.initMisc || 0) : base;
+    return skillName === 'Initiative' ? base + (v.initMisc || 0) : base;
   }
   function rollSkill(s, skillName) {
     const d20 = Math.floor(Math.random() * 20) + 1;
@@ -9032,13 +13386,14 @@ requestAnimationFrame(render);
     const list = skillsFor(s);
     const entry = list.find(([n]) => n === skillName);
     const ability = entry ? entry[1] : '';
-    const aMod = modOf(s.abilities[ability] || 10);
-    const isTrained = s.trained.includes(skillName);
+    const v = V(s);
+    const aMod = modOf(v.abilities[ability] || 10);
+    const isTrained = v.trained.includes(skillName);
     let breakdown;
     if (isFiveE(s)) {
       if (skillName === 'Initiative') {
         breakdown = `d20[${d20}] + DEX(${aMod})` +
-                    ((s.initMisc || 0) ? ` + misc(${s.initMisc})` : '') +
+                    ((v.initMisc || 0) ? ` + misc(${v.initMisc})` : '') +
                     ` = ${d20 + mod}`;
       } else {
         breakdown = `d20[${d20}] + ${ability}(${aMod})` +
@@ -9138,22 +13493,20 @@ requestAnimationFrame(render);
     fireSheetsChanged();
   });
 
-  // System toggle (4e ↔ 5e). Changing system migrates the trained-skill list
-  // by intersecting with the new system's known skills, so anything that
-  // doesn't translate (Bluff → Deception, etc.) is simply dropped rather
-  // than silently giving you a bonus on a skill that doesn't exist.
+  // System toggle (4e ↔ 5e). The sheet stores SEPARATE stats per system in
+  // sheet.variants['4e'] and sheet.variants['5e'], so flipping the toggle
+  // simply switches which variant the editor displays — no value is
+  // migrated or lost. STR=14 in 4e and STR=16 in 5e can both coexist on
+  // the same PC.
   const systemSel = document.getElementById('sh-system');
   if (systemSel) {
     systemSel.addEventListener('change', () => {
-      pushFormToSheet();              // capture in-flight edits
+      pushFormToSheet();                          // save in-flight edits to OLD variant
       const newSystem = systemSel.value === '5e' ? '5e' : '4e';
       if (sheet.system === newSystem) return;
-      const newList = newSystem === '5e' ? SKILLS_5E : SKILLS_4E;
-      const newNames = new Set(newList.map(([n]) => n));
-      sheet.trained = (sheet.trained || []).filter(n => newNames.has(n));
-      sheet.system = newSystem;
+      sheet.system = newSystem;                   // editor now shows the OTHER variant
       saveStore();
-      fillForm();
+      fillForm();                                 // form re-fills from the new variant
       fireSheetsChanged();
     });
   }
@@ -9177,26 +13530,29 @@ requestAnimationFrame(render);
       : 'Healing Surges remaining';
 
     document.getElementById('sh-name').value = sheet.name || '';
+    _shAvatarPrev();
     document.getElementById('sh-level').value = sheet.level || 1;
     document.getElementById('sh-class').value = sheet.cls || '';
     document.getElementById('sh-race').value = sheet.race || '';
+    const v = V(sheet);
     ABILS.forEach(a => {
-      document.querySelector(`#sh-abilities input[data-abi="${a}"]`).value = sheet.abilities[a];
-      document.querySelector(`#sh-abilities .sh-mod[data-mod="${a}"]`).textContent = fmtMod(modOf(sheet.abilities[a]));
+      document.querySelector(`#sh-abilities input[data-abi="${a}"]`).value = v.abilities[a];
+      document.querySelector(`#sh-abilities .sh-mod[data-mod="${a}"]`).textContent = fmtMod(modOf(v.abilities[a]));
     });
-    document.getElementById('sh-AC').value   = sheet.defenses.AC;
-    document.getElementById('sh-Fort').value = sheet.defenses.Fort;
-    document.getElementById('sh-Ref').value  = sheet.defenses.Ref;
-    document.getElementById('sh-Will').value = sheet.defenses.Will;
-    document.getElementById('sh-hp').value    = sheet.hp;
-    document.getElementById('sh-maxhp').value = sheet.maxhp;
+    document.getElementById('sh-AC').value   = v.defenses.AC;
+    document.getElementById('sh-Fort').value = v.defenses.Fort;
+    document.getElementById('sh-Ref').value  = v.defenses.Ref;
+    document.getElementById('sh-Will').value = v.defenses.Will;
+    document.getElementById('sh-hp').value    = v.hp;
+    document.getElementById('sh-maxhp').value = v.maxhp;
     // For 5e the same numeric input stores "hit dice used"
-    document.getElementById('sh-surges').value = isFiveE(sheet) ? (sheet.hitDiceUsed || 0) : (sheet.surges || 0);
+    document.getElementById('sh-surges').value = isFiveE(sheet) ? (v.hitDiceUsed || 0) : (v.surges || 0);
     const initMiscEl = document.getElementById('sh-init-misc');
-    if (initMiscEl) initMiscEl.value = sheet.initMisc || 0;
+    if (initMiscEl) initMiscEl.value = v.initMisc || 0;
     const visSel = document.getElementById('sh-vision');
     if (visSel) visSel.value = sheet.vision || 'normal';
     renderSkills();
+    renderSpells();
     renderInventory();
     updateInitDisplay();
     updateProfReadout();
@@ -9208,7 +13564,8 @@ requestAnimationFrame(render);
   function renderSkills() {
     skillsBox.innerHTML = '';
     skillsFor(sheet).forEach(([name, abi]) => {
-      const isTrained = sheet.trained.includes(name);
+      const v = V(sheet);
+      const isTrained = v.trained.includes(name);
       const mod = skillModFor(sheet, name);
       const row = document.createElement('div');
       row.className = 'sh-skill';
@@ -9224,10 +13581,11 @@ requestAnimationFrame(render);
     skillsBox.querySelectorAll('input[type="checkbox"]').forEach(cb => {
       cb.addEventListener('change', () => {
         const name = cb.dataset.skill;
+        const v = V(sheet);
         if (cb.checked) {
-          if (!sheet.trained.includes(name)) sheet.trained.push(name);
+          if (!v.trained.includes(name)) v.trained.push(name);
         } else {
-          sheet.trained = sheet.trained.filter(n => n !== name);
+          v.trained = v.trained.filter(n => n !== name);
         }
         recomputeMods();
         saveStore();
@@ -9240,6 +13598,116 @@ requestAnimationFrame(render);
         showLocalResult(r);
       });
     });
+  }
+
+  // ── Spells & resources ────────────────────────────────────────
+  function _resId() { return 'rs_' + Math.random().toString(36).slice(2, 8); }
+  function renderSpells() {
+    const v = V(sheet);
+    if (!v.slots) v.slots = {};
+    if (!v.resources) v.resources = [];
+    // Spell-slot editor (max per level) + clickable pip rows.
+    const slotsBox = document.getElementById('sh-spellslots');
+    if (slotsBox) {
+      let html = '<div class="sh-slot-edit"><span class="sh-sub">Slots / level</span>';
+      for (let l = 1; l <= 9; l++) {
+        const m = (v.slots[l] && v.slots[l].m) || 0;
+        html += `<label class="sh-slotmax"><span>${l}</span><input type="number" min="0" max="20" value="${m}" data-slotmax="${l}"></label>`;
+      }
+      html += '</div>';
+      for (let l = 1; l <= 9; l++) {
+        const s = v.slots[l]; if (!s || !s.m) continue;
+        const avail = s.m - s.u;
+        html += `<div class="sh-slot-row"><span class="sh-slot-lbl">Lv ${l}</span><span class="sh-pips" data-slotlvl="${l}">`;
+        for (let i = 0; i < s.m; i++) html += `<span class="sh-pip${i < avail ? ' on' : ''}" data-i="${i}"></span>`;
+        html += `</span><span class="sh-slot-cnt">${avail}/${s.m}</span></div>`;
+      }
+      slotsBox.innerHTML = html;
+      slotsBox.querySelectorAll('input[data-slotmax]').forEach(inp => inp.addEventListener('change', () => {
+        const l = inp.dataset.slotmax, m = Math.max(0, Math.min(20, parseInt(inp.value, 10) || 0));
+        if (!v.slots[l]) v.slots[l] = { m: 0, u: 0 };
+        v.slots[l].m = m; if (v.slots[l].u > m) v.slots[l].u = m;
+        saveStore(); renderSpells();
+      }));
+      slotsBox.querySelectorAll('.sh-pips').forEach(pc => {
+        const l = pc.dataset.slotlvl;
+        pc.querySelectorAll('.sh-pip').forEach(p => p.addEventListener('click', () => {
+          const s = v.slots[l]; if (!s) return;
+          const idx = parseInt(p.dataset.i, 10), avail = s.m - s.u;
+          const filled = (idx < avail) ? idx : idx + 1;   // D&D-Beyond pip behaviour
+          s.u = Math.max(0, Math.min(s.m, s.m - filled));
+          saveStore(); renderSpells();
+        }));
+      });
+    }
+    // Custom resources (ki, rage, channel divinity, …).
+    const resBox = document.getElementById('sh-resources');
+    if (resBox) {
+      resBox.innerHTML = '';
+      if (!v.resources.length) {
+        const e = document.createElement('div'); e.className = 'sh-inv-empty'; e.textContent = 'No resources — add one below (Ki, Rage, Bardic Inspiration…).';
+        resBox.appendChild(e);
+      }
+      v.resources.forEach(res => {
+        if (res.u == null) res.u = 0;
+        const row = document.createElement('div'); row.className = 'sh-res-row';
+        const avail = res.m - res.u;
+        let pips = '';
+        for (let i = 0; i < res.m; i++) pips += `<span class="sh-pip${i < avail ? ' on' : ''}" data-i="${i}"></span>`;
+        const restLbl = res.rest === 'short' ? 'S' : res.rest === 'none' ? 'M' : 'L';
+        row.innerHTML = `<span class="sh-res-name">${_esc(res.name)}</span>` +
+          `<span class="sh-pips" data-res="${res.id}">${pips}</span>` +
+          `<span class="sh-res-cnt">${avail}/${res.m}</span>` +
+          `<span class="sh-res-rest" title="${res.rest==='short'?'Short rest':res.rest==='none'?'Manual':'Long rest'}">${restLbl}</span>` +
+          `<button class="sh-res-del" title="Remove" data-del="${res.id}">🗑</button>`;
+        resBox.appendChild(row);
+        row.querySelectorAll('.sh-pip').forEach(p => p.addEventListener('click', () => {
+          const idx = parseInt(p.dataset.i, 10), av = res.m - res.u;
+          const filled = (idx < av) ? idx : idx + 1;
+          res.u = Math.max(0, Math.min(res.m, res.m - filled));
+          saveStore(); renderSpells();
+        }));
+        row.querySelector('.sh-res-del').addEventListener('click', () => {
+          v.resources = v.resources.filter(r => r.id !== res.id);
+          saveStore(); renderSpells();
+        });
+      });
+    }
+  }
+  function _esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+  (function _wireSpells() {
+    const addBtn = document.getElementById('sh-res-add');
+    const nameIn = document.getElementById('sh-res-name');
+    const maxIn  = document.getElementById('sh-res-max');
+    const restIn = document.getElementById('sh-res-rest');
+    function add() {
+      const v = V(sheet); if (!v.resources) v.resources = [];
+      const nm = (nameIn.value || '').trim(); if (!nm) { nameIn.focus(); return; }
+      const m = Math.max(1, Math.min(99, parseInt(maxIn.value, 10) || 1));
+      v.resources.push({ id: _resId(), name: nm, m, u: 0, rest: restIn.value || 'long' });
+      nameIn.value = ''; maxIn.value = 1; saveStore(); renderSpells();
+    }
+    if (addBtn) addBtn.addEventListener('click', add);
+    if (nameIn) nameIn.addEventListener('keydown', e => { if (e.key === 'Enter') add(); });
+    const sr = document.getElementById('sh-short-rest');
+    const lr = document.getElementById('sh-long-rest');
+    if (sr) sr.addEventListener('click', () => {
+      const v = V(sheet); (v.resources || []).forEach(r => { if (r.rest === 'short') r.u = 0; });
+      saveStore(); renderSpells(); showSheetToast('☕ Short rest — short-rest resources restored.');
+    });
+    if (lr) lr.addEventListener('click', () => {
+      const v = V(sheet);
+      for (const l in (v.slots || {})) v.slots[l].u = 0;
+      (v.resources || []).forEach(r => { if (r.rest !== 'none') r.u = 0; });
+      if (isFiveE(sheet)) v.hitDiceUsed = 0;          // 5e: long rest restores hit dice
+      saveStore(); fillForm(); showSheetToast('🌙 Long rest — spell slots & resources restored.');
+    });
+  })();
+  function showSheetToast(msg) {
+    let t = document.getElementById('sh-toast');
+    if (!t) { t = document.createElement('div'); t.id = 'sh-toast'; t.style.cssText = 'position:absolute;left:50%;bottom:64px;transform:translateX(-50%);background:#1b1b22;color:#e8e8ee;border:1px solid #3a3a44;border-radius:8px;padding:7px 14px;font:12px system-ui;z-index:50;pointer-events:none'; const panel = document.getElementById('sheet-panel'); (panel || document.body).appendChild(t); }
+    t.textContent = msg; t.style.opacity = '1';
+    clearTimeout(t._to); t._to = setTimeout(() => { t.style.transition = 'opacity .5s'; t.style.opacity = '0'; }, 2500);
   }
 
   // ── Inventory ─────────────────────────────────────────────────
@@ -9394,9 +13862,10 @@ requestAnimationFrame(render);
       const el = skillsBox.querySelector(`[data-skill-mod="${name}"]`);
       if (el) el.textContent = fmtMod(skillModFor(sheet, name));
     });
+    const v = V(sheet);
     ABILS.forEach(a => {
       const el = document.querySelector(`#sh-abilities .sh-mod[data-mod="${a}"]`);
-      if (el) el.textContent = fmtMod(modOf(sheet.abilities[a]));
+      if (el) el.textContent = fmtMod(modOf(v.abilities[a]));
     });
     updateInitDisplay();
     updateProfReadout();
@@ -9411,35 +13880,36 @@ requestAnimationFrame(render);
   function updateInitDisplay() {
     const el = document.getElementById('sh-init-display');
     if (!el) return;
-    const base = skillModFor(sheet, 'Initiative'); // DEX mod + ½ level
-    const misc = sheet.initMisc || 0;
-    const total = base + misc;
-    el.textContent = fmtMod(total);
+    const base = skillModFor(sheet, 'Initiative'); // DEX mod + ½ level (already includes misc)
+    el.textContent = fmtMod(base);
   }
 
   // ── Capture form state into the sheet (does NOT persist yet) ──
   function pushFormToSheet() {
+    // Shared (cross-system) fields on the sheet root
     sheet.name  = document.getElementById('sh-name').value.trim();
     sheet.level = Math.max(1, parseInt(document.getElementById('sh-level').value) || 1);
     sheet.cls   = document.getElementById('sh-class').value.trim();
     sheet.race  = document.getElementById('sh-race').value.trim();
-    ABILS.forEach(a => {
-      const v = parseInt(document.querySelector(`#sh-abilities input[data-abi="${a}"]`).value);
-      sheet.abilities[a] = isNaN(v) ? 10 : v;
-    });
-    sheet.defenses.AC   = parseInt(document.getElementById('sh-AC').value)   || 10;
-    sheet.defenses.Fort = parseInt(document.getElementById('sh-Fort').value) || 10;
-    sheet.defenses.Ref  = parseInt(document.getElementById('sh-Ref').value)  || 10;
-    sheet.defenses.Will = parseInt(document.getElementById('sh-Will').value) || 10;
-    sheet.hp     = parseInt(document.getElementById('sh-hp').value)    || 0;
-    sheet.maxhp  = parseInt(document.getElementById('sh-maxhp').value) || 0;
-    // Surges input doubles as "Hit Dice used" in 5e
-    const surgesVal = parseInt(document.getElementById('sh-surges').value) || 0;
-    if (isFiveE(sheet)) sheet.hitDiceUsed = surgesVal;
-    else                sheet.surges      = surgesVal;
-    sheet.initMisc = parseInt(document.getElementById('sh-init-misc')?.value) || 0;
     const visSel = document.getElementById('sh-vision');
     if (visSel) sheet.vision = visSel.value || 'normal';
+    // Variant-specific fields go into the active variant
+    const v = V(sheet);
+    ABILS.forEach(a => {
+      const val = parseInt(document.querySelector(`#sh-abilities input[data-abi="${a}"]`).value);
+      v.abilities[a] = isNaN(val) ? 10 : val;
+    });
+    v.defenses.AC   = parseInt(document.getElementById('sh-AC').value)   || 10;
+    v.defenses.Fort = parseInt(document.getElementById('sh-Fort').value) || 10;
+    v.defenses.Ref  = parseInt(document.getElementById('sh-Ref').value)  || 10;
+    v.defenses.Will = parseInt(document.getElementById('sh-Will').value) || 10;
+    v.hp     = parseInt(document.getElementById('sh-hp').value)    || 0;
+    v.maxhp  = parseInt(document.getElementById('sh-maxhp').value) || 0;
+    // Surges input doubles as "Hit Dice used" in 5e
+    const surgesVal = parseInt(document.getElementById('sh-surges').value) || 0;
+    if (isFiveE(sheet)) v.hitDiceUsed = surgesVal;
+    else                v.surges      = surgesVal;
+    v.initMisc = parseInt(document.getElementById('sh-init-misc')?.value) || 0;
   }
 
   // Live recompute when any input changes
@@ -9455,6 +13925,12 @@ requestAnimationFrame(render);
     saveStore();
     refreshSheetList();
     fireSheetsChanged();   // label may have changed (name/level/class edited)
+    // Sync HP to the matching board token (and, as a player, to the DM's board).
+    if (sheet && sheet.name) {
+      const vv = V(sheet);
+      if (window.arcaneApplyTokenHp) window.arcaneApplyTokenHp(sheet.name, vv.hp, vv.maxhp, window.__arcaneMyId);
+      if (!window.__arcaneIsDM && window.mpSend) { try { window.mpSend('__HP__:' + JSON.stringify({ name: sheet.name, hp: vv.hp, maxHp: vv.maxhp, id: window.__arcaneMyId }), 'dm'); } catch (e) {} }
+    }
     saveBtn.textContent = '✓ Saved';
     setTimeout(() => { saveBtn.textContent = '💾 Save'; }, 1000);
   });
@@ -9546,8 +14022,9 @@ requestAnimationFrame(render);
       entry = other.find(([n]) => n === skill);
     }
     const abi = entry ? entry[1] : '';
-    const aMod = modOf(mpSh.abilities[abi] || 10);
-    const trained = mpSh.trained.includes(skill);
+    const mpV = V(mpSh);
+    const aMod = modOf(mpV.abilities[abi] || 10);
+    const trained = mpV.trained.includes(skill);
     // Recompute mod manually when the skill isn't in this sheet's system
     let mod;
     if (list.some(([n]) => n === skill)) {
@@ -9682,6 +14159,16 @@ requestAnimationFrame(render);
     dmTargetSel.addEventListener('focus',     refreshDmTargets);
   }
   refreshDmTargets();
+
+  // DM edition picker — broadcasts to all players whenever it changes.
+  const dmEditionSel = document.getElementById('mp-dm-game-version');
+  if (dmEditionSel) {
+    dmEditionSel.addEventListener('change', () => {
+      if (typeof window.__mpBroadcastEdition === 'function') {
+        window.__mpBroadcastEdition(dmEditionSel.value);
+      }
+    });
+  }
 
   const dmReqBtn = document.getElementById('mp-dm-roll-req');
   if (dmReqBtn) {
@@ -9889,6 +14376,7 @@ requestAnimationFrame(render);
       saves: { STR:0, DEX:0, CON:0, INT:0, WIS:0, CHA:0 },
       resistances: '', immunities: '', vulnerabilities: '', condImmunities: '',
       senses: '', languages: '', notes: '',
+      attacks: [],   // [{name, bonus, damage}] — for one-click attack rolls
     };
   }
 
@@ -9988,13 +14476,16 @@ requestAnimationFrame(render);
   // Build a creature-like object from the player's active character sheet
   // so it can flow through the existing token-placement pipeline.
   function creatureFromSheet(sheet) {
+    // Read variant-specific stats (AC, HP) through the accessor so they
+    // reflect the sheet's currently-selected system (4e vs 5e).
+    const v = (window.arcaneSheetVariant && window.arcaneSheetVariant(sheet)) || {};
     return {
       name:  sheet.name || 'Adventurer',
       size:  'medium',
       type:  (sheet.cls || 'player character').toLowerCase(),
       cr:    'Lv' + (sheet.level || 1),
-      ac:    (sheet.defenses && sheet.defenses.AC) || 10,
-      hp:    sheet.maxhp || sheet.hp || 0,
+      ac:    (v.defenses && v.defenses.AC) || 10,
+      hp:    v.maxhp || v.hp || 0,
       speed: 6,
       saves: {},
       color: '#7C6FF7',           // purple — distinguishes PCs from monster tokens
@@ -10025,10 +14516,11 @@ requestAnimationFrame(render);
     const sub = document.createElement('div');
     sub.className = 'be-card-sub';
     const detail = (sheet.cls ? sheet.cls + ' · ' : '') + 'Lv' + (sheet.level || 1);
+    const sv = (window.arcaneSheetVariant && window.arcaneSheetVariant(sheet)) || {};
     sub.innerHTML =
       `<span>${escapeHTML(detail)}</span>` +
-      `<span class="be-badge">AC ${(sheet.defenses && sheet.defenses.AC) || 10}</span>` +
-      `<span class="be-badge">HP ${sheet.maxhp || sheet.hp || 0}</span>`;
+      `<span class="be-badge">AC ${(sv.defenses && sv.defenses.AC) || 10}</span>` +
+      `<span class="be-badge">HP ${sv.maxhp || sv.hp || 0}</span>`;
     main.appendChild(name);
     main.appendChild(sub);
 
@@ -10123,8 +14615,37 @@ requestAnimationFrame(render);
     document.getElementById('be-senses').value      = src.senses;
     document.getElementById('be-languages').value   = src.languages;
     document.getElementById('be-notes').value       = src.notes;
+    _beAttacks = (src.attacks || []).map(a => ({ name: a.name || '', bonus: a.bonus || 0, damage: a.damage || '' }));
+    _renderBeAttacks();
     editorEl.scrollIntoView({ behavior:'smooth', block:'start' });
   }
+  // ── Attacks editor (working copy while the editor is open) ──
+  let _beAttacks = [];
+  function _renderBeAttacks() {
+    const box = document.getElementById('be-attacks'); if (!box) return;
+    box.innerHTML = '';
+    if (!_beAttacks.length) {
+      const e = document.createElement('div'); e.className = 'be-attack-empty';
+      e.textContent = 'No attacks — add one for one-click rolls.'; box.appendChild(e);
+    }
+    _beAttacks.forEach((a, i) => {
+      const row = document.createElement('div'); row.className = 'be-attack-row';
+      row.innerHTML =
+        `<input class="ba-name" type="text" placeholder="Scimitar" value="${escapeHTML(a.name)}">` +
+        `<span class="ba-lbl">+</span><input class="ba-bonus" type="number" placeholder="0" value="${a.bonus}">` +
+        `<input class="ba-dmg" type="text" placeholder="1d6+2" value="${escapeHTML(a.damage)}">` +
+        `<button class="ba-del" type="button" title="Remove">🗑</button>`;
+      row.querySelector('.ba-name').addEventListener('input', e => { _beAttacks[i].name = e.target.value; });
+      row.querySelector('.ba-bonus').addEventListener('input', e => { _beAttacks[i].bonus = parseInt(e.target.value, 10) || 0; });
+      row.querySelector('.ba-dmg').addEventListener('input', e => { _beAttacks[i].damage = e.target.value; });
+      row.querySelector('.ba-del').addEventListener('click', () => { _beAttacks.splice(i, 1); _renderBeAttacks(); });
+      box.appendChild(row);
+    });
+  }
+  (function () {
+    const add = document.getElementById('be-attack-add');
+    if (add) add.addEventListener('click', () => { _beAttacks.push({ name: '', bonus: 0, damage: '' }); _renderBeAttacks(); });
+  })();
   function hideEditor() {
     editorEl.style.display = 'none';
     editingId = null;
@@ -10151,6 +14672,9 @@ requestAnimationFrame(render);
     c.senses          = document.getElementById('be-senses').value.trim();
     c.languages       = document.getElementById('be-languages').value.trim();
     c.notes           = document.getElementById('be-notes').value.trim();
+    c.attacks = _beAttacks
+      .map(a => ({ name: (a.name || '').trim(), bonus: a.bonus || 0, damage: (a.damage || '').trim() }))
+      .filter(a => a.name || a.damage);
     return c;
   }
 
@@ -10250,7 +14774,26 @@ requestAnimationFrame(render);
     describe(raw.reaction           || raw.reactions,         'Reactions');
     describe(raw.legendary          || raw.legendary_actions, 'Legendary');
     if (noteParts.length) c.notes = noteParts.join('\n');
+    c.attacks = _parseAttacks(raw.action || raw.actions);
     return c;
+  }
+  // Best-effort: pull "+N to hit … (XdY+Z) damage" attacks out of action entries.
+  function _parseAttacks(list) {
+    const out = [];
+    if (!Array.isArray(list)) return out;
+    for (const a of list) {
+      const name = (a.name || 'Attack').toString().trim();
+      const text = (a.desc || a.entries || a.text || '').toString().replace(/\s+/g, ' ');
+      const hit = text.match(/([+-]\s*\d+)\s*to hit/i);
+      const dmg = text.match(/(\d+d\d+(?:\s*[+-]\s*\d+)?)/);   // first dice expression
+      if (!hit && !dmg) continue;
+      out.push({
+        name,
+        bonus: hit ? parseInt(hit[1].replace(/\s+/g, ''), 10) : 0,
+        damage: dmg ? dmg[1].replace(/\s+/g, '') : '',
+      });
+    }
+    return out;
   }
 
   function _importCompendium(text) {
@@ -10455,6 +14998,7 @@ requestAnimationFrame(render);
       labels: labels.map(l => ({ ...l })),
       lights: lights.map(l => ({ ...l })),
       covers: { ...covers },
+      drawings: drawings.map(d => ({ color: d.color, width: d.width, pts: d.pts.map(p => ({ ...p })) })),
       traps: JSON.parse(JSON.stringify(traps || {})),
       fogEnabled,
       fogVis:    { ...fogVis },
@@ -10465,6 +15009,16 @@ requestAnimationFrame(render);
       bgImageDataUrl: window._bgImageDataUrl || null,
       ambientLight,
       weatherType, weatherIntensity,
+      // Per-cell flow directions for water/lava/blood/lightning/debris.
+      // Without these, receivers (projection mirror, other players)
+      // would lose every cell's chosen direction and fall back to their
+      // own local global angle — making the per-cell flow look like it
+      // "didn't stick".
+      waterCellFlow:     { ...waterCellFlow },
+      lavaCellFlow:      { ...lavaCellFlow },
+      bloodCellFlow:     { ...bloodCellFlow },
+      lightningCellFlow: { ...lightningCellFlow },
+      debrisCellFlow:    { ...debrisCellFlow },
     };
   }
 
@@ -10526,6 +15080,7 @@ requestAnimationFrame(render);
     labels  = (s.labels || []).map(l => ({ ...l }));
     lights  = (s.lights || []).map(l => ({ ...l }));
     covers  = { ...(s.covers || {}) };
+    drawings = (s.drawings || []).map(d => ({ color: d.color, width: d.width, pts: (d.pts || []).map(p => ({ ...p })) }));
     traps   = JSON.parse(JSON.stringify(s.traps || {}));
 
     // Fog
@@ -10553,10 +15108,10 @@ requestAnimationFrame(render);
     if (s.bgImageDataUrl && s.bgImageDataUrl !== window._bgImageDataUrl) {
       window._bgImageDataUrl = s.bgImageDataUrl;
       const img = new Image();
-      img.onload = () => { bgImage = img; };
+      img.onload = () => { bgImage = img; if (typeof _syncMapUI === 'function') _syncMapUI(); if (typeof rebuildCells === 'function') rebuildCells(); };
       img.src = s.bgImageDataUrl;
     } else if (!s.bgImageDataUrl && window._bgImageDataUrl) {
-      bgImage = null; window._bgImageDataUrl = null;
+      bgImage = null; window._bgImageDataUrl = null; if (typeof _syncMapUI === 'function') _syncMapUI(); if (typeof rebuildCells === 'function') rebuildCells();
     }
 
     // Ambient light + weather (atmospheric, mirrors to players)
@@ -10650,6 +15205,40 @@ requestAnimationFrame(render);
   window.__mpNoteSynced = function (state) {
     try { lastSnapshotJson = JSON.stringify(state); } catch (e) {}
   };
+
+  // ── Projector sync bus ──────────────────────────────────────────
+  // The DM publishes the current grid state to /api/proj_state every
+  // PROJ_PERIOD ms; a Safari window opened with ?projector=1 polls the
+  // same endpoint and re-renders.  Started lazily on first request from
+  // the "Copy Projector URL" button so we don't waste cycles when not
+  // projecting.  Runs alongside multiplayer sync — it's a separate
+  // pipeline so it works even without an MP room.
+  let _projTimer = null;
+  let _projLastJson = '';
+  const PROJ_PERIOD = 400;          // ms — 2.5 pushes/sec is plenty for a board
+  const PROJ_URL    = 'http://localhost:8765/api/proj_state';
+
+  async function _projPushOnce() {
+    try {
+      const snap     = captureGridState();
+      const snapJson = JSON.stringify(snap);
+      if (snapJson === _projLastJson) return;
+      _projLastJson = snapJson;
+      // Fire-and-forget — projector view will tolerate the occasional miss
+      await fetch(PROJ_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state: snap }),
+        cache: 'no-store',
+      });
+    } catch (e) { /* silent */ }
+  }
+
+  window.__projInstallSyncBus = function () {
+    if (_projTimer) return;          // already running
+    _projPushOnce();                 // immediate first push
+    _projTimer = setInterval(_projPushOnce, PROJ_PERIOD);
+  };
 })();
 
 // ═══════════════════════════════════════════════════════════════════
@@ -10666,6 +15255,18 @@ requestAnimationFrame(render);
   const qtyIn     = document.getElementById('gi-qty');
   const wtIn      = document.getElementById('gi-weight');
   const notesIn   = document.getElementById('gi-notes');
+  let _giAppear = null;
+  function _giPrev() {
+    const cv = document.getElementById('gi-appear-prev'); if (!cv) return;
+    const g = cv.getContext('2d'); g.clearRect(0, 0, cv.width, cv.height);
+    if (_giAppear && window.ArcaneAvatar) window.ArcaneAvatar.render(g, 2, 2, 36, _giAppear);
+    else { g.fillStyle = 'rgba(255,255,255,0.2)'; g.font = '9px system-ui'; g.textAlign = 'center'; g.fillText('none', 20, 23); }
+  }
+  (function _wireGiAppear() {
+    const ab = document.getElementById('gi-appear-btn'), ac = document.getElementById('gi-appear-clear');
+    if (ab) ab.addEventListener('click', () => { if (!window.ArcaneAvatar) return; window.ArcaneAvatar.openEditor(_giAppear || window.ArcaneAvatar.DEFAULT, av => { _giAppear = av; _giPrev(); }); });
+    if (ac) ac.addEventListener('click', () => { _giAppear = null; _giPrev(); });
+  })();
 
   function refreshTargets() {
     if (!targetSel) return;
@@ -10698,6 +15299,7 @@ requestAnimationFrame(render);
     qtyIn.value  = '1';
     wtIn.value   = '0';
     notesIn.value = '';
+    _giAppear = null; _giPrev();
     overlay.classList.add('open');
     setTimeout(() => nameIn.focus(), 50);
   }
@@ -10721,9 +15323,11 @@ requestAnimationFrame(render);
     const notes = (notesIn.value || '').trim();
     const target = targetSel.value || 'all';
     const payload = '__GIVEITEM__:' + JSON.stringify({
-      name, qty, weight: wt, notes,
+      name, qty, weight: wt, notes, appearance: _giAppear || null,
     });
     window.mpSend(payload, target);
+    // Note: the appearance is offered to the player, who chooses whether to
+    // equip it (the DM does not force it onto their token).
 
     // DM feedback: jump to the relevant tab so they see the card go out
     if (target !== 'all' && window.mpSwitchTab) window.mpSwitchTab(target);
@@ -10888,6 +15492,54 @@ requestAnimationFrame(render);
       statusEl.textContent = '';
     }
   });
+
+  // ── App preferences (theme / autosave / default grid & board size / motion) ──
+  const PREFS_KEY = 'arcane-prefs';
+  const PREF_DEFAULTS = { accent: '#7C6FF7', autosave: 60000, gridmode: 'off', newboard: '30x20', reduceMotion: false };
+  function _loadPrefs() {
+    let p = {};
+    try { p = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}'); } catch (e) {}
+    return Object.assign({}, PREF_DEFAULTS, p);
+  }
+  function _savePrefs(p) { try { localStorage.setItem(PREFS_KEY, JSON.stringify(p)); } catch (e) {} }
+  function _shade(hex, amt) {   // lighten a #rrggbb hex by amt (0..1)
+    const n = parseInt((hex || '').replace('#', ''), 16); if (isNaN(n)) return hex;
+    let r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+    r = Math.round(r + (255 - r) * amt); g = Math.round(g + (255 - g) * amt); b = Math.round(b + (255 - b) * amt);
+    return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
+  }
+  function applyAccent(hex) {
+    const root = document.documentElement.style;
+    root.setProperty('--mp-accent', hex);
+    root.setProperty('--mp-accent-h', _shade(hex, 0.18));
+  }
+  const _prefs = _loadPrefs();
+  applyAccent(_prefs.accent);
+  window.__reduceMotion = !!_prefs.reduceMotion;
+  document.body.classList.toggle('reduce-motion', !!_prefs.reduceMotion);
+  if (typeof setAutosaveInterval === 'function') setAutosaveInterval(_prefs.autosave);
+  // Apply default grid mode + new-map size only on a fresh start (no saved board).
+  if (!localStorage.getItem('dnd-autosave')) {
+    if (_prefs.gridmode && _prefs.gridmode !== 'off' && typeof setGridMode === 'function') setGridMode(_prefs.gridmode);
+    const m = /^(\d+)x(\d+)$/.exec(_prefs.newboard || '');
+    if (m && typeof setBoardSize === 'function') setBoardSize(+m[1], +m[2]);
+  }
+  // Reflect saved values into the controls
+  const pAccent = document.getElementById('pref-accent');
+  const pAuto   = document.getElementById('pref-autosave');
+  const pGrid   = document.getElementById('pref-gridmode');
+  const pNew    = document.getElementById('pref-newboard');
+  const pMotion = document.getElementById('pref-reduce-motion');
+  if (pAccent) pAccent.value = _prefs.accent;
+  if (pAuto)   pAuto.value   = String(_prefs.autosave);
+  if (pGrid)   pGrid.value   = _prefs.gridmode;
+  if (pNew)    pNew.value    = _prefs.newboard;
+  if (pMotion) pMotion.checked = !!_prefs.reduceMotion;
+  if (pAccent) pAccent.addEventListener('input', e => { _prefs.accent = e.target.value; applyAccent(_prefs.accent); _savePrefs(_prefs); });
+  if (pAuto)   pAuto.addEventListener('change', e => { _prefs.autosave = parseInt(e.target.value, 10) || 0; if (typeof setAutosaveInterval === 'function') setAutosaveInterval(_prefs.autosave); _savePrefs(_prefs); });
+  if (pGrid)   pGrid.addEventListener('change', e => { _prefs.gridmode = e.target.value; if (typeof setGridMode === 'function') setGridMode(_prefs.gridmode); _savePrefs(_prefs); });
+  if (pNew)    pNew.addEventListener('change', e => { _prefs.newboard = e.target.value; _savePrefs(_prefs); });
+  if (pMotion) pMotion.addEventListener('change', e => { _prefs.reduceMotion = e.target.checked; window.__reduceMotion = e.target.checked; document.body.classList.toggle('reduce-motion', e.target.checked); _savePrefs(_prefs); });
 
   // ── Core check function ─────────────────────────────────────────
   async function checkForUpdates(manual = false) {

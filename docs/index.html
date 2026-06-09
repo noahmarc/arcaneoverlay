@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>D&D 4e Battle Grid</title>
-<link rel="stylesheet" href="style.css?v=23">
+<link rel="stylesheet" href="style.css?v=31">
 </head>
 <body>
 <div id="app">
@@ -205,6 +205,20 @@
                   <button class="shape-item" data-effect="difficult" data-shape="cone" role="menuitem"><span class="sicon">📐</span>Cone</button>
                   <button class="shape-item" data-effect="difficult" data-shape="circle" role="menuitem"><span class="sicon">⭕</span>Circle</button>
                   <button class="shape-item" data-effect="difficult" data-shape="square" role="menuitem"><span class="sicon">⬜</span>Square</button>
+                  <div class="water-flow-section">
+                    <span class="water-flow-label">LOG DIRECTION (DEBRIS)</span>
+                    <div class="water-flow-compass" id="debris-flow-compass">
+                      <button class="debris-dir-btn" data-angle="225" title="Northwest">↖</button>
+                      <button class="debris-dir-btn" data-angle="270" title="Up">↑</button>
+                      <button class="debris-dir-btn" data-angle="315" title="Northeast">↗</button>
+                      <button class="debris-dir-btn" data-angle="180" title="Left">←</button>
+                      <button class="debris-dir-btn active" data-angle="0" title="Horizontal">↔</button>
+                      <button class="debris-dir-btn" data-angle="0" title="Right">→</button>
+                      <button class="debris-dir-btn" data-angle="135" title="Southwest">↙</button>
+                      <button class="debris-dir-btn" data-angle="90" title="Down (vertical)">↓</button>
+                      <button class="debris-dir-btn" data-angle="45" title="Southeast">↘</button>
+                    </div>
+                  </div>
                 </div>
               </div>
               <div class="effect-group">
@@ -217,31 +231,27 @@
                   <button class="shape-item" data-effect="blood" data-shape="cone" role="menuitem"><span class="sicon">📐</span>Cone</button>
                   <button class="shape-item" data-effect="blood" data-shape="circle" role="menuitem"><span class="sicon">⭕</span>Circle</button>
                   <button class="shape-item" data-effect="blood" data-shape="square" role="menuitem"><span class="sicon">⬜</span>Square</button>
+                  <div class="water-flow-section">
+                    <span class="water-flow-label">FLOW DIRECTION</span>
+                    <div class="water-flow-compass" id="blood-flow-compass">
+                      <button class="blooddir-btn" data-angle="225" title="Northwest">↖</button>
+                      <button class="blooddir-btn" data-angle="270" title="Up">↑</button>
+                      <button class="blooddir-btn" data-angle="315" title="Northeast">↗</button>
+                      <button class="blooddir-btn" data-angle="180" title="Left">←</button>
+                      <button class="blooddir-btn active" data-angle="-1"  title="Still — static splatter (default)">○</button>
+                      <button class="blooddir-btn" data-angle="0"   title="Right">→</button>
+                      <button class="blooddir-btn" data-angle="135" title="Southwest">↙</button>
+                      <button class="blooddir-btn" data-angle="90"  title="Down">↓</button>
+                      <button class="blooddir-btn" data-angle="45"  title="Southeast">↘</button>
+                    </div>
+                  </div>
                 </div>
               </div>
-              <div class="effect-group">
-                <div class="effect-pill mud-pill" id="pill-mud">
-                  <button class="effect-main" data-effect="mud" aria-pressed="false" title="Mud terrain"><span class="icon">🟫</span>MUD</button>
-                  <button class="arrow-btn" data-toggle="mud" aria-haspopup="true" aria-expanded="false" aria-label="Mud shape options">▾</button>
-                </div>
-                <div class="shape-dropdown" id="dd-mud" role="menu">
-                  <button class="shape-item selected" data-effect="mud" data-shape="draw" role="menuitem"><span class="sicon">✏️</span>Freehand</button>
-                  <button class="shape-item" data-effect="mud" data-shape="cone" role="menuitem"><span class="sicon">📐</span>Cone</button>
-                  <button class="shape-item" data-effect="mud" data-shape="circle" role="menuitem"><span class="sicon">⭕</span>Circle</button>
-                  <button class="shape-item" data-effect="mud" data-shape="square" role="menuitem"><span class="sicon">⬜</span>Square</button>
-                </div>
+              <div class="effect-pill" id="pill-tree">
+                <button class="effect-main" data-effect="tree" aria-pressed="false" title="Tree — top-down scenery (sits on terrain/maps)"><span class="icon">🌳</span>TREE</button>
               </div>
-              <div class="effect-group">
-                <div class="effect-pill web-pill" id="pill-web">
-                  <button class="effect-main" data-effect="web" aria-pressed="false" title="Cobweb terrain"><span class="icon">🕸️</span>WEB</button>
-                  <button class="arrow-btn" data-toggle="web" aria-haspopup="true" aria-expanded="false" aria-label="Web shape options">▾</button>
-                </div>
-                <div class="shape-dropdown" id="dd-web" role="menu">
-                  <button class="shape-item selected" data-effect="web" data-shape="draw" role="menuitem"><span class="sicon">✏️</span>Freehand</button>
-                  <button class="shape-item" data-effect="web" data-shape="cone" role="menuitem"><span class="sicon">📐</span>Cone</button>
-                  <button class="shape-item" data-effect="web" data-shape="circle" role="menuitem"><span class="sicon">⭕</span>Circle</button>
-                  <button class="shape-item" data-effect="web" data-shape="square" role="menuitem"><span class="sicon">⬜</span>Square</button>
-                </div>
+              <div class="effect-pill" id="pill-rock">
+                <button class="effect-main" data-effect="rock" aria-pressed="false" title="Rock — top-down scenery (sits on terrain/maps)"><span class="icon">🪨</span>ROCK</button>
               </div>
               <button class="icon-btn cat-icon-btn" id="wall-btn" title="Wall tool — click and drag to draw walls · Shift-click to erase nearest wall"><span class="icon">🧱</span>WALL</button>
             </div>
@@ -280,81 +290,112 @@
               </div>
               <button class="icon-btn cat-icon-btn" id="inspect-btn" title="Inspect cell status effects"><span class="icon">🔍</span>INSPECT</button>
               <button class="icon-btn cat-icon-btn" id="ruler-btn" title="Measure distance — click and drag"><span class="icon">📐</span>RULER</button>
-              <button class="icon-btn cat-icon-btn" id="cover-btn" title="Mark cell edges with cover (½, ¾, full)"><span class="icon">🛡️</span>COVER</button>
+              <button class="icon-btn cat-icon-btn" id="cover-btn" title="Cover analyzer — click a token (the shooter); every other token shows its cover from walls/trees/rocks"><span class="icon">🛡️</span>COVER</button>
+              <button class="icon-btn cat-icon-btn" id="draw-btn" title="Freehand draw — annotate the map (drag to draw, Shift-drag to erase a stroke)"><span class="icon">✏️</span>DRAW</button>
+              <div id="draw-panel" style="display:none;align-items:center;gap:8px">
+                <input type="color" id="draw-color" value="#ff3030" title="Pen color" style="width:34px;height:24px;border:none;background:none;cursor:pointer">
+                <label style="font-size:11px;color:rgba(255,255,255,0.5)">Width <input type="range" id="draw-width" min="1" max="14" value="4" style="width:70px;vertical-align:middle"></label>
+                <button class="icon-btn" id="draw-clear" title="Erase all freehand drawings">✕ Clear</button>
+              </div>
               <button class="icon-btn cat-icon-btn" id="token-btn" title="Open bestiary &amp; place tokens — drag a creature onto the grid, or click an empty cell for a quick token, or click an existing token to edit"><span class="icon">🪙</span>TOKEN</button>
               <button class="icon-btn cat-icon-btn" id="bounds-btn" title="Set projection boundary for your table"><span class="icon">🖼️</span>TABLE</button>
               <button class="icon-btn cat-icon-btn" id="init-btn" title="Initiative tracker"><span class="icon">⚔️</span>INIT</button>
               <button class="icon-btn cat-icon-btn" id="project-btn" title="Open projection window for projector display"><span class="icon">🖥️</span>PROJECT</button>
-              <button class="icon-btn cat-icon-btn" id="fog-btn" title="Fog of War — drag to reveal, Shift-drag to hide"><span class="icon">🌫️</span>FOG</button>
-              <div id="fog-panel" style="display:none">
-                <button class="icon-btn" id="fog-cover-btn" title="Cover all tiles with fog">⬛ COVER</button>
-                <button class="icon-btn" id="fog-uncover-btn" title="Remove all fog">⬜ UNCOVER</button>
-              </div>
-              <button class="icon-btn cat-icon-btn" id="light-btn" title="Place light sources (torch, lantern, daylight) — uncover fog inside their radius"><span class="icon">🔦</span>LIGHT</button>
+              <button class="icon-btn cat-icon-btn" id="light-btn" title="Place light sources (torch, lantern, daylight) — uncover fog inside their radius. Also controls fog of war."><span class="icon">🔦</span>LIGHT</button>
               <div id="light-panel" style="display:none">
-                <div class="light-type-btns" id="light-place-type-btns">
-                  <button class="light-type-btn active" data-type="torch"     title="Torchlight — soft organic glow, radiates in all directions">🔦 Torch</button>
-                  <button class="light-type-btn"         data-type="spotlight" title="Spotlight — sharp focused beam with hard edges">💡 Spotlight</button>
+                <!-- ── Section: Place a light ─────────────────────── -->
+                <div class="lp-section">
+                  <div class="lp-section-title">💡 Place Light</div>
+                  <div class="lp-row">
+                    <div class="light-type-btns" id="light-place-type-btns">
+                      <button class="light-type-btn active" data-type="torch"     title="Torchlight — soft organic glow, radiates in all directions">🔦 Torch</button>
+                      <button class="light-type-btn"         data-type="spotlight" title="Spotlight — sharp focused beam with hard edges">💡 Spotlight</button>
+                    </div>
+                    <div class="lp-spacer"></div>
+                    <input type="color" id="light-place-color" value="#FFA040" title="Light color" class="light-color-swatch">
+                  </div>
+                  <div class="lp-row">
+                    <span class="lp-label">Radius</span>
+                    <input type="range" id="light-radius-input" min="1" max="20" value="5" step="1" aria-label="Light radius in squares">
+                    <input type="number" id="light-radius-val" value="5" min="1" max="20" step="1" aria-label="Light radius exact value" style="width:38px">
+                    <span class="lp-unit">sq</span>
+                    <span class="lp-label" style="margin-left:6px">Dim</span>
+                    <input type="number" id="light-place-dimradius" value="0" min="0" max="20" step="1" style="width:38px" title="Dim light outer radius (0 = no dim zone)">
+                    <span class="lp-unit">sq</span>
+                  </div>
+                  <div class="lp-row">
+                    <span class="lp-label">Shape</span>
+                    <div class="light-shape-btns" id="light-place-shape-btns">
+                      <button class="light-shape-btn active" data-shape="full"    title="Full circle (360°)">⬤</button>
+                      <button class="light-shape-btn"         data-shape="half"    title="Half circle (180°)">◑</button>
+                      <button class="light-shape-btn"         data-shape="quarter" title="Quarter circle (90°)">◔</button>
+                    </div>
+                    <div class="lp-spacer"></div>
+                    <button class="icon-btn" id="darkness-mode-btn" title="Draw Magical Darkness — click/drag to paint, Shift to erase. Suppresses all light.">🌑 Magical Darkness</button>
+                  </div>
                 </div>
-                <label for="light-radius-input" style="margin-left:6px">RADIUS</label>
-                <input type="range" id="light-radius-input" min="1" max="20" value="5" step="1" aria-label="Light radius in squares">
-                <input type="number" id="light-radius-val" value="5" min="1" max="20" step="1" aria-label="Light radius exact value" style="width:38px">
-                <span class="radius-note">sq</span>
-                <span class="radius-note" style="margin-left:6px">SHAPE</span>
-                <div class="light-shape-btns" id="light-place-shape-btns">
-                  <button class="light-shape-btn active" data-shape="full"    title="Full circle (360°)">⬤</button>
-                  <button class="light-shape-btn"         data-shape="half"    title="Half circle (180°)">◑</button>
-                  <button class="light-shape-btn"         data-shape="quarter" title="Quarter circle (90°)">◔</button>
+
+                <!-- ── Section: Scene atmosphere ────────────────── -->
+                <div class="lp-section">
+                  <div class="lp-section-title">☀️ Scene Atmosphere</div>
+                  <div class="lp-row">
+                    <span class="lp-label">Ambient</span>
+                    <input type="range" id="ambient-light-slider" min="0" max="100" value="100" step="1" style="width:90px">
+                    <span id="ambient-light-val" class="lp-num">100%</span>
+                    <div class="lp-spacer"></div>
+                    <div class="lp-btn-group">
+                      <button class="icon-btn lp-tod" id="tod-day"      title="Daytime — full daylight">☀️</button>
+                      <button class="icon-btn lp-tod" id="tod-dusk"     title="Dusk — dim ambient">🌅</button>
+                      <button class="icon-btn lp-tod" id="tod-night"    title="Night — very low ambient">🌙</button>
+                      <button class="icon-btn lp-tod" id="tod-midnight" title="Midnight — no ambient light">⬛</button>
+                    </div>
+                  </div>
+                  <div class="lp-row">
+                    <span class="lp-label">Weather</span>
+                    <select id="weather-type" class="lp-select">
+                      <option value="none">None</option>
+                      <option value="rain">🌧️ Rain</option>
+                      <option value="snow">❄️ Snow</option>
+                      <option value="fog">🌫️ Fog</option>
+                      <option value="ash">🔥 Ash</option>
+                    </select>
+                    <span class="lp-label" style="margin-left:6px">Intensity</span>
+                    <input type="range" id="weather-intensity" min="0" max="100" value="60" step="1" style="width:80px">
+                    <span id="weather-intensity-val" class="lp-num">60%</span>
+                  </div>
                 </div>
-                <span class="radius-note" style="margin-left:6px">DIM</span>
-                <input type="number" id="light-place-dimradius" value="0" min="0" max="20" step="1" style="width:38px" title="Dim light outer radius (0 = no dim zone)">
-                <span class="radius-note">sq</span>
-                <span class="radius-note" style="margin-left:6px">COLOR</span>
-                <input type="color" id="light-place-color" value="#FFA040" title="Light color" class="light-color-swatch">
-                <button class="icon-btn" id="darkness-mode-btn" title="Draw Magical Darkness — click/drag to paint, Shift to erase. Suppresses all light." style="margin-left:6px">🌑 DARK</button>
-                <div style="display:flex;align-items:center;gap:6px;margin-top:6px;flex-wrap:wrap">
-                  <span class="radius-note">AMBIENT</span>
-                  <input type="range" id="ambient-light-slider" min="0" max="100" value="100" step="1" style="width:80px">
-                  <span id="ambient-light-val" style="min-width:34px;font-size:11px">100%</span>
-                  <button class="icon-btn" id="tod-day"      title="Daytime — full daylight">☀️</button>
-                  <button class="icon-btn" id="tod-dusk"     title="Dusk — dim ambient">🌅</button>
-                  <button class="icon-btn" id="tod-night"    title="Night — very low ambient">🌙</button>
-                  <button class="icon-btn" id="tod-midnight" title="Midnight — no ambient light">⬛</button>
+
+                <!-- ── Section: Fog of war ─────────────────────── -->
+                <div class="lp-section">
+                  <div class="lp-section-title">🌫️ Fog of War</div>
+                  <div class="lp-row">
+                    <button class="icon-btn" id="fog-btn" title="Toggle fog of war on/off. While on, click again to enter the uncover brush — drag to reveal cells, Shift-drag to re-hide. Shift-click this button to turn fog off entirely.">🌫️ FOG</button>
+                    <div id="fog-panel" style="display:none;gap:4px;align-items:center">
+                      <button class="icon-btn" id="fog-cover-btn" title="Cover all tiles with fog">⬛ Cover All</button>
+                      <button class="icon-btn" id="fog-uncover-btn" title="Remove all fog">⬜ Uncover All</button>
+                    </div>
+                  </div>
                 </div>
-                <div style="display:flex;align-items:center;gap:6px;margin-top:6px;flex-wrap:wrap">
-                  <span class="radius-note">WEATHER</span>
-                  <select id="weather-type" style="font-size:11px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#fff;border-radius:6px;padding:2px 4px">
-                    <option value="none">None</option>
-                    <option value="rain">🌧️ Rain</option>
-                    <option value="snow">❄️ Snow</option>
-                    <option value="fog">🌫️ Fog</option>
-                    <option value="ash">🔥 Ash</option>
-                  </select>
-                  <span class="radius-note" style="margin-left:4px">INTENSITY</span>
-                  <input type="range" id="weather-intensity" min="0" max="100" value="60" step="1" style="width:70px">
-                  <span id="weather-intensity-val" style="min-width:34px;font-size:11px">60%</span>
+
+                <!-- ── Section: Saved encounters ───────────────── -->
+                <div class="lp-section">
+                  <div class="lp-section-title">📋 Placed Lights &amp; Presets</div>
+                  <div id="light-group-manager"></div>
+                  <div class="lp-row">
+                    <select id="encounter-preset-select" class="lp-select" style="flex:1;min-width:160px"><option value="">— encounter presets —</option></select>
+                    <button class="icon-btn" id="encounter-preset-save" title="Save current lights as a named preset">💾 Save</button>
+                    <button class="icon-btn" id="encounter-preset-load" title="Load selected preset">📂 Load</button>
+                  </div>
                 </div>
-                <div id="light-group-manager" style="margin-top:4px"></div>
-                <div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">
-                  <select id="encounter-preset-select" style="font-size:11px"><option value="">— encounter presets —</option></select>
-                  <button class="icon-btn" id="encounter-preset-save" title="Save current lights as a named preset">💾 Save</button>
-                  <button class="icon-btn" id="encounter-preset-load" title="Load selected preset">📂 Load</button>
-                </div>
-              </div>
-              <button class="icon-btn cat-icon-btn" id="grid-overlay-btn" title="Cycle grid display: Off → Coords (A1, B2…) → 1″ physical overlay → Off"><span class="icon">📏</span><span id="grid-overlay-label">GRID</span></button>
-              <div id="grid-scale-panel" style="display:none">
-                <label for="grid-scale-input">SCALE</label>
-                <input type="range" id="grid-scale-input" min="32" max="150" value="96" step="1" aria-label="Grid overlay size in pixels per inch">
-                <input type="number" id="grid-scale-val" value="96" min="32" max="150" step="1" aria-label="Grid overlay size exact value">
-                <span class="radius-note">px</span>
               </div>
               <button class="icon-btn cat-icon-btn" id="dm-ref-btn" title="Toggle DM reference view — full map without fog"><span class="icon">👁️</span>DM REF</button>
-              <label class="icon-btn cat-icon-btn" id="map-btn" title="Import background map image"><span class="icon">🗺️</span>MAP<input type="file" id="map-input" accept="image/*" style="position:absolute;opacity:0;pointer-events:none;width:0;height:0;overflow:hidden"></label>
+              <button class="icon-btn cat-icon-btn" id="map-btn" title="Import background map image"><span class="icon">🗺️</span>MAP</button>
               <div id="map-panel" style="display:none">
                 <button class="icon-btn" id="map-clear-btn" title="Remove background image">✕ CLEAR</button>
               </div>
               <button class="icon-btn cat-icon-btn" id="label-btn" title="Place text labels on the map · click cell to place or edit"><span class="icon">🏷️</span>LABEL</button>
               <button class="icon-btn cat-icon-btn" id="los-btn" title="Line of sight checker — drag to check LoS"><span class="icon">👁️</span>LOS</button>
+              <button class="icon-btn cat-icon-btn" id="dynvis-btn" title="Dynamic line-of-sight — darken everything tokens can't see through walls (give tokens a Sight radius)"><span class="icon">🌓</span>DYN VIS</button>
               <button class="icon-btn cat-icon-btn" id="trap-btn" title="Place DM-only trap markers · visible in DM Ref, hidden on projector"><span class="icon">⚠️</span>TRAPS</button>
               <button class="icon-btn cat-icon-btn" id="teleport-btn" title="Teleport a token — click token then destination"><span class="icon">✨</span>TPORT</button>
             </div>
@@ -376,6 +417,8 @@
         <button class="icon-btn" id="save-btn" title="Save current battle state to a JSON file">💾 SAVE</button>
         <label class="icon-btn" id="load-btn" title="Load a battle state from a JSON file">📂 LOAD<input type="file" id="load-input" style="position:absolute;opacity:0;pointer-events:none;width:0;height:0;overflow:hidden"></label>
         <button class="icon-btn" id="preset-btn" title="Save and restore named encounter presets">📋 PRESETS</button>
+        <button class="icon-btn" id="backup-btn" title="Back up EVERYTHING (board, character sheets, scenes, settings, soundboard) to one file">🗄 BACKUP</button>
+        <button class="icon-btn" id="restore-btn" title="Restore a full backup file (or drag a backup .json onto the window)">♻ RESTORE</button>
         <div id="preset-panel" style="display:none">
           <div id="preset-list"></div>
           <div id="preset-add-row">
@@ -385,6 +428,12 @@
         </div>
         <button class="icon-btn" id="scenes-btn" title="Save and switch between named scenes">🎬 SCENES</button>
         <div id="scenes-panel" style="display:none">
+          <div id="scene-quick-row" style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
+            <button id="scene-prev" title="Previous scene">◀</button>
+            <select id="scene-quick" title="Jump to a scene (auto-saves the current one first)" style="flex:1;min-width:120px"></select>
+            <button id="scene-next" title="Next scene">▶</button>
+            <button id="scene-update" title="Save the current board into the active scene">⬆ Update</button>
+          </div>
           <div id="scene-list"></div>
           <div id="scene-add-row">
             <input type="text" id="scene-name-in" placeholder="Scene name…" maxlength="28" autocomplete="off">
@@ -400,8 +449,9 @@
     </div>
     <div class="toolbar-right">
       <div class="toolbar-right-row">
-        <label>W<input type="range" id="col-slider" min="8" max="30" value="20" aria-label="Grid width"><span id="col-val">20</span></label>
-        <label>H<input type="range" id="row-slider" min="8" max="30" value="20" aria-label="Grid height"><span id="row-val">20</span></label>
+        <label>W<input type="range" id="col-slider" min="4" max="60" value="20" aria-label="Grid width"><span id="col-val">20</span></label>
+        <label>H<input type="range" id="row-slider" min="4" max="60" value="20" aria-label="Grid height"><span id="row-val">20</span></label>
+        <button class="icon-btn" id="board-btn" title="Board size &amp; projector scale / calibration">📐 BOARD</button>
         <button class="icon-btn" id="clear-btn" title="Clear all effects and tokens">CLR</button>
         <div id="app-border-picker" title="Choose the decorative frame around the battle grid">
           <button class="icon-btn" id="app-border-toggle" aria-haspopup="true" aria-expanded="false">🖼️ FRAME ▾</button>
@@ -428,6 +478,47 @@
             </label>
             <button class="settings-check-now" id="check-update-now-btn">Check Now</button>
             <div id="settings-update-status"></div>
+
+            <div class="settings-section-title" style="margin-top:14px">Preferences</div>
+            <label class="settings-row" for="pref-accent">
+              <span>Accent color</span>
+              <input type="color" id="pref-accent" value="#7C6FF7" style="margin-left:auto;width:34px;height:24px;border:none;background:none;cursor:pointer">
+            </label>
+            <label class="settings-row" for="pref-autosave">
+              <span>Autosave</span>
+              <select id="pref-autosave" style="margin-left:auto;background:#1a1a20;color:#fff;border:1px solid #34343c;border-radius:6px;padding:3px 6px">
+                <option value="0">Off</option>
+                <option value="30000">Every 30s</option>
+                <option value="60000">Every 60s</option>
+                <option value="300000">Every 5 min</option>
+              </select>
+            </label>
+            <label class="settings-row" for="pref-gridmode">
+              <span>Default grid</span>
+              <select id="pref-gridmode" style="margin-left:auto;background:#1a1a20;color:#fff;border:1px solid #34343c;border-radius:6px;padding:3px 6px">
+                <option value="off">Off</option>
+                <option value="coords">A1 coords</option>
+                <option value="inch">1″ grid</option>
+                <option value="hex">Hex</option>
+              </select>
+            </label>
+            <label class="settings-row" for="pref-newboard">
+              <span>New-map size</span>
+              <select id="pref-newboard" style="margin-left:auto;background:#1a1a20;color:#fff;border:1px solid #34343c;border-radius:6px;padding:3px 6px">
+                <option value="20x15">20 × 15</option>
+                <option value="25x18">25 × 18</option>
+                <option value="30x20">30 × 20</option>
+                <option value="40x30">40 × 30</option>
+              </select>
+            </label>
+            <label class="settings-row" for="pref-reduce-motion">
+              <input type="checkbox" id="pref-reduce-motion">
+              <span>Reduce motion (calmer terrain FX)</span>
+            </label>
+
+            <div class="settings-section-title" style="margin-top:14px">Help</div>
+            <button class="settings-check-now" id="open-keys-btn">⌨️ Keyboard shortcuts…</button>
+            <button class="settings-check-now" id="open-tour-btn">❓ Guided tour</button>
           </div>
         </div>
       </div>
@@ -449,6 +540,10 @@
           <span class="dock-icon">💬</span>
           <span class="dock-label">Chat</span>
           <span class="dock-badge" id="dock-mp-badge" aria-hidden="true">●</span>
+        </button>
+        <button class="dock-btn" data-target="music-launch" title="Audio — music, DJ mixer &amp; soundboard">
+          <span class="dock-icon">🎵</span>
+          <span class="dock-label">Audio</span>
         </button>
       </div>
     </div>
@@ -480,7 +575,9 @@
     </div>
     <div id="init-list" role="list"></div>
     <div id="init-controls">
+      <button class="init-ctrl-btn" id="init-roll-btn" title="Roll initiative for all tokens on the board (NPCs auto, players editable)">🎲 Roll All</button>
       <button class="init-ctrl-btn" id="init-sort-btn" title="Sort by initiative score">Sort ↓</button>
+      <button class="init-ctrl-btn" id="init-prev-btn" title="Back to previous turn">◀ Prev</button>
       <button class="init-ctrl-btn go" id="init-next-btn" title="Advance to next turn">Next Turn ▶</button>
       <button class="init-ctrl-btn" id="init-reset-btn" title="Reset to round 1">Reset</button>
       <button class="init-ctrl-btn" id="timer-btn" title="Toggle turn timer">⏱ Timer</button>
@@ -493,16 +590,18 @@
   <div class="modal">
     <h3 id="projector-modal-title">🖥️ PROJECTOR SETUP</h3>
     <ol class="proj-steps">
-      <li>In your OS display settings, set the projector as an <strong>extended display</strong> (not mirrored)</li>
-      <li>Click <strong>OPEN WINDOW</strong> below to open the projection window</li>
-      <li>Drag it to your projector display</li>
-      <li>Click the <strong>⛶ FULLSCREEN</strong> button inside that window</li>
+      <li>Set the projector as an <strong>extended display</strong> (System Settings → Displays → Stop Mirroring)</li>
+      <li>Click <strong>⛶ OPEN WINDOW</strong> below — a separate projector window opens</li>
+      <li>Drag that window to the projector display, then enter fullscreen (<strong>⌃ ⌘ F</strong>)</li>
+      <li>The game board appears on the projector while your DM tools stay here</li>
     </ol>
-    <p class="proj-note">Bluetooth projectors: connect first so the OS sees them as a display, then follow the steps above.</p>
+    <p class="proj-note">Fallback: if the popup is blocked (older build), use COPY URL and paste into any browser.</p>
     <div class="modal-btns">
-      <button class="modal-btn primary" id="proj-open-btn">OPEN WINDOW</button>
+      <button class="modal-btn primary" id="proj-open-btn">⛶ OPEN WINDOW</button>
+      <button class="modal-btn secondary" id="proj-copy-url-btn">📋 COPY URL (fallback)</button>
       <button class="modal-btn secondary" id="proj-cancel-btn">Cancel</button>
     </div>
+    <div id="proj-copy-feedback" style="margin-top:10px;font-size:11px;color:#9be09b;text-align:center;display:none"></div>
   </div>
 </div>
 
@@ -646,6 +745,12 @@
     <input type="text" id="tok-name" placeholder="Goblin, Fighter…" maxlength="12" autocomplete="off">
     <label>COLOR</label>
     <div class="color-row" id="color-swatches" role="radiogroup" aria-label="Token color"></div>
+    <label>APPEARANCE</label>
+    <div style="display:flex;align-items:center;gap:10px">
+      <canvas id="tok-avatar-prev" width="40" height="40" style="width:40px;height:40px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:6px;image-rendering:pixelated"></canvas>
+      <button type="button" id="tok-avatar-btn" style="background:#1f8fff;border:none;color:#04121f;font-weight:700;border-radius:6px;padding:7px 11px;cursor:pointer">🧙 Build avatar…</button>
+      <button type="button" id="tok-avatar-clear" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#cfcfe0;font-weight:700;border-radius:6px;padding:7px 10px;cursor:pointer">Plain disc</button>
+    </div>
     <div class="tok-row">
       <div class="tok-field">
         <label>SIZE</label>
@@ -684,8 +789,8 @@
       <input type="checkbox" id="tok-conc" style="width:14px;height:14px;accent-color:#9B59B6">
       <label for="tok-conc" style="font-size:11px;font-weight:700;letter-spacing:.05em;color:rgba(255,255,255,0.6)">CONCENTRATING</label>
     </div>
-    <label>EXHAUSTION
-      <select id="tok-exhaustion" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#fff;border-radius:6px;padding:4px 8px;font-size:12px;margin-left:6px">
+    <label class="tok-inline">EXHAUSTION
+      <select id="tok-exhaustion" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#fff;border-radius:6px;padding:4px 8px;font-size:12px;flex:1;min-width:160px">
         <option value="0">None</option>
         <option value="1">1 – Disadvantage on checks</option>
         <option value="2">2 – Speed halved</option>
@@ -695,11 +800,24 @@
         <option value="6">6 – Death</option>
       </select>
     </label>
-    <label>LIGHT (squares)
+    <label class="tok-inline">LIGHT
       <span style="font-size:11px;color:rgba(255,255,255,0.45);font-weight:400">Bright</span>
-      <input type="number" id="tok-light-bright" min="0" max="20" value="0" style="width:42px">
+      <input type="number" id="tok-light-bright" min="0" max="20" value="0" style="width:48px">
       <span style="font-size:11px;color:rgba(255,255,255,0.45);font-weight:400">Dim</span>
-      <input type="number" id="tok-light-dim" min="0" max="30" value="0" style="width:42px">
+      <input type="number" id="tok-light-dim" min="0" max="30" value="0" style="width:48px">
+      <span class="radius-note">squares</span>
+    </label>
+    <label class="tok-inline">SIGHT
+      <input type="number" id="tok-sight" min="0" max="40" value="0" style="width:48px">
+      <span class="radius-note">squares</span>
+      <span style="font-size:10px;color:rgba(255,255,255,0.4);font-weight:400;flex-basis:100%">Reveals what this token can see through walls (with Dynamic LoS on)</span>
+    </label>
+    <label class="tok-inline">AURA
+      <span style="font-size:11px;color:rgba(255,255,255,0.45);font-weight:400">Radius</span>
+      <input type="number" id="tok-aura-radius" min="0" max="20" value="0" style="width:48px">
+      <span style="font-size:11px;color:rgba(255,255,255,0.45);font-weight:400">Color</span>
+      <input type="color" id="tok-aura-color" value="#ffd24a" style="width:36px;height:26px;vertical-align:middle;border:none;background:none;cursor:pointer">
+      <span style="font-size:10px;color:rgba(255,255,255,0.4);font-weight:400;flex-basis:100%">A colored emanation that moves with the token</span>
     </label>
     <label for="tok-owner" style="margin-top:4px">OWNED BY <span style="font-size:10px;color:rgba(255,255,255,0.4);font-weight:400">(determines whose fog this token reveals on player clients)</span></label>
     <select id="tok-owner" style="width:100%;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#fff;border-radius:6px;padding:4px 8px;font-size:12px"><option value="">— DM only (no player vision) —</option></select>
@@ -829,6 +947,10 @@
       <div class="be-row"><label>Languages</label><input id="be-languages" type="text" placeholder="Common, Goblin…"></div>
       <div class="be-row"><label>Notes</label><textarea id="be-notes" rows="3" placeholder="Tactics, special abilities, source page…"></textarea></div>
 
+      <div class="be-section-title">ATTACKS  <span style="font-weight:400;font-size:10px;opacity:.6">one-click to-hit + damage</span></div>
+      <div id="be-attacks"></div>
+      <button id="be-attack-add" type="button" class="be-attack-add">＋ Add attack</button>
+
       <div class="be-editor-footer">
         <button id="be-save-btn">💾 Save</button>
         <button id="be-delete-btn" style="display:none">🗑 Delete</button>
@@ -876,6 +998,13 @@
       <div class="gi-row">
         <label>Notes (optional)</label>
         <textarea id="gi-notes" rows="2" placeholder="A short flavour blurb or rules note"></textarea>
+      </div>
+      <div class="gi-row" style="align-items:center">
+        <label>Appearance</label>
+        <canvas id="gi-appear-prev" width="40" height="40" style="width:40px;height:40px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:6px;image-rendering:pixelated"></canvas>
+        <button id="gi-appear-btn" type="button" style="background:#7a4fd0;border:none;color:#fff;font-weight:700;border-radius:6px;padding:6px 10px;cursor:pointer;margin-left:8px">🧙 Set look…</button>
+        <button id="gi-appear-clear" type="button" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#cfcfe0;font-weight:700;border-radius:6px;padding:6px 8px;cursor:pointer;margin-left:6px">None</button>
+        <span style="font-size:10px;color:rgba(255,255,255,0.4);margin-left:8px">Optional: this item changes the recipient's token appearance when granted.</span>
       </div>
     </div>
     <div id="give-item-footer">
@@ -937,6 +1066,13 @@
       <button id="sh-delete-btn" title="Delete this character sheet">🗑</button>
     </div>
     <div id="sheet-body">
+      <div class="sheet-row" style="align-items:center">
+        <label>Avatar</label>
+        <canvas id="sh-avatar-prev" width="44" height="44" style="width:44px;height:44px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:7px;image-rendering:pixelated"></canvas>
+        <button id="sh-avatar-btn" type="button" style="background:#1f8fff;border:none;color:#04121f;font-weight:700;border-radius:6px;padding:7px 11px;cursor:pointer;margin-left:8px">🧙 Build avatar…</button>
+        <button id="sh-avatar-remove" type="button" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#cfcfe0;font-weight:700;border-radius:6px;padding:7px 9px;cursor:pointer;margin-left:6px">✕ Remove</button>
+        <span style="font-size:10px;color:rgba(255,255,255,0.4);margin-left:8px;flex-basis:100%">Your top-down token appearance — applied to your mini on the board.</span>
+      </div>
       <div class="sheet-row">
         <label>Name</label><input id="sh-name" type="text" placeholder="Hero">
         <label>Level</label><input id="sh-level" type="number" min="1" max="30" value="1" style="width:54px">
@@ -987,6 +1123,24 @@
       <div class="sheet-section-title">SKILLS  <span class="sh-hint">✔ = trained (+5) · click 🎲 to roll</span></div>
       <div id="sh-skills" class="sheet-skills"></div>
       <div id="sh-result" class="sh-result" style="display:none"></div>
+
+      <div class="sheet-section-title">SPELLS &amp; RESOURCES  <span class="sh-hint">click pips to spend / restore</span></div>
+      <div id="sh-rest-row">
+        <button id="sh-short-rest" type="button" title="Restore short-rest resources">☕ Short Rest</button>
+        <button id="sh-long-rest" type="button" title="Restore all spell slots &amp; resources">🌙 Long Rest</button>
+      </div>
+      <div id="sh-spellslots"></div>
+      <div id="sh-resources"></div>
+      <div id="sh-res-add-row">
+        <input id="sh-res-name" type="text" placeholder="Resource (Ki, Rage…)" maxlength="40">
+        <input id="sh-res-max" type="number" value="1" min="1" max="99" title="Maximum uses">
+        <select id="sh-res-rest" title="When this resource refreshes">
+          <option value="long">Long rest</option>
+          <option value="short">Short rest</option>
+          <option value="none">Manual</option>
+        </select>
+        <button id="sh-res-add" type="button" title="Add resource">＋ Add</button>
+      </div>
 
       <div class="sheet-section-title">INVENTORY  <span class="sh-hint">✔ = equipped · ± adjust quantity · 🗑 remove</span></div>
       <div id="sh-inventory" class="sheet-inventory"></div>
@@ -1178,6 +1332,13 @@
       <!-- DM-only tools -->
       <div id="mp-dm-roll-tools">
         <div class="mp-dm-row">
+          <label for="mp-dm-game-version" style="font-size:11px;letter-spacing:.06em;color:rgba(255,255,255,0.6)">EDITION</label>
+          <select id="mp-dm-game-version" aria-label="Game edition" title="Sets the table's D&amp;D edition. Players' sheets switch to the matching variant and the per-sheet toggle is locked.">
+            <option value="4e">D&amp;D 4e</option>
+            <option value="5e">D&amp;D 5e</option>
+          </select>
+        </div>
+        <div class="mp-dm-row">
           <select id="mp-dm-roll-skill" aria-label="Skill to request"><!-- populated by JS --></select>
           <select id="mp-dm-roll-target" aria-label="Who to send the request to"><!-- populated by JS --></select>
           <button id="mp-dm-roll-req" title="Send a roll request">🎲 Request</button>
@@ -1186,6 +1347,9 @@
           <button id="mp-dm-give-item-btn" title="Send an item directly to a player's inventory">🎁 Send Item</button>
         </div>
       </div>
+
+      <!-- Player-visible edition banner (set by the DM) -->
+      <div id="mp-edition-banner" style="display:none;font-size:11px;letter-spacing:.06em;padding:6px 10px;background:rgba(120,90,220,0.18);border:1px solid rgba(170,140,255,0.32);border-radius:6px;color:#d8c8ff;text-align:center"></div>
 
       <!-- Message feed -->
       <div id="mp-messages" role="log" aria-live="polite" aria-label="Chat messages"></div>
@@ -1213,6 +1377,68 @@
     </div>
   </div>
 </div>
-<script src="grid.js?v=46"></script>
+<script>
+/* Load grid.js through the local no-cache server so edits always apply
+   (file:// ignores the ?v= query for caching). Retry until the server is up. */
+/* Pull a fresh style.css from the no-cache server so CSS edits never go stale
+   (the file:// <link> above gives instant base styling; this overrides it). */
+(function loadStyle(tries){
+  tries = tries || 0;
+  var l = document.createElement('link');
+  l.rel = 'stylesheet';
+  l.href = 'http://localhost:8765/style.css?t=' + Date.now();
+  l.onerror = function(){ if (tries < 60) setTimeout(function(){ loadStyle(tries+1); }, 300); };
+  document.head.appendChild(l);
+})();
+(function loadGrid(tries){
+  tries = tries || 0;
+  var s = document.createElement('script');
+  s.src = 'http://localhost:8765/grid.js?t=' + Date.now();
+  s.onerror = function(){ if (tries < 60) setTimeout(function(){ loadGrid(tries+1); }, 300); };
+  document.head.appendChild(s);
+})();
+(function loadAvatar(tries){
+  tries = tries || 0;
+  var s = document.createElement('script');
+  s.src = 'http://localhost:8765/avatar.js?t=' + Date.now();
+  s.onerror = function(){ if (tries < 60) setTimeout(function(){ loadAvatar(tries+1); }, 300); };
+  document.head.appendChild(s);
+})();
+(function loadBackup(tries){
+  tries = tries || 0;
+  var s = document.createElement('script');
+  s.src = 'http://localhost:8765/backup.js?t=' + Date.now();
+  s.onerror = function(){ if (tries < 60) setTimeout(function(){ loadBackup(tries+1); }, 300); };
+  document.head.appendChild(s);
+})();
+</script>
+<script>
+/* Load music.js through the local server (which sends no-cache) with a
+   timestamp + retry, so it always loads the freshest copy and survives the
+   server not being ready the instant the page parses. */
+(function loadMusic(tries){
+  tries = tries || 0;
+  var s = document.createElement('script');
+  s.src = 'http://localhost:8765/music.js?t=' + Date.now();
+  s.onerror = function(){ if (tries < 40) setTimeout(function(){ loadMusic(tries+1); }, 400); };
+  s.onload = function(){ loadMixer(0); };
+  document.body.appendChild(s);
+})();
+function loadMixer(tries){
+  tries = tries || 0;
+  var s = document.createElement('script');
+  s.src = 'http://localhost:8765/mixer.js?t=' + Date.now();
+  s.onerror = function(){ if (tries < 40) setTimeout(function(){ loadMixer(tries+1); }, 400); };
+  s.onload = function(){ loadSampler(0); };
+  document.body.appendChild(s);
+}
+function loadSampler(tries){
+  tries = tries || 0;
+  var s = document.createElement('script');
+  s.src = 'http://localhost:8765/sampler.js?t=' + Date.now();
+  s.onerror = function(){ if (tries < 40) setTimeout(function(){ loadSampler(tries+1); }, 400); };
+  document.body.appendChild(s);
+}
+</script>
 </body>
 </html>
