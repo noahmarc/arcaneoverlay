@@ -15452,7 +15452,7 @@ requestAnimationFrame(render);
 
 // ── Auto-update checker ──────────────────────────────────────────────────────
 (function () {
-  const CURRENT_VERSION  = '1.7';
+  const CURRENT_VERSION  = '1.8';
   // Route through the local server so the WKWebView (file:// origin) can
   // reach an external URL without hitting Same-Origin-Policy restrictions.
   const MANIFEST_URL     = 'http://localhost:8765/api/check_update';
