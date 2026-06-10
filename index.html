@@ -1378,48 +1378,50 @@
   </div>
 </div>
 <script>
-/* Load grid.js through the local no-cache server so edits always apply
-   (file:// ignores the ?v= query for caching). Retry until the server is up. */
-/* Pull a fresh style.css from the no-cache server so CSS edits never go stale
-   (the file:// <link> above gives instant base styling; this overrides it). */
+/* Script/style loading is environment-aware:
+   • file:// (the Mac app)  → load via the local no-cache server so edits always
+     apply (file:// ignores the ?v= query for caching). Retry until it's up.
+   • http(s) (hosted player client on GitHub Pages, or the portable bundle
+     served by server.py) → load RELATIVE paths; localhost:8765 doesn't exist
+     for remote players and would be blocked as mixed content on https. */
+var __SRC_BASE = (location.protocol === 'file:') ? 'http://localhost:8765/' : '';
 (function loadStyle(tries){
   tries = tries || 0;
   var l = document.createElement('link');
   l.rel = 'stylesheet';
-  l.href = 'http://localhost:8765/style.css?t=' + Date.now();
+  l.href = __SRC_BASE + 'style.css?t=' + Date.now();
   l.onerror = function(){ if (tries < 60) setTimeout(function(){ loadStyle(tries+1); }, 300); };
   document.head.appendChild(l);
 })();
 (function loadGrid(tries){
   tries = tries || 0;
   var s = document.createElement('script');
-  s.src = 'http://localhost:8765/grid.js?t=' + Date.now();
+  s.src = __SRC_BASE + 'grid.js?t=' + Date.now();
   s.onerror = function(){ if (tries < 60) setTimeout(function(){ loadGrid(tries+1); }, 300); };
   document.head.appendChild(s);
 })();
 (function loadAvatar(tries){
   tries = tries || 0;
   var s = document.createElement('script');
-  s.src = 'http://localhost:8765/avatar.js?t=' + Date.now();
+  s.src = __SRC_BASE + 'avatar.js?t=' + Date.now();
   s.onerror = function(){ if (tries < 60) setTimeout(function(){ loadAvatar(tries+1); }, 300); };
   document.head.appendChild(s);
 })();
 (function loadBackup(tries){
   tries = tries || 0;
   var s = document.createElement('script');
-  s.src = 'http://localhost:8765/backup.js?t=' + Date.now();
+  s.src = __SRC_BASE + 'backup.js?t=' + Date.now();
   s.onerror = function(){ if (tries < 60) setTimeout(function(){ loadBackup(tries+1); }, 300); };
   document.head.appendChild(s);
 })();
 </script>
 <script>
-/* Load music.js through the local server (which sends no-cache) with a
-   timestamp + retry, so it always loads the freshest copy and survives the
-   server not being ready the instant the page parses. */
+/* Audio modules — same environment-aware base, chained so music → mixer →
+   sampler initialise in dependency order. */
 (function loadMusic(tries){
   tries = tries || 0;
   var s = document.createElement('script');
-  s.src = 'http://localhost:8765/music.js?t=' + Date.now();
+  s.src = __SRC_BASE + 'music.js?t=' + Date.now();
   s.onerror = function(){ if (tries < 40) setTimeout(function(){ loadMusic(tries+1); }, 400); };
   s.onload = function(){ loadMixer(0); };
   document.body.appendChild(s);
@@ -1427,7 +1429,7 @@
 function loadMixer(tries){
   tries = tries || 0;
   var s = document.createElement('script');
-  s.src = 'http://localhost:8765/mixer.js?t=' + Date.now();
+  s.src = __SRC_BASE + 'mixer.js?t=' + Date.now();
   s.onerror = function(){ if (tries < 40) setTimeout(function(){ loadMixer(tries+1); }, 400); };
   s.onload = function(){ loadSampler(0); };
   document.body.appendChild(s);
@@ -1435,7 +1437,7 @@ function loadMixer(tries){
 function loadSampler(tries){
   tries = tries || 0;
   var s = document.createElement('script');
-  s.src = 'http://localhost:8765/sampler.js?t=' + Date.now();
+  s.src = __SRC_BASE + 'sampler.js?t=' + Date.now();
   s.onerror = function(){ if (tries < 40) setTimeout(function(){ loadSampler(tries+1); }, 400); };
   document.body.appendChild(s);
 }
