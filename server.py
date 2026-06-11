@@ -190,6 +190,7 @@ async def handle_grid_state(writer, body):
     is_dm = (pid == room['dm_id'])
     prev = room.get('grid_state') or {}
     pushed_new_bg = bool(state.get('bgImageDataUrl')) and not state.get('bgKeep')
+    bg_missing = False
     if is_dm:
         # DM has full authority — replace the whole state.
         # `bgKeep` means the client skipped re-sending the (multi-MB) map
@@ -199,6 +200,10 @@ async def handle_grid_state(writer, body):
             state.pop('bgKeep', None)
             if prev.get('bgImageDataUrl'):
                 state['bgImageDataUrl'] = prev['bgImageDataUrl']
+            else:
+                # We were told to keep an image we don't have (server
+                # restarted). Tell the DM so they re-send it in full.
+                bg_missing = True
         room['grid_state'] = state
     else:
         # Player push: merge only the fields players are allowed to mutate
@@ -228,7 +233,7 @@ async def handle_grid_state(writer, body):
         'ts':    now_ms(),
     }
     add_event(room, ev)
-    json_ok(writer, {'ok': True})
+    json_ok(writer, {'ok': True, 'bg_missing': bg_missing})
 
 async def handle_grid_state_get(writer, params):
     """Return the full stored snapshot (incl. the map image). Used by clients
@@ -812,4 +817,77 @@ async def handle_connection(reader, writer):
                 await handle_sounds_search(writer, parse_qs(qs), origin)
             elif method == 'GET' and endpoint == 'sounds/fetch':
                 await handle_sounds_fetch(writer, parse_qs(qs), origin)
-            elif method == 'POST' and e
+            elif method == 'POST' and endpoint == 'save_recording':
+                await handle_save_recording(writer, raw_body, parse_qs(qs), origin)
+            else:
+                body_bytes = b'Not Found'
+                http_response(writer, '404 Not Found', body_bytes, 'text/plain')
+
+            await writer.drain()
+            writer.close()
+            return
+
+        # ── Static file serving ────────────────────────────────────────
+        if method != 'GET':
+            writer.write(b'HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\n\r\n')
+            await writer.drain()
+            writer.close()
+            return
+
+        if path in ('/', ''):
+            path = '/index.html'
+
+        file_path = STATIC_DIR / path.lstrip('/')
+        # Prevent directory traversal
+        try:
+            file_path.resolve().relative_to(STATIC_DIR.resolve())
+        except ValueError:
+            writer.write(b'HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n')
+            await writer.drain()
+            writer.close()
+            return
+
+        try:
+            data = file_path.read_bytes()
+        except FileNotFoundError:
+            writer.write(b'HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nNot Found')
+            await writer.drain()
+            writer.close()
+            return
+        except Exception:
+            writer.write(b'HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\n\r\nError')
+            await writer.drain()
+            writer.close()
+            return
+
+        mime = mimetypes.guess_type(str(file_path))[0] or 'application/octet-stream'
+        hdrs = (
+            f'HTTP/1.1 200 OK\r\n'
+            f'Content-Type: {mime}\r\n'
+            f'Content-Length: {len(data)}\r\n'
+            f'{CORS_HEADERS}'
+            f'Cache-Control: no-cache\r\n'
+            f'Connection: close\r\n'
+            f'\r\n'
+        )
+        writer.write(hdrs.encode() + data)
+        await writer.drain()
+        writer.close()
+
+    except Exception:
+        try:
+            writer.close()
+        except Exception:
+            pass
+
+# ── Entry point ────────────────────────────────────────────────────────────────
+async def main():
+    port = int(os.environ.get('PORT', 8765))
+    server = await asyncio.start_server(handle_connection, '0.0.0.0', port)
+    print(f'ArcaneOverlay server running on port {port}')
+    print(f'Serving files from: {STATIC_DIR}')
+    async with server:
+        await server.serve_forever()
+
+if __name__ == '__main__':
+    asyncio.run(main())

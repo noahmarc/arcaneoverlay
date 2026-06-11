@@ -15109,6 +15109,8 @@ requestAnimationFrame(render);
       bloodCellFlow:     { ...bloodCellFlow },
       lightningCellFlow: { ...lightningCellFlow },
       debrisCellFlow:    { ...debrisCellFlow },
+      darknessZones: darknessZones.map(dz => ({ ...dz, cells: [...dz.cells] })),
+      terrainAlpha:  { ...terrainAlpha },
     };
   }
 
@@ -15122,6 +15124,9 @@ requestAnimationFrame(render);
     // Also skip while a token drag is in progress — otherwise the array
     // gets rebuilt under the dragged token and the move is lost.
     if (typeof draggingToken !== 'undefined' && draggingToken) return;
+    // Same for an in-progress freehand pen stroke: replacing `drawings`
+    // mid-stroke would orphan the stroke being drawn.
+    if (typeof _penStroke !== 'undefined' && _penStroke) return;
     // Log to console so we can diagnose blank-page reports
     try { console.log('[arcane] applying grid_state', {
       rows: s.rows, cols: s.cols,
@@ -15172,6 +15177,16 @@ requestAnimationFrame(render);
     covers  = { ...(s.covers || {}) };
     drawings = (s.drawings || []).map(d => ({ color: d.color, width: d.width, pts: (d.pts || []).map(p => ({ ...p })) }));
     traps   = JSON.parse(JSON.stringify(s.traps || {}));
+    // Per-cell flow directions — captured since day one but never applied on
+    // the receiving side, so players always saw default flow angles.
+    if (s.waterCellFlow)     waterCellFlow     = { ...s.waterCellFlow };
+    if (s.lavaCellFlow)      lavaCellFlow      = { ...s.lavaCellFlow };
+    if (s.bloodCellFlow)     bloodCellFlow     = { ...s.bloodCellFlow };
+    if (s.lightningCellFlow) lightningCellFlow = { ...s.lightningCellFlow };
+    if (s.debrisCellFlow)    debrisCellFlow    = { ...s.debrisCellFlow };
+    // Darkness zones + per-terrain opacity (visual parity with the DM's board)
+    if (s.darknessZones) darknessZones = s.darknessZones.map(dz => ({ ...dz, cells: [...(dz.cells || [])] }));
+    if (s.terrainAlpha) { for (const k in terrainAlpha) delete terrainAlpha[k]; Object.assign(terrainAlpha, s.terrainAlpha); }
 
     // Fog
     fogEnabled = !!s.fogEnabled;
@@ -15284,22 +15299,34 @@ requestAnimationFrame(render);
         inflight = false;
         return;
       }
-      // The background map can be a multi-MB data URL. Sending it with every
-      // token nudge floods the relay and every poller — so once a given image
-      // has been pushed, later pushes replace it with a `bgKeep` marker and
-      // the server/receivers retain the copy they already have.
-      const wire = { ...snap };
-      if (wire.bgImageDataUrl && wire.bgImageDataUrl === lastPushedBg) {
-        delete wire.bgImageDataUrl;
-        wire.bgKeep = 1;
-      }
-      // Everyone in the room pushes. The server merges:
+      // Everyone in the room pushes, but the server merges per role:
       //   • DM pushes replace the full state.
-      //   • Non-DM pushes only update the `tokens` field —
-      //     preserving the DM's effects / walls / fog / etc.
-      await window.__mpApi('/api/grid_state', { room, player_id: myId, state: wire });
+      //   • Player pushes only merge `tokens`/`labels` — so players send
+      //     ONLY those fields. (They used to ship the whole board incl.
+      //     the map image on every push, all of it discarded server-side.)
+      const isDM = !!(window.__mpIsDM && window.__mpIsDM());
+      let wire;
+      if (isDM) {
+        // The background map can be a multi-MB data URL. Sending it with
+        // every token nudge floods the relay and every poller — so once a
+        // given image has been pushed, later pushes replace it with a
+        // `bgKeep` marker and the server/receivers retain their copy.
+        wire = { ...snap };
+        if (wire.bgImageDataUrl && wire.bgImageDataUrl === lastPushedBg) {
+          delete wire.bgImageDataUrl;
+          wire.bgKeep = 1;
+        }
+      } else {
+        wire = { v: 1, tokens: snap.tokens, labels: snap.labels };
+      }
+      const resp = await window.__mpApi('/api/grid_state', { room, player_id: myId, state: wire });
       lastSnapshotJson = snapJson;
-      lastPushedBg = snap.bgImageDataUrl || null;
+      if (isDM) {
+        lastPushedBg = snap.bgImageDataUrl || null;
+        // Server restarted and lost the image while we were sending bgKeep
+        // markers → re-send the full image on the next push.
+        if (resp && resp.bg_missing) { lastPushedBg = null; pending = true; }
+      }
     } catch (e) {
       // Silent — next mutation will retry
     } finally {

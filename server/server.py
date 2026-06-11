@@ -181,6 +181,7 @@ async def handle_grid_state(writer, body):
     is_dm = (pid == room['dm_id'])
     prev = room.get('grid_state') or {}
     pushed_new_bg = bool(state.get('bgImageDataUrl')) and not state.get('bgKeep')
+    bg_missing = False
     if is_dm:
         # DM has full authority — replace the whole state.
         # `bgKeep` means the client skipped re-sending the (multi-MB) map
@@ -190,6 +191,10 @@ async def handle_grid_state(writer, body):
             state.pop('bgKeep', None)
             if prev.get('bgImageDataUrl'):
                 state['bgImageDataUrl'] = prev['bgImageDataUrl']
+            else:
+                # We were told to keep an image we don't have (server
+                # restarted). Tell the DM so they re-send it in full.
+                bg_missing = True
         room['grid_state'] = state
     else:
         # Player push: merge only the fields players are allowed to mutate
@@ -219,7 +224,7 @@ async def handle_grid_state(writer, body):
         'ts':    now_ms(),
     }
     add_event(room, ev)
-    json_ok(writer, {'ok': True})
+    json_ok(writer, {'ok': True, 'bg_missing': bg_missing})
 
 async def handle_grid_state_get(writer, params):
     """Return the full stored snapshot (incl. the map image). Used by clients
