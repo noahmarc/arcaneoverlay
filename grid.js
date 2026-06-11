@@ -11985,10 +11985,36 @@ requestAnimationFrame(render);
       if (data.ts) pollTs = data.ts;
     } catch(e) {}
   }
+  let _rejoining = false;
   async function heartbeat() {
     if (!roomCode || !myId) return;
-    try { await api('/api/heartbeat', {room: roomCode, player_id: myId}); } catch(e) {}
+    try {
+      const d = await api('/api/heartbeat', {room: roomCode, player_id: myId});
+      // If the server purged us (laptop slept / tab was throttled), our pushes
+      // would 403 silently forever. Rejoin under the same name to recover.
+      if (d && d.ok && d.in_room === false && !isDM && !_rejoining) {
+        _rejoining = true;
+        try {
+          const r = await api('/api/join_room', { room: roomCode, name: myName });
+          if (r && r.ok) {
+            myId = r.player_id; window.__arcaneMyId = myId;
+            players = r.players; dmId = r.dm_id;
+            renderPlayers(); renderTabs();
+            addSysMsg('all', '🔌 Reconnected to the room.');
+            if (r.grid_state && typeof window.__applyMpGridState === 'function') {
+              try { window.__applyMpGridState(r.grid_state); } catch(e) {}
+            }
+          }
+        } catch(e) {}
+        _rejoining = false;
+      }
+    } catch(e) {}
   }
+  // Waking from a throttled/background tab: sync up immediately instead of
+  // waiting out the timers.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && roomCode && myId) { heartbeat(); poll(); }
+  });
 
   // Event handler
   function handleEvent(ev) {
@@ -12005,7 +12031,11 @@ requestAnimationFrame(render);
         players = ev.players;
         renderPlayers();
         if (activeTab === ev.id) switchTab('all');
+        // Their PM tab disappears from the tab bar, so any unread count on it
+        // would otherwise keep the badge lit forever.
+        delete unread[ev.id];
         renderTabs();
+        updateBadge();
         addSysMsg('all', `${ev.name} left the room.`);
         break;
       case 'chat':
@@ -12057,7 +12087,11 @@ requestAnimationFrame(render);
       const ver = (verSel && verSel.value) || '4e';
       window.__mpBroadcastEdition && window.__mpBroadcastEdition(ver);
     }
-    window.__mpApplyEditionLock(null, false);   // no edition lock yet for non-DM
+    if (!isDM) window.__mpApplyEditionLock(null, false);   // players start unlocked until the DM's broadcast arrives (DM keeps the banner they just set)
+    // Fresh room ⇒ force the first board push even if the sync layer still
+    // remembers the last room's snapshot (otherwise a re-created room never
+    // receives the board until something changes).
+    if (typeof window.__mpResetSync === 'function') window.__mpResetSync();
     // Refresh the DM player-link preview now that the room code exists
     if (typeof window.__mpRefreshPlayerLink === 'function') {
       window.__mpRefreshPlayerLink();
@@ -12280,6 +12314,43 @@ requestAnimationFrame(render);
       if (ver === '4e' || ver === '5e') applyEditionLock(ver, false);
       return;
     }
+    // Silent protocol messages — consume BEFORE the chat feed so raw
+    // __HP__:{...} JSON never renders as a message or bumps unread counts.
+    // (The sender already applied the change locally, so skip own echoes.)
+    if (typeof msg.text === 'string') {
+      if (msg.text.startsWith('__HP__:')) {
+        if (msg.from_id !== myId) {
+          try {
+            const h = JSON.parse(msg.text.slice('__HP__:'.length));
+            if (isDM) { if (window.arcaneApplyTokenHp) window.arcaneApplyTokenHp(h.name, h.hp, h.maxHp, h.id); }
+            else { if (window.arcaneSetSheetHp) window.arcaneSetSheetHp(h.name, h.hp, h.maxHp); }
+          } catch (e) {}
+        }
+        return;
+      }
+      if (msg.text.startsWith('__AVATAR__:')) {
+        if (isDM && msg.from_id !== myId) {
+          try {
+            const a = JSON.parse(msg.text.slice('__AVATAR__:'.length));
+            if (a && (a.name || a.id) && window.arcaneApplyAvatar) window.arcaneApplyAvatar(a.name, a.avatar, a.id);
+          } catch (e) {}
+        }
+        return;
+      }
+      if (msg.text.startsWith('__APPEARANCE__:')) {
+        if (isDM && msg.from_id !== myId) {
+          try {
+            const a = JSON.parse(msg.text.slice('__APPEARANCE__:'.length));
+            if (a && (a.name || a.id) && window.arcaneApplyOverride) window.arcaneApplyOverride(a.name, a.override, a.id);
+          } catch (e) {}
+        }
+        return;
+      }
+    }
+    // Our own messages were already echoed into the feed at send time
+    // (mpSend / sendMessage) — the server still broadcasts them back to us,
+    // so drop the echo or every sent message would appear twice.
+    if (msg.from_id === myId) return;
     let tab;
     if (msg.to === 'all') tab = 'all';
     else if (msg.to === 'dm') tab = isDM ? msg.from_id : 'dm';
@@ -12330,32 +12401,6 @@ requestAnimationFrame(render);
           }
         }
       } catch (e) {}
-    }
-
-    // HP sync: player→DM updates the token; DM→player updates the sheet.
-    if (typeof msg.text === 'string' && msg.text.startsWith('__HP__:')) {
-      try {
-        const h = JSON.parse(msg.text.slice('__HP__:'.length));
-        if (isDM) { if (window.arcaneApplyTokenHp) window.arcaneApplyTokenHp(h.name, h.hp, h.maxHp, h.id); }
-        else { if (window.arcaneSetSheetHp) window.arcaneSetSheetHp(h.name, h.hp, h.maxHp); }
-      } catch (e) {}
-      return;
-    }
-    // DM receives a player's avatar → apply it to that character's board token.
-    if (isDM && typeof msg.text === 'string' && msg.text.startsWith('__AVATAR__:')) {
-      try {
-        const a = JSON.parse(msg.text.slice('__AVATAR__:'.length));
-        if (a && (a.name || a.id) && window.arcaneApplyAvatar) window.arcaneApplyAvatar(a.name, a.avatar, a.id);
-      } catch (e) {}
-      return;
-    }
-    // DM receives a player's CHOICE to equip an item's appearance override.
-    if (isDM && typeof msg.text === 'string' && msg.text.startsWith('__APPEARANCE__:')) {
-      try {
-        const a = JSON.parse(msg.text.slice('__APPEARANCE__:'.length));
-        if (a && (a.name || a.id) && window.arcaneApplyOverride) window.arcaneApplyOverride(a.name, a.override, a.id);
-      } catch (e) {}
-      return;
     }
 
     // Auto-deposit an item into our inventory when DM sends one to us
@@ -12409,6 +12454,15 @@ requestAnimationFrame(render);
     if (!text || !roomCode) return;
     const to = activeTab==='all' ? 'all' : activeTab==='dm' ? 'dm' : activeTab;
     msgInput.value = '';
+    // Echo locally right away (receiveChat drops our own server echo).
+    const tab = activeTab;
+    if (!messages[tab]) { messages[tab] = []; unread[tab] = 0; }
+    const entry = { from: myName, text, ts: Date.now(), isMine: true, isDM, isPM: to !== 'all' };
+    messages[tab].push(entry);
+    if (panelOpen) {
+      messagesEl.appendChild(buildMsgEl(entry));
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
     try {
       await api('/api/send_message', { room:roomCode, player_id:myId, to, text });
     } catch(e) {
@@ -12589,7 +12643,7 @@ requestAnimationFrame(render);
       if (!data.ok) throw new Error(data.error || 'Failed');
       myId = data.player_id; myName = data.name; isDM = true; window.__arcaneIsDM = true; window.__arcaneMyId = myId;
       roomCode = data.room; players = data.players; dmId = data.dm_id;
-      document.getElementById('mp-panel-title').textContent = '⚔️ ' + escHtml(data.room_name || roomName);
+      document.getElementById('mp-panel-title').textContent = '⚔️ ' + (data.room_name || roomName);
       joinErr.style.display = 'none';
       enterRoom();
     } catch(e) {
@@ -12720,7 +12774,7 @@ requestAnimationFrame(render);
       if (!data.ok) throw new Error(data.error || 'Failed');
       myId = data.player_id; myName = data.name; isDM = false; window.__arcaneIsDM = false; window.__arcaneMyId = myId;
       roomCode = data.room; players = data.players; dmId = data.dm_id;
-      document.getElementById('mp-panel-title').textContent = '⚔️ ' + escHtml(data.room_name || code);
+      document.getElementById('mp-panel-title').textContent = '⚔️ ' + (data.room_name || code);
       joinErr.style.display = 'none';
       enterRoom();
       // Mirror whatever the DM is currently projecting
@@ -12760,7 +12814,8 @@ requestAnimationFrame(render);
       try { await api('/api/leave', {room:roomCode, player_id:myId}); } catch(e) {}
     }
     myId = myName = roomCode = dmId = null;
-    players = {}; isDM = false; messages = {}; unread = {};
+    players = {}; isDM = false; messages = {}; unread = {}; pollTs = 0;
+    if (typeof window.__mpResetSync === 'function') window.__mpResetSync();
     roomDiv.style.display = 'none';
     setupDiv.style.display = 'block';
     updateBadge();
@@ -12837,6 +12892,9 @@ requestAnimationFrame(render);
   window.mpSend = (text, to) => {
     if (!roomCode || !myId) return false;
     api('/api/send_message', { room: roomCode, player_id: myId, to: to || 'all', text });
+    // Silent protocol payloads (HP/avatar/appearance/edition sync) must never
+    // render in the chat feed — send only, no local echo.
+    if (typeof text === 'string' && /^(__HP__:|__AVATAR__:|__APPEARANCE__:|__ARCANE_EDITION__:)/.test(text)) return true;
     // Echo locally
     const tab = to === 'all' ? 'all' : to === 'dm' ? (isDM ? 'all' : 'dm') : to;
     if (!messages[tab]) { messages[tab] = []; unread[tab] = 0; }
@@ -15104,8 +15162,11 @@ requestAnimationFrame(render);
     roundNum    = s.roundNum || 1;
     if (typeof renderInitiative === 'function') renderInitiative();
 
-    // Background map image (data URL)
-    if (s.bgImageDataUrl && s.bgImageDataUrl !== window._bgImageDataUrl) {
+    // Background map image (data URL). `bgKeep` means "same image as before
+    // — keep what you have" (the pusher skipped re-sending the multi-MB URL).
+    if (s.bgKeep) {
+      if (!window._bgImageDataUrl) _recoverBgFromServer();   // we never got the original — fetch the full state once
+    } else if (s.bgImageDataUrl && s.bgImageDataUrl !== window._bgImageDataUrl) {
       window._bgImageDataUrl = s.bgImageDataUrl;
       const img = new Image();
       img.onload = () => { bgImage = img; if (typeof _syncMapUI === 'function') _syncMapUI(); if (typeof rebuildCells === 'function') rebuildCells(); };
@@ -15136,6 +15197,27 @@ requestAnimationFrame(render);
     } catch (e) {}
   }
 
+  // One-shot fetch of the server's full stored state when an incoming
+  // snapshot says bgKeep but we have no local copy of the map (e.g. we
+  // skipped the original heavy event while dragging).
+  let _bgRecovering = false;
+  async function _recoverBgFromServer() {
+    if (_bgRecovering) return;
+    if (typeof window.__mpApi !== 'function' || typeof window.__mpRoom !== 'function') return;
+    const room = window.__mpRoom(); if (!room) return;
+    _bgRecovering = true;
+    try {
+      const d = await window.__mpApi('/api/grid_state?room=' + encodeURIComponent(room));
+      if (d && d.ok && d.state && d.state.bgImageDataUrl) {
+        window._bgImageDataUrl = d.state.bgImageDataUrl;
+        const img = new Image();
+        img.onload = () => { bgImage = img; if (typeof _syncMapUI === 'function') _syncMapUI(); if (typeof rebuildCells === 'function') rebuildCells(); };
+        img.src = d.state.bgImageDataUrl;
+      }
+    } catch (e) {}
+    finally { _bgRecovering = false; }
+  }
+
   // Expose so MP IIFE can call into us
   window.__applyMpGridState = applyGridState;
 
@@ -15144,10 +15226,13 @@ requestAnimationFrame(render);
   let pendingTimer = null;
   let lastSnapshotJson = '';
   let inflight = false;
+  let lastPushedBg = null;   // bg data-URL already sent this room (avoid re-sending MBs per push)
 
   // Expose so applyGridState can skip a server-side overwrite while we
   // have local mutations on their way out.
   window.__mpHasPendingSync = () => pending || inflight;
+  // Called on room enter/leave so a new room always gets a first full push.
+  window.__mpResetSync = () => { lastSnapshotJson = ''; lastPushedBg = null; pending = false; };
 
   async function flushSync() {
     if (typeof window.__mpApi !== 'function')     return;
@@ -15167,12 +15252,22 @@ requestAnimationFrame(render);
         inflight = false;
         return;
       }
+      // The background map can be a multi-MB data URL. Sending it with every
+      // token nudge floods the relay and every poller — so once a given image
+      // has been pushed, later pushes replace it with a `bgKeep` marker and
+      // the server/receivers retain the copy they already have.
+      const wire = { ...snap };
+      if (wire.bgImageDataUrl && wire.bgImageDataUrl === lastPushedBg) {
+        delete wire.bgImageDataUrl;
+        wire.bgKeep = 1;
+      }
       // Everyone in the room pushes. The server merges:
       //   • DM pushes replace the full state.
       //   • Non-DM pushes only update the `tokens` field —
       //     preserving the DM's effects / walls / fog / etc.
-      await window.__mpApi('/api/grid_state', { room, player_id: myId, state: snap });
+      await window.__mpApi('/api/grid_state', { room, player_id: myId, state: wire });
       lastSnapshotJson = snapJson;
+      lastPushedBg = snap.bgImageDataUrl || null;
     } catch (e) {
       // Silent — next mutation will retry
     } finally {

@@ -19,7 +19,7 @@ rooms = {}
 
 STATIC_DIR = Path(__file__).parent
 MAX_EVENTS = 200
-PLAYER_TIMEOUT = 30  # seconds
+PLAYER_TIMEOUT = 90  # seconds — generous enough to survive backgrounded-tab timer throttling and brief sleeps
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 def gen_code(n=6):
@@ -35,6 +35,16 @@ def now_s():
     return time.time()
 
 def add_event(room, event):
+    # Strictly-increasing timestamps: two events landing in the same
+    # millisecond would otherwise straddle the client's `ts > since` poll
+    # filter and one of them would be lost forever.
+    if room['events'] and event['ts'] <= room['events'][-1]['ts']:
+        event['ts'] = room['events'][-1]['ts'] + 1
+    # grid_state snapshots supersede each other (and can embed a multi-MB
+    # map image) — keep only the newest one in the buffer so late pollers
+    # and new joiners don't replay a parade of stale heavyweight states.
+    if event.get('type') == 'grid_state':
+        room['events'] = [e for e in room['events'] if e.get('type') != 'grid_state']
     room['events'].append(event)
     if len(room['events']) > MAX_EVENTS:
         room['events'] = room['events'][-MAX_EVENTS:]
@@ -169,12 +179,21 @@ async def handle_grid_state(writer, body):
         json_err(writer, 'Bad grid state payload'); return
 
     is_dm = (pid == room['dm_id'])
+    prev = room.get('grid_state') or {}
+    pushed_new_bg = bool(state.get('bgImageDataUrl')) and not state.get('bgKeep')
     if is_dm:
-        # DM has full authority — replace the whole state
+        # DM has full authority — replace the whole state.
+        # `bgKeep` means the client skipped re-sending the (multi-MB) map
+        # image because it hasn't changed — carry the stored copy forward.
+        if state.get('bgKeep') and not state.get('bgImageDataUrl'):
+            state = dict(state)
+            state.pop('bgKeep', None)
+            if prev.get('bgImageDataUrl'):
+                state['bgImageDataUrl'] = prev['bgImageDataUrl']
         room['grid_state'] = state
     else:
         # Player push: merge only the fields players are allowed to mutate
-        current = room.get('grid_state') or {}
+        current = prev
         # Player-mutable fields (mirror the player-restricted UI: tokens
         # via TOKEN, plus labels if they ever get permission).
         for field in ('tokens', 'labels'):
@@ -184,13 +203,33 @@ async def handle_grid_state(writer, body):
         room['grid_state'] = current
 
     room['last_seen'][pid] = now_s()
+    # Broadcast a LIGHT event: receivers that already hold the map keep it
+    # (bgKeep); the full image only travels in the event when it changes.
+    # New joiners always get the full stored state from join_room or the
+    # GET /api/grid_state recovery endpoint.
+    full = room['grid_state'] or {}
+    wire = full
+    if full.get('bgImageDataUrl') and not (is_dm and pushed_new_bg):
+        wire = dict(full)
+        wire.pop('bgImageDataUrl', None)
+        wire['bgKeep'] = 1
     ev = {
         'type':  'grid_state',
-        'state': room['grid_state'],
+        'state': wire,
         'ts':    now_ms(),
     }
     add_event(room, ev)
     json_ok(writer, {'ok': True})
+
+async def handle_grid_state_get(writer, params):
+    """Return the full stored snapshot (incl. the map image). Used by clients
+    that received a bgKeep event without ever having the original image."""
+    code = params.get('room', [''])[0].strip().upper()
+    room = rooms.get(code)
+    if not room:
+        json_ok(writer, {'ok': False})
+        return
+    json_ok(writer, {'ok': True, 'state': room.get('grid_state')})
 
 async def handle_send_message(writer, body):
     code = (body.get('room') or '').strip().upper()
@@ -251,7 +290,10 @@ async def handle_poll(writer, params):
     purge_stale(room, code)
 
     events = [e for e in room['events'] if e['ts'] > since]
-    ts = now_ms()
+    # Advance the client's cursor only as far as the events we actually
+    # delivered — returning now_ms() would skip any event that lands in the
+    # same millisecond after this response is built.
+    ts = events[-1]['ts'] if events else since
     json_ok(writer, {'events': events, 'ts': ts})
 
 async def handle_heartbeat(writer, body):
@@ -264,7 +306,9 @@ async def handle_heartbeat(writer, body):
     if pid in room['players']:
         room['last_seen'][pid] = now_s()
     purge_stale(room, code)
-    json_ok(writer, {'ok': True})
+    # in_room lets a purged client (slept laptop, throttled tab) detect it
+    # and rejoin instead of silently 403-ing on every push afterwards.
+    json_ok(writer, {'ok': True, 'in_room': pid in room['players']})
 
 async def handle_my_ip(writer):
     """Return the server's local IP address so players know where to connect."""
@@ -403,6 +447,9 @@ async def handle_connection(reader, writer):
                 await handle_leave(writer, body)
             elif method == 'POST' and endpoint == 'grid_state':
                 await handle_grid_state(writer, body)
+            elif method == 'GET' and endpoint == 'grid_state':
+                params = parse_qs(qs)
+                await handle_grid_state_get(writer, params)
             elif method == 'GET' and endpoint == 'my_ip':
                 await handle_my_ip(writer)
             elif method == 'GET' and endpoint == 'find_room':
