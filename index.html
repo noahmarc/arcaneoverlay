@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>D&D 4e Battle Grid</title>
-<link rel="stylesheet" href="style.css?v=31">
+<link rel="stylesheet" href="style.css?v=32">
 </head>
 <body>
 <div id="app">
@@ -1438,4 +1438,9 @@ function loadSampler(tries){
   tries = tries || 0;
   var s = document.createElement('script');
   s.src = __SRC_BASE + 'sampler.js?t=' + Date.now();
-  s.onerror = function(){ if (tries < 40) setTimeout(function(){ loadSampler(tries+1); }, 4
+  s.onerror = function(){ if (tries < 40) setTimeout(function(){ loadSampler(tries+1); }, 400); };
+  document.body.appendChild(s);
+}
+</script>
+</body>
+</html>

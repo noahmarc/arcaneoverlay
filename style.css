@@ -3218,6 +3218,7 @@ body.player-restricted #toolbar .cat-icon-btn:not(#token-btn):not(#los-btn):not(
   display: none !important;
 }
 /* Hide their associated sub-panels too */
+body.player-restricted #draw-panel,
 body.player-restricted #fog-panel,
 body.player-restricted #map-panel,
 body.player-restricted #grid-scale-panel { display: none !important; }

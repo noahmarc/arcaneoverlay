@@ -7366,6 +7366,11 @@ function movePos(x,y) {
 }
 
 function pointerDown(x,y) {
+  // ── Multiplayer player lock: tokens + inspect + LoS only ──────────
+  // Kills any editing tool (pen, walls, terrain effects, fog, …) that was
+  // armed before joining or re-armed via a shortcut.
+  if (_mpPlayerLocked()) _enforcePlayerLock();
+
   // ── Apply-damage targeting (intercepts before everything else) ─────
   if (_pendingDamage != null) {
     const t = tokenAt(x, y);
@@ -8126,15 +8131,19 @@ document.addEventListener('keydown',e=>{
     if(eyedropperMode) { eyedropperMode=false; canvas.style.cursor='none'; document.getElementById('eyedrop-btn')?.classList.remove('active'); }
     closeLayerMenu();
   }
-  if((e.ctrlKey||e.metaKey)&&!e.shiftKey&&e.key==='z'){e.preventDefault();undo();}
-  if((e.ctrlKey||e.metaKey)&&(e.key==='y'||(e.shiftKey&&e.key==='z'))){e.preventDefault();redo();}
-  // Effect shortcuts 1-7 (only when not typing in an input)
-  if(!e.ctrlKey&&!e.metaKey&&!e.altKey&&document.activeElement.tagName!=='INPUT'){
+  // Undo/redo is DM-only in a room — a player's undo would resurrect their
+  // pre-join board state and broadcast it over everyone's tokens.
+  if((e.ctrlKey||e.metaKey)&&!e.shiftKey&&e.key==='z'){e.preventDefault();if(!_mpPlayerLocked())undo();}
+  if((e.ctrlKey||e.metaKey)&&(e.key==='y'||(e.shiftKey&&e.key==='z'))){e.preventDefault();if(!_mpPlayerLocked())redo();}
+  // Effect shortcuts 1-7 (only when not typing in an input; disabled for
+  // restricted multiplayer players — they may not paint terrain)
+  if(!e.ctrlKey&&!e.metaKey&&!e.altKey&&document.activeElement.tagName!=='INPUT'&&!_mpPlayerLocked()){
     const eff=_effectKeys[e.key];
     if(eff){setActiveEffect(eff);exitDrawModes();}
   }
-  // Alt+1..9 → jump straight to that saved scene
-  if(e.altKey&&!e.ctrlKey&&!e.metaKey&&document.activeElement.tagName!=='INPUT'){
+  // Alt+1..9 → jump straight to that saved scene (DM-side tool — scene
+  // switching is the DM's job, and players don't carry the DM's scenes)
+  if(e.altKey&&!e.ctrlKey&&!e.metaKey&&document.activeElement.tagName!=='INPUT'&&!_mpPlayerLocked()){
     const d=parseInt(e.key,10);
     if(d>=1&&d<=9&&scenes[d-1]){ e.preventDefault(); if(activeSceneIdx!==d-1) switchToScene(d-1); }
   }
@@ -10568,6 +10577,25 @@ function exitDrawModes(){
   const lp=document.getElementById('light-panel'); if(lp) lp.style.display='none';
 }
 
+// ── Multiplayer player lock ───────────────────────────────────
+// Non-DM players in a room may only place/move tokens, inspect, and check
+// LoS. The toolbar is hidden by CSS (body.player-restricted), but modes can
+// still be live (tool armed before joining, keyboard shortcuts) — this is
+// the hard enforcement behind the cosmetic hiding.
+function _mpPlayerLocked(){ return document.body.classList.contains('player-restricted'); }
+function _enforcePlayerLock(){
+  if(!_mpPlayerLocked()) return;
+  exitDrawModes();
+  fogMode=false; fogDrawing=false;
+  if(currentEffect){
+    currentEffect=null;
+    document.querySelectorAll('.effect-pill').forEach(p=>p.classList.remove('active'));
+    document.querySelectorAll('.effect-main').forEach(b=>b.setAttribute('aria-pressed','false'));
+  }
+  updateHint();
+}
+window.__arcaneEnforcePlayerLock = _enforcePlayerLock;
+
 document.getElementById('wall-btn').addEventListener('click',()=>{
   // In wall mode: each click cycles type, and cycling past the last type turns
   // the tool OFF (so the button can disable wall mode). Off → enters at stone.
@@ -12078,8 +12106,12 @@ requestAnimationFrame(render);
     // Show / hide DM-only Roll-Request tools
     const dmTools = document.getElementById('mp-dm-roll-tools');
     if (dmTools) dmTools.classList.toggle('visible', isDM);
-    // Lock down the toolbar for players — only token / LoS / inspect
+    // Lock down the toolbar for players — only token / LoS / inspect.
+    // The CSS class hides the buttons; the enforce call kills any editing
+    // tool (pen, terrain effect, wall, fog brush…) that was armed before
+    // joining, so players can't keep drawing with a hidden tool.
     document.body.classList.toggle('player-restricted', !isDM);
+    if (!isDM && typeof window.__arcaneEnforcePlayerLock === 'function') window.__arcaneEnforcePlayerLock();
     // Reset the table edition; if DM, broadcast their current selection
     // (or default 4e) so any already-connected player picks it up.
     if (isDM) {
