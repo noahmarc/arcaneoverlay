@@ -1438,9 +1438,4 @@ function loadSampler(tries){
   tries = tries || 0;
   var s = document.createElement('script');
   s.src = __SRC_BASE + 'sampler.js?t=' + Date.now();
-  s.onerror = function(){ if (tries < 40) setTimeout(function(){ loadSampler(tries+1); }, 400); };
-  document.body.appendChild(s);
-}
-</script>
-</body>
-</html>
+  s.onerror = function(){ if (tries < 40) setTimeout(function(){ loadSampler(tries+1); }, 4

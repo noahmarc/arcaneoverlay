@@ -7501,6 +7501,15 @@ function pointerDown(x,y) {
   // while fog is active without forcing an extra brush-off toggle.
   const existing=tokenAt(x,y);
   if (existing && currentEffect!=='erase') {
+    // MP players may only pick up their OWN tokens (ownerPlayerId === their id).
+    // Other players' tokens and DM/monster tokens are off-limits.
+    if (_mpPlayerLocked() && existing.ownerPlayerId !== window.__arcaneMyId) {
+      const h=document.getElementById('hint');
+      if(h) h.textContent = existing.ownerPlayerId
+        ? `"${existing.name||'That token'}" belongs to another player.`
+        : 'Only the DM can move that token.';
+      return;
+    }
     draggingToken={ tok:existing, startX:x, startY:y };
     dragHasMoved=false;
     dragStartCell={ r:existing.r, c:existing.c };
@@ -7800,8 +7809,25 @@ function pointerUp() {
       const occupied=tokens.find(t=>t.id!==draggingToken.tok.id && t.r===target.r && t.c===target.c);
       if (!occupied) { draggingToken.tok.r=target.r; draggingToken.tok.c=target.c; }
     } else if (tokenMode) {
-      // Short click in token mode = edit modal
-      editingTokenId=draggingToken.tok.id; openTokenModal(draggingToken.tok);
+      if (_mpPlayerLocked()) {
+        // MP players: no full edit modal — just rename their own token.
+        // (Pick-up guard already ensures this is their token.)
+        const tok = draggingToken.tok;
+        if (tok.ownerPlayerId === window.__arcaneMyId) {
+          const nm = prompt('Token name:', tok.name || '');
+          if (nm !== null && nm.trim()) {
+            pushUndo();
+            tok.name = nm.trim().slice(0, 24);
+            const ie = initiative.find(i => i.tokenId === tok.id);
+            if (ie) ie.name = tok.name;
+            if (typeof renderInitiative === 'function') renderInitiative();
+            if (window.__mpScheduleSync) window.__mpScheduleSync();
+          }
+        }
+      } else {
+        // Short click in token mode = edit modal
+        editingTokenId=draggingToken.tok.id; openTokenModal(draggingToken.tok);
+      }
     }
     draggingToken=null; dragHasMoved=false; dragStartCell=null;
     canvas.style.cursor='none';
@@ -8330,7 +8356,10 @@ document.getElementById('tok-ok').addEventListener('click',()=>{
   const aura=auraRadius>0?{radius:auraRadius,color:document.getElementById('tok-aura-color').value||'#ffd24a'}:null;
   const sight=parseInt(document.getElementById('tok-sight').value)||0;
   const dmNotes=document.getElementById('tok-notes').value;
-  const ownerPlayerId=(document.getElementById('tok-owner')?.value || '') || null;
+  let ownerPlayerId=(document.getElementById('tok-owner')?.value || '') || null;
+  // MP players: any token they place/save is automatically theirs, so the
+  // ownership-based move lock recognises it.
+  if (_mpPlayerLocked() && window.__arcaneMyId) ownerPlayerId = window.__arcaneMyId;
   // Death saves
   let dsSuccesses=0, dsFailures=0;
   document.querySelectorAll('.ds-success').forEach(cb=>{if(cb.checked)dsSuccesses++;});
@@ -12025,6 +12054,7 @@ requestAnimationFrame(render);
         try {
           const r = await api('/api/join_room', { room: roomCode, name: myName });
           if (r && r.ok) {
+            const oldId = myId;
             myId = r.player_id; window.__arcaneMyId = myId;
             players = r.players; dmId = r.dm_id;
             renderPlayers(); renderTabs();
@@ -12032,6 +12062,15 @@ requestAnimationFrame(render);
             if (r.grid_state && typeof window.__applyMpGridState === 'function') {
               try { window.__applyMpGridState(r.grid_state); } catch(e) {}
             }
+            // Re-claim our tokens: ownership references the old player id, and
+            // the move lock would treat our own tokens as someone else's.
+            try {
+              if (oldId && typeof tokens !== 'undefined') {
+                let hit = false;
+                for (const t of tokens) { if (t.ownerPlayerId === oldId) { t.ownerPlayerId = myId; hit = true; } }
+                if (hit && window.__mpScheduleSync) window.__mpScheduleSync();
+              }
+            } catch(e) {}
           }
         } catch(e) {}
         _rejoining = false;
