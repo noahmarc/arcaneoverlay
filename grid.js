@@ -7808,19 +7808,12 @@ function pointerUp() {
       if (!occupied) { draggingToken.tok.r=target.r; draggingToken.tok.c=target.c; }
     } else if (tokenMode) {
       if (_mpPlayerLocked()) {
-        // MP players: no full edit modal — just rename their own token.
-        // (Unowned tokens are draggable but only the DM can edit them.)
+        // MP players: full edit modal, but only for tokens THEY own.
+        // (DM-only fields are hidden by body.player-restricted CSS.
+        //  Unowned tokens are draggable but only the DM can edit them.)
         const tok = draggingToken.tok;
         if (tok.ownerPlayerId === window.__arcaneMyId) {
-          const nm = prompt('Token name:', tok.name || '');
-          if (nm !== null && nm.trim()) {
-            pushUndo();
-            tok.name = nm.trim().slice(0, 24);
-            const ie = initiative.find(i => i.tokenId === tok.id);
-            if (ie) ie.name = tok.name;
-            if (typeof renderInitiative === 'function') renderInitiative();
-            if (window.__mpScheduleSync) window.__mpScheduleSync();
-          }
+          editingTokenId = tok.id; openTokenModal(tok);
         }
       } else {
         // Short click in token mode = edit modal

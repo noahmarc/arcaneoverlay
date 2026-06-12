@@ -3224,6 +3224,11 @@ body.player-restricted #map-panel,
 body.player-restricted #grid-scale-panel { display: none !important; }
 /* Hide the Tools category Erase pill (it's an effect, not a "tool") */
 body.player-restricted #toolbar #pill-erase { display: none !important; }
+/* Token modal for players: hide DM-only fields (ownership + private notes) */
+body.player-restricted #tok-owner,
+body.player-restricted label[for="tok-owner"],
+body.player-restricted #tok-notes,
+body.player-restricted label[for="tok-notes"] { display: none !important; }
 /* Hide the right-hand actions strip (save/load/presets/scenes/undo/history) */
 body.player-restricted #toolbar .toolbar-actions { display: none !important; }
 /* Hide grid-size sliders if they're in the toolbar */
