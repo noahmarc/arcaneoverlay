@@ -187,10 +187,11 @@ window.__pushTokenForBestiary = function (cr, r, c) {
     color: cr.color || '#B47028',   // override per creature; default = copper
     size: sz,
     speed: cr.speed || 6,
-    hp: cr.hp || 0,
+    hp: (cr.curHp != null ? cr.curHp : cr.hp) || 0,
     maxHp: cr.hp || 0,
     vision: cr.vision || null,      // null = no auto-reveal; else 'normal' | 'lowlight' | 'darkvision'
     ownerSheetId: cr.ownerSheetId || null,
+    ownerPlayerId: cr.ownerPlayerId || null,   // MP move-lock + fog/HP routing
     equippedLight: null,            // {radius,name} once a torch is picked up + equipped
     conditions: [],
     concentrating: false,
@@ -199,7 +200,7 @@ window.__pushTokenForBestiary = function (cr, r, c) {
     lightDim: 0,
     aura: null,
     sight: 0,
-    avatar: null,
+    avatar: cr.avatar ? { ...cr.avatar } : null,   // sheet's pixel avatar (PC placements)
     appearanceOverride: null,
     deathSaves: { successes: 0, failures: 0 },
     // Custom fields surfaced from the bestiary, useful for tooltips/inspect:
@@ -14611,6 +14612,9 @@ requestAnimationFrame(render);
       color: '#7C6FF7',           // purple — distinguishes PCs from monster tokens
       vision: sheet.vision || 'normal',  // controls fog reveal around the token
       ownerSheetId: sheet.id,     // links the token back to its character sheet
+      avatar: sheet.avatar ? { ...sheet.avatar } : null,   // sheet's pixel avatar rides onto the token
+      ownerPlayerId: window.__arcaneMyId || null,          // MP: token belongs to this player
+      curHp: (typeof v.hp === 'number' && v.hp > 0) ? v.hp : null,  // current HP from the sheet
     };
   }
 
@@ -14629,9 +14633,18 @@ requestAnimationFrame(render);
     const main = document.createElement('div');
     main.className = 'be-card-main';
 
+    // Show the sheet's pixel avatar on the card so the link to the token is visible
+    if (sheet.avatar && window.ArcaneAvatar) {
+      const cv = document.createElement('canvas');
+      cv.width = 36; cv.height = 36;
+      cv.style.cssText = 'width:36px;height:36px;image-rendering:pixelated;border-radius:6px;background:rgba(255,255,255,0.06);flex:0 0 auto;align-self:center;margin-right:8px';
+      try { window.ArcaneAvatar.render(cv.getContext('2d'), 2, 2, 32, sheet.avatar, { noShadow: true }); } catch (e) {}
+      card.appendChild(cv);
+    }
+
     const name = document.createElement('div');
     name.className = 'be-card-name';
-    name.innerHTML = '🎭 ' + escapeHTML(sheet.name || 'Adventurer');
+    name.innerHTML = (sheet.avatar ? '' : '🎭 ') + escapeHTML(sheet.name || 'Adventurer');
 
     const sub = document.createElement('div');
     sub.className = 'be-card-sub';

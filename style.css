@@ -3229,6 +3229,12 @@ body.player-restricted #tok-owner,
 body.player-restricted label[for="tok-owner"],
 body.player-restricted #tok-notes,
 body.player-restricted label[for="tok-notes"] { display: none !important; }
+/* Bestiary for players: only the "Place Me" character card — the DM's monster
+   roster, creature editor and import stay hidden */
+body.player-restricted .be-card:not(.my-character),
+body.player-restricted #bestiary-new-btn,
+body.player-restricted #bestiary-import-btn,
+body.player-restricted #bestiary-editor { display: none !important; }
 /* Hide the right-hand actions strip (save/load/presets/scenes/undo/history) */
 body.player-restricted #toolbar .toolbar-actions { display: none !important; }
 /* Hide grid-size sliders if they're in the toolbar */
