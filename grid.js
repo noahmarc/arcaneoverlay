@@ -7501,13 +7501,11 @@ function pointerDown(x,y) {
   // while fog is active without forcing an extra brush-off toggle.
   const existing=tokenAt(x,y);
   if (existing && currentEffect!=='erase') {
-    // MP players may only pick up their OWN tokens (ownerPlayerId === their id).
-    // Other players' tokens and DM/monster tokens are off-limits.
-    if (_mpPlayerLocked() && existing.ownerPlayerId !== window.__arcaneMyId) {
+    // MP players may not pick up a token OWNED by another player. Their own
+    // tokens and unowned tokens (DM-placed minis, monsters) stay draggable.
+    if (_mpPlayerLocked() && existing.ownerPlayerId && existing.ownerPlayerId !== window.__arcaneMyId) {
       const h=document.getElementById('hint');
-      if(h) h.textContent = existing.ownerPlayerId
-        ? `"${existing.name||'That token'}" belongs to another player.`
-        : 'Only the DM can move that token.';
+      if(h) h.textContent = `"${existing.name||'That token'}" belongs to another player.`;
       return;
     }
     draggingToken={ tok:existing, startX:x, startY:y };
@@ -7811,7 +7809,7 @@ function pointerUp() {
     } else if (tokenMode) {
       if (_mpPlayerLocked()) {
         // MP players: no full edit modal — just rename their own token.
-        // (Pick-up guard already ensures this is their token.)
+        // (Unowned tokens are draggable but only the DM can edit them.)
         const tok = draggingToken.tok;
         if (tok.ownerPlayerId === window.__arcaneMyId) {
           const nm = prompt('Token name:', tok.name || '');
